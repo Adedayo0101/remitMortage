@@ -18,6 +18,11 @@ import {
   shortenAddress,
   STELLARCHAIN_TX_BASE,
 } from "../../lib/transaction-status";
+import {
+  createStatementMetadata,
+  downloadStatementPdf,
+  type StatementRow,
+} from "@/lib/statementExport";
 
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -104,6 +109,46 @@ export default function DashboardPage() {
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [milestones, setMilestones] = useState<MilestoneNode[]>([]);
 
+  function buildDashboardStatement() {
+    if (!publicKey || !status) return null;
+
+    const rows: StatementRow[] = milestones.map((milestone) => ({
+      date: milestone.completedDate ?? milestone.scheduledDate,
+      type: milestone.state,
+      amount: milestone.title,
+      status: milestone.state,
+      reference: milestone.id,
+      counterparty: milestone.voters?.map((voter) => shortenAddress(voter.address)).join(", ") || "Protocol governance",
+      notes: milestone.description,
+    }));
+
+    return {
+      title: "RemitMortgage Borrower Statement",
+      subtitle: "Escrow savings, loan status, and milestone progress for mortgage underwriting review.",
+      metadata: createStatementMetadata({
+        borrowerName: `Wallet ${shortenAddress(publicKey)}`,
+        borrowerAddress: publicKey,
+        walletType: "Freighter / Stellar",
+      }),
+      summary: [
+        { label: "Escrow deposited", value: `${status.escrow.deposited} USDC` },
+        { label: "Escrow target", value: `${status.escrow.target} USDC` },
+        { label: "Escrow progress", value: `${status.escrow.progress}%` },
+        { label: "Loan principal", value: `${status.loan.principal} USDC` },
+        { label: "Loan disbursed", value: `${status.loan.disbursed} USDC` },
+        { label: "Loan repaid", value: `${status.loan.repaid} USDC` },
+      ],
+      rows,
+    };
+  }
+
+  function handleDownloadStatement() {
+    const payload = buildDashboardStatement();
+    if (!payload) return;
+
+    downloadStatementPdf(payload, `remitmortgage-borrower-statement-${Date.now()}.pdf`);
+  }
+
   useEffect(() => {
     const feedback = consumeTxSuccessFeedback();
     if (feedback) {
@@ -162,15 +207,22 @@ export default function DashboardPage() {
 
           <div className="flex items-center gap-3">
             <button
+              onClick={handleDownloadStatement}
+              disabled={!status}
+              className="btn-outline-blue disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Download Statement
+            </button>
+            <button
               onClick={() => setShowDeposit(true)}
-              className="btn-cta !py-3 !px-6 !text-sm shadow-cyan-500/20"
+              className="btn-cta shadow-cyan-500/20"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
               Deposit USDC
             </button>
             <button
               onClick={() => setShowWithdraw(true)}
-              className="btn-outline-blue !py-3 !px-5 !text-sm"
+              className="btn-outline-blue"
             >
               Early Exit
             </button>
@@ -272,13 +324,13 @@ export default function DashboardPage() {
                 <div className="mt-6 pt-6 border-t border-slate-800 flex gap-3">
                   <button
                     onClick={() => setShowDeposit(true)}
-                    className="btn-cta flex-1 justify-center !py-3"
+                    className="btn-cta flex-1 justify-center"
                   >
                     Deposit Savings
                   </button>
                   <button
                     onClick={() => router.push("/repay")}
-                    className="btn-outline-blue flex-1 justify-center !py-3"
+                    className="btn-outline-blue flex-1 justify-center"
                   >
                     Repay Installments &rarr;
                   </button>
