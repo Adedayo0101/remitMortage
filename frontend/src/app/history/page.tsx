@@ -241,24 +241,29 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[var(--bg-primary)]">
+    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
-      <main className="max-w-7xl mx-auto px-6 py-24">
+      <main className="max-w-7xl mx-auto px-6 pt-32 pb-20">
         {/* Header */}
-        <div className="flex items-start justify-between mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-bold mb-1">Transaction History</h1>
-            <p className="text-[var(--text-secondary)] text-sm">
-              USDC payment operations on Stellar Testnet
+            <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-3 border border-cyan-500/20">
+              Audit & Activity Explorer
+            </span>
+            <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white mb-1">
+              Transaction <span className="gradient-text">Audit Log</span>
+            </h1>
+            <p className="text-slate-400 text-sm">
+              Verified USDC payment operations and contract interactions on Stellar Testnet.
             </p>
           </div>
           <button
             onClick={handleExport}
             disabled={filtered.length === 0}
-            className="btn-primary !py-2.5 !px-5 !text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+            className="btn-cta !py-2.5 !px-5 !text-sm disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Export CSV
+            Export CSV Log
           </button>
         </div>
 

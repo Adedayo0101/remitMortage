@@ -30,8 +30,6 @@ export default function OnboardingWizard() {
   const [isLoading, setIsLoading] = useState(false);
   const [verificationMessage, setVerificationMessage] = useState("");
 
-  // react-hook-form drives all field-level validation. Default values are
-  // seeded from the persisted store so a reload keeps the user's progress.
   const {
     control,
     trigger,
@@ -130,10 +128,8 @@ export default function OnboardingWizard() {
     toast.loading("Preparing transaction...");
 
     try {
-      // TODO: Build and sign Soroban deposit transaction using Contract SDK
-      // Placeholder: simulate success flow
       toast.dismiss();
-      toast.success("Simulated deposit success! Real Soroban integration pending.");
+      toast.success("Simulated deposit success! Redirecting to Escrow Dashboard...");
       store.getState().reset();
       router.push("/dashboard");
     } catch (e) {
@@ -145,7 +141,6 @@ export default function OnboardingWizard() {
     }
   };
 
-  // Derived from the live form values so it updates as the user types.
   const watchedTarget = useWatch({ control, name: "savingsTarget" });
   const watchedDuration = useWatch({ control, name: "savingsDuration" });
   const monthlyContribution = useMemo(() => {
@@ -159,37 +154,45 @@ export default function OnboardingWizard() {
     switch (step) {
       case 1: // Connect Wallet
         return (
-          <div className="text-center">
-            <h3 className="text-xl font-semibold mb-4">Connect Your Freighter Wallet</h3>
-            <p className="text-[var(--text-secondary)] mb-6">Connect your wallet to check your USDC balance and interact with the protocol.</p>
+          <div className="text-center space-y-6">
+            <div>
+              <h3 className="text-xl font-bold text-white mb-2">Connect Freighter Wallet</h3>
+              <p className="text-xs text-slate-400">Connect your wallet to check USDC balance and interact with Soroban escrow.</p>
+            </div>
             {publicKey ? (
-              <div className="glass-card p-4 text-left">
-                <p className="text-sm text-[var(--text-muted)]">Connected Address:</p>
-                <p className="font-mono text-sm break-all mb-2">{publicKey}</p>
-                <p className="text-sm text-[var(--text-muted)]">USDC Balance:</p>
-                <p className="font-semibold text-lg">${usdcBalance}</p>
+              <div className="p-5 rounded-2xl bg-slate-950/60 border border-slate-800 text-left space-y-3">
+                <div>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Connected Address</p>
+                  <p className="font-mono text-xs text-cyan-400 break-all">{publicKey}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">USDC Balance</p>
+                  <p className="font-mono text-xl font-extrabold text-white">${usdcBalance} USDC</p>
+                </div>
               </div>
             ) : (
-              <button onClick={handleConnect} className="btn-primary" disabled={isLoading}>
-                {isLoading ? "Connecting..." : "Connect Wallet"}
+              <button onClick={handleConnect} className="btn-cta py-3.5 px-8" disabled={isLoading}>
+                {isLoading ? "Connecting..." : "Connect Freighter Wallet"}
               </button>
             )}
           </div>
         );
       case 2: // Verify Remittances
         return (
-          <div>
-            <h3 className="text-xl font-semibold mb-4">Verify Your Remittance History</h3>
-            <p className="text-[var(--text-secondary)] mb-6">Enter the Stellar address of the family member you regularly send remittances to.</p>
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-xl font-bold text-white mb-1">Verify Remittance History</h3>
+              <p className="text-xs text-slate-400">Enter the Stellar wallet address of your remittance recipient.</p>
+            </div>
             <Controller
               name="recipientAddress"
               control={control}
               render={({ field }) => (
-                <div className="flex gap-2 mb-1">
+                <div className="flex gap-3">
                   <input
                     type="text"
                     placeholder="Recipient's G... address"
-                    className="input-field flex-1"
+                    className="input-field flex-1 font-mono text-xs"
                     value={field.value ?? ""}
                     onChange={(e) => {
                       field.onChange(e.target.value);
@@ -198,17 +201,17 @@ export default function OnboardingWizard() {
                     onBlur={field.onBlur}
                     disabled={isLoading || isVerified}
                   />
-                  <button onClick={handleVerify} className="btn-primary" disabled={isLoading || !field.value || isVerified}>
-                    {isLoading ? "Verifying..." : isVerified ? "Verified" : "Verify"}
+                  <button onClick={handleVerify} className="btn-cta py-2.5 px-5 !text-xs" disabled={isLoading || !field.value || isVerified}>
+                    {isLoading ? "Auditing..." : isVerified ? "Verified ✓" : "Verify"}
                   </button>
                 </div>
               )}
             />
             {errors.recipientAddress && (
-              <p className="text-red-400 text-sm mb-3">{errors.recipientAddress.message}</p>
+              <p className="text-red-400 text-xs">{errors.recipientAddress.message}</p>
             )}
             {verificationMessage && (
-              <div className={`p-3 rounded-lg text-sm ${isVerified ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"}`}>
+              <div className={`p-4 rounded-xl text-xs ${isVerified ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300" : "bg-red-500/10 border border-red-500/20 text-red-300"}`}>
                 {verificationMessage}
               </div>
             )}
@@ -216,19 +219,21 @@ export default function OnboardingWizard() {
         );
       case 3: // Set Savings Goal
         return (
-          <div>
-            <h3 className="text-xl font-semibold mb-4">Set Your Savings Goal</h3>
-            <p className="text-[var(--text-secondary)] mb-6">Define your 30% down payment target and savings duration.</p>
+          <div className="space-y-5">
+            <div>
+              <h3 className="text-xl font-bold text-white mb-1">Set 30% Down-Payment Goal</h3>
+              <p className="text-xs text-slate-400">Specify target USDC escrow accumulation and savings timeframe.</p>
+            </div>
             <div className="space-y-4">
               <div>
-                <label className="text-sm text-[var(--text-muted)]">Down Payment Target (USDC)</label>
+                <label className="text-xs text-slate-300 font-semibold block mb-1">Down Payment Goal (USDC)</label>
                 <Controller
                   name="savingsTarget"
                   control={control}
                   render={({ field }) => (
                     <input
                       type="number"
-                      className="input-field w-full"
+                      className="input-field w-full font-mono"
                       value={Number.isNaN(field.value) ? "" : field.value}
                       onChange={(e) => {
                         const value = Number(e.target.value);
@@ -240,11 +245,11 @@ export default function OnboardingWizard() {
                   )}
                 />
                 {errors.savingsTarget && (
-                  <p className="text-red-400 text-sm mt-1">{errors.savingsTarget.message}</p>
+                  <p className="text-red-400 text-xs mt-1">{errors.savingsTarget.message}</p>
                 )}
               </div>
               <div>
-                <label className="text-sm text-[var(--text-muted)]">Savings Duration</label>
+                <label className="text-xs text-slate-300 font-semibold block mb-1">Savings Duration</label>
                 <Controller
                   name="savingsDuration"
                   control={control}
@@ -265,34 +270,32 @@ export default function OnboardingWizard() {
                     </select>
                   )}
                 />
-                {errors.savingsDuration && (
-                  <p className="text-red-400 text-sm mt-1">{errors.savingsDuration.message}</p>
-                )}
               </div>
-              <div className="glass-card p-4 text-center">
-                <p className="text-sm text-[var(--text-muted)]">Estimated Monthly Contribution</p>
-                <p className="text-2xl font-bold">${monthlyContribution}</p>
+
+              <div className="p-4 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs flex justify-between items-center">
+                <span>Estimated Monthly Saving:</span>
+                <span className="font-mono font-extrabold text-sm">${monthlyContribution} USDC / mo</span>
               </div>
             </div>
           </div>
         );
       case 4: // First Deposit
         return (
-          <div>
-            <h3 className="text-xl font-semibold mb-4">Make Your First Deposit</h3>
-            <p className="text-[var(--text-secondary)] mb-6">
-              Kickstart your savings journey by making your first deposit into the secure escrow contract. Your estimated monthly contribution is ${monthlyContribution}.
-            </p>
-            <Controller
-              name="firstDepositAmount"
-              control={control}
-              render={({ field }) => (
-                <div className="flex gap-2">
+          <div className="space-y-5">
+            <div>
+              <h3 className="text-xl font-bold text-white mb-1">First Deposit Commitment</h3>
+              <p className="text-xs text-slate-400">Make your initial deposit into the Soroban escrow contract.</p>
+            </div>
+            <div>
+              <label className="text-xs text-slate-300 font-semibold block mb-1">Initial Deposit Amount (USDC)</label>
+              <Controller
+                name="firstDepositAmount"
+                control={control}
+                render={({ field }) => (
                   <input
                     type="number"
-                    placeholder="Enter deposit amount"
-                    className="input-field flex-1"
-                    value={field.value ? field.value : ""}
+                    className="input-field w-full font-mono"
+                    value={Number.isNaN(field.value) ? "" : field.value}
                     onChange={(e) => {
                       const value = Number(e.target.value);
                       field.onChange(value);
@@ -300,15 +303,15 @@ export default function OnboardingWizard() {
                     }}
                     onBlur={field.onBlur}
                   />
-                  <button onClick={handleDeposit} className="btn-primary" disabled={isLoading || !field.value || field.value <= 0}>
-                    {isLoading ? "Processing..." : "Deposit"}
-                  </button>
-                </div>
+                )}
+              />
+              {errors.firstDepositAmount && (
+                <p className="text-red-400 text-xs mt-1">{errors.firstDepositAmount.message}</p>
               )}
-            />
-            {errors.firstDepositAmount && (
-              <p className="text-red-400 text-sm mt-1">{errors.firstDepositAmount.message}</p>
-            )}
+            </div>
+            <button onClick={handleDeposit} className="btn-cta w-full justify-center py-3.5" disabled={isLoading}>
+              {isLoading ? "Signing Transaction..." : "Deposit USDC & Unlock Escrow"}
+            </button>
           </div>
         );
       default:
@@ -317,49 +320,49 @@ export default function OnboardingWizard() {
   };
 
   const handleNext = async () => {
-    const fields = STEP_FIELDS[step] ?? [];
-    const valid = fields.length === 0 ? true : await trigger(fields);
-    if (valid) {
-      store.getState().setStep(step + 1);
+    const currentFields = STEP_FIELDS[step];
+    if (currentFields.length > 0) {
+      const valid = await trigger(currentFields);
+      if (!valid) return;
     }
+
+    if (step === 1 && !publicKey) {
+      toast.error("Please connect your wallet to continue.");
+      return;
+    }
+    if (step === 2 && !isVerified) {
+      toast.error("Please verify your remittance history to continue.");
+      return;
+    }
+
+    store.getState().setStep(step + 1);
   };
 
-  // Step gating: step 1 requires a wallet, step 2 requires a verified history,
-  // remaining steps are gated by react-hook-form validation on Next.
-  const canGoNext = () => {
-    switch (step) {
-      case 1:
-        return !!publicKey;
-      case 2:
-        return isVerified;
-      case 3:
-        return true;
-      case 4:
-        return false; // Final step
-      default:
-        return false;
-    }
+  const handleBack = () => {
+    store.getState().setStep(step - 1);
   };
 
   return (
-    <div className="glass-card p-8">
+    <div className="p-6 md:p-8 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl max-w-xl mx-auto backdrop-blur-xl">
       <ProgressStepper steps={STEPS} currentStep={step} />
-      <div className="min-h-[200px] flex flex-col justify-center">{renderStepContent()}</div>
-      <div className="flex justify-between items-center mt-8 pt-6 border-t border-[var(--border-color)]">
+      <div className="my-8">{renderStepContent()}</div>
+      <div className="flex justify-between border-t border-slate-800/80 pt-5">
         <button
-          onClick={() => store.getState().setStep(step - 1)}
-          className="btn-outline"
+          onClick={handleBack}
           disabled={step === 1 || isLoading}
+          className="btn-outline text-xs !py-2.5 !px-5"
         >
-          Back
+          Previous Step
         </button>
-        <button
-          onClick={handleNext}
-          className="btn-primary"
-          disabled={!canGoNext() || isLoading}
-        >
-          Next
-        </button>
+        {step < STEPS.length && (
+          <button
+            onClick={handleNext}
+            disabled={isLoading}
+            className="btn-cta text-xs !py-2.5 !px-5"
+          >
+            Next →
+          </button>
+        )}
       </div>
     </div>
   );

@@ -6,6 +6,8 @@ import { NotificationProvider } from "@/context/NotificationContext";
 import { NotificationLayer } from "@/components/NotificationLayer";
 import { ToastProvider } from "@/context/ToastContext";
 import { ToastContainer } from "@/components/ToastContainer";
+import { HotToaster } from "@/components/HotToaster";
+import Footer from "@/components/Footer";
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? "https://remitmortgage.com";
 
@@ -16,7 +18,7 @@ const DESCRIPTION =
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#0a0a0f",
+  themeColor: "#060913",
 };
 
 export const metadata: Metadata = {
@@ -84,14 +86,18 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] font-[var(--font-inter)] antialiased">
+      <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
         <ThemeProvider>
           <WalletProvider>
             <NotificationProvider>
               <ToastProvider>
-                {children}
+                <div className="flex-1">
+                  {children}
+                </div>
+                <Footer />
                 <NotificationLayer />
                 <ToastContainer />
+                <HotToaster />
               </ToastProvider>
             </NotificationProvider>
           </WalletProvider>

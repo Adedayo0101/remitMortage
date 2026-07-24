@@ -11,8 +11,8 @@ import {
   scValToNative,
   Account,
 } from "@stellar/stellar-sdk";
-import { getRpcServer } from "../lib/soroban-rpc";
-import { useWallet } from "../context/WalletContext";
+import { getRpcServer } from "@/lib/soroban-rpc";
+import { useWallet } from "@/context/WalletContext";
 
 // Gating the page component at runtime
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -355,10 +355,10 @@ export default function DeveloperPlayground() {
           status: "SUCCESS",
           method: selectedMethod.name,
           result: decodedResult,
-          events: simulation.events?.map((ev) => {
+          events: simulation.events?.map((ev: any) => {
             try {
               return {
-                topics: ev.event.topic.map(t => scValToNative(t)),
+                topics: ev.event.topic.map((t: any) => scValToNative(t)),
                 value: scValToNative(ev.event.value)
               };
             } catch {
@@ -366,8 +366,8 @@ export default function DeveloperPlayground() {
             }
           }) || [],
           cost: {
-            cpuInsns: simulation.result.cpuInstructions,
-            memBytes: simulation.result.memoryBytes,
+            cpuInsns: (simulation.result as any)?.cpuInstructions,
+            memBytes: (simulation.result as any)?.memoryBytes,
           },
         });
       }

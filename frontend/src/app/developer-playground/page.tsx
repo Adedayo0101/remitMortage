@@ -1,4 +1,4 @@
-import DeveloperPlayground from "@/pages/DeveloperPlayground";
+import DeveloperPlayground from "./DeveloperPlayground";
 import { notFound } from "next/navigation";
 
 export default function DeveloperPlaygroundPage() {

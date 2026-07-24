@@ -374,15 +374,20 @@ function RepayInner() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div>
+    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
       {isRepaid && <Confetti />}
 
-      <main className="max-w-5xl mx-auto px-6 py-24">
-        <h1 className="text-3xl font-bold mb-2">Loan Repayment</h1>
-        <p className="text-[var(--text-secondary)] mb-8">
-          Manage your loan payments, view your schedule, and track repayment history.
+      <main className="max-w-5xl mx-auto px-6 pt-32 pb-20">
+        <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-4 border border-cyan-500/20">
+          USDC Settlement Rails
+        </span>
+        <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white mb-2">
+          Loan <span className="gradient-text">Repayment Portal</span>
+        </h1>
+        <p className="text-slate-400 text-sm md:text-base mb-8">
+          Manage your loan payments, view repayment schedule, and track on-chain transaction history.
         </p>
 
         {/* ── Tx Success Banner ── */}

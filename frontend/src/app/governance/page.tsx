@@ -91,6 +91,9 @@ const mockProposals = [
   }
 ];
 
+import dynamic from 'next/dynamic';
+const Navbar = dynamic(() => import('../../components/Navbar'), { ssr: false });
+
 export default function GovernanceDashboard() {
   const { isMember } = useCommitteeMember();
   const [proposals, setProposals] = useState(mockProposals);
@@ -101,31 +104,36 @@ export default function GovernanceDashboard() {
 
   if (isMember === null) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6">
-        <div className="relative">
-          <div className="w-16 h-16 border-4 border-zinc-800 border-t-cyan-500 rounded-full animate-spin"></div>
-          <div className="absolute inset-0 border-4 border-transparent border-l-emerald-500 rounded-full animate-spin animation-delay-200 opacity-50"></div>
+      <div className="min-h-screen bg-[#FFFDFA] text-[#010721]">
+        <Navbar />
+        <div className="flex flex-col items-center justify-center pt-32 pb-20 px-6">
+          <div className="relative">
+            <div className="w-14 h-14 border-4 border-gray-200 border-t-[#0046A7] rounded-full animate-spin"></div>
+          </div>
+          <p className="mt-6 text-[#6B7280] font-medium tracking-wide animate-pulse">Checking committee credentials...</p>
         </div>
-        <p className="mt-6 text-zinc-400 font-medium tracking-wide animate-pulse">Checking committee credentials...</p>
       </div>
     );
   }
 
   if (isMember === false) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6">
-        <div className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-8 text-center shadow-2xl relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-full h-1 bg-red-500"></div>
-          <div className="mx-auto w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mb-6">
-            <ShieldAlert className="w-10 h-10 text-red-500 drop-shadow-[0_0_10px_rgba(239,68,68,0.5)]" />
+      <div className="min-h-screen bg-[#FFFDFA] text-[#010721]">
+        <Navbar />
+        <div className="flex items-center justify-center pt-32 pb-20 px-6">
+          <div className="max-w-md w-full bg-white border border-gray-200 rounded-2xl p-8 text-center shadow-lg relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-1 bg-red-500"></div>
+            <div className="mx-auto w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-6">
+              <ShieldAlert className="w-8 h-8 text-red-500" />
+            </div>
+            <h1 className="text-2xl font-bold text-[#010721] mb-3 tracking-tight">Access Denied</h1>
+            <p className="text-[#6B7280] mb-8 leading-relaxed text-sm">
+              Your connected wallet is not registered as a committee member for this Soroban governance module.
+            </p>
+            <a href="/" className="inline-block w-full py-3.5 px-4 bg-[#0046A7] hover:bg-blue-700 text-white font-semibold rounded-xl transition-all shadow-sm">
+              Return to Home
+            </a>
           </div>
-          <h1 className="text-2xl font-bold text-zinc-100 mb-3 tracking-tight">Access Denied</h1>
-          <p className="text-zinc-400 mb-8 leading-relaxed text-sm">
-            Your connected wallet is not registered as a committee member for this Soroban governance module.
-          </p>
-          <button className="w-full py-3.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold rounded-xl transition-all shadow-md hover:shadow-lg border border-zinc-700/50 hover:border-zinc-600">
-            Return to Home
-          </button>
         </div>
       </div>
     );
@@ -190,20 +198,21 @@ export default function GovernanceDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6 md:p-10 font-sans selection:bg-cyan-500/30 selection:text-cyan-100">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-12 space-y-6 md:space-y-0">
+    <div className="min-h-screen bg-[#FFFDFA] text-[#010721]">
+      <Navbar />
+      <div className="max-w-7xl mx-auto px-6 pt-32 pb-20">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 space-y-4 md:space-y-0">
           <div>
-            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-white mb-2">
-              Signer Dashboard
+            <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-[#010721] mb-2">
+              Signer <span className="text-[#0046A7]">Dashboard</span>
             </h1>
-            <p className="text-zinc-400 text-sm md:text-base font-medium">
+            <p className="text-[#6B7280] text-sm md:text-base font-medium">
               Review milestone evidence and cast multisig governance votes.
             </p>
           </div>
-          <div className="flex items-center space-x-2.5 bg-emerald-500/10 border border-emerald-500/20 px-5 py-2.5 rounded-full shadow-[0_0_15px_rgba(16,185,129,0.1)]">
-            <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-            <span className="text-emerald-400 font-semibold text-sm tracking-wide">Committee Active</span>
+          <div className="flex items-center space-x-2.5 bg-emerald-50 border border-emerald-200 px-4 py-2 rounded-full shadow-sm">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <span className="text-emerald-700 font-semibold text-xs tracking-wide">Committee Active</span>
           </div>
         </div>
 

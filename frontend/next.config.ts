@@ -10,13 +10,17 @@ const IPFS_GATEWAYS = [
   "https://gateway.pinata.cloud",
 ];
 
+const isDev = process.env.NODE_ENV === "development";
+
 const contentSecurityPolicy = [
   "default-src 'self'",
-  "script-src 'self'",
-  `connect-src 'self' ${BASE_URL} ${HORIZON_URL} ${STELLAR_RPC_URL}`,
-  `img-src 'self' ${IPFS_GATEWAYS.join(" ")}`,
+  isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" : "script-src 'self'",
+  isDev
+    ? `connect-src 'self' ${BASE_URL} ${HORIZON_URL} ${STELLAR_RPC_URL} ws: wss:`
+    : `connect-src 'self' ${BASE_URL} ${HORIZON_URL} ${STELLAR_RPC_URL}`,
+  `img-src 'self' ${IPFS_GATEWAYS.join(" ")} data:`,
   "style-src 'self' 'unsafe-inline'",
-  "font-src 'self'",
+  "font-src 'self' data: https://fonts.gstatic.com",
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",

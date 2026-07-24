@@ -1,21 +1,20 @@
-"use client"
+"use client";
 
 import React, { useState } from "react";
-import { WalletProvider, useWallet } from "../context/WalletContext";
+import { useWallet } from "../context/WalletContext";
 
 function shorten(pk: string) {
   return `${pk.slice(0, 6)}...${pk.slice(-4)}`;
 }
 
 const NAV_LINKS = [
-  { href: "#how-it-works", label: "How It Works" },
-  { href: "#features", label: "Features" },
-  { href: "#stats", label: "Protocol" },
-  { href: "/verify", label: "Check Eligibility" },
-  { href: "/invest", label: "Invest" },
-  { href: "/analytics", label: "Analytics" },
+  { href: "/verify", label: "Verify" },
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/admin", label: "Admin" },
+  { href: "/invest", label: "Invest Pool" },
+  { href: "/repay", label: "Repay" },
+  { href: "/contractor", label: "Contractor" },
+  { href: "/governance", label: "Governance" },
+  { href: "/history", label: "Audit Log" },
 ];
 
 function InnerNavbar() {
@@ -24,95 +23,93 @@ function InnerNavbar() {
 
   return (
     <>
-      <nav className="fixed top-0 left-0 right-0 z-50 backdrop-blur-xl bg-[var(--bg-primary)]/80 border-b border-[var(--border-color)]">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <header className="fixed top-0 left-0 right-0 z-50 bg-[#060913]/80 backdrop-blur-xl border-b border-slate-800/80 shadow-lg shadow-black/40">
+        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           {/* Logo */}
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-500 flex items-center justify-center">
-              <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" className="w-4 h-4">
+          <a href="/" className="flex items-center gap-3 hover:opacity-90 transition-all group">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 via-indigo-500 to-emerald-400 flex items-center justify-center shadow-lg shadow-cyan-500/20 group-hover:shadow-cyan-500/40 transition-all">
+              <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" className="w-5 h-5">
                 <path d="M3 21h18" />
                 <path d="M5 21V7l7-4 7 4v14" />
               </svg>
             </div>
-            <span className="text-lg font-bold tracking-tight">
-              Remit<span className="text-[var(--accent-primary-light)]">Mortgage</span>
+            <span className="text-xl font-bold tracking-tight text-white">
+              Remit<span className="text-cyan-400">Mortgage</span>
             </span>
-          </div>
+          </a>
 
-          {/* Desktop nav links */}
-          <div className="hidden md:flex items-center gap-8 text-sm text-[var(--text-secondary)]">
-            <a href="#how-it-works" className="hover:text-[var(--text-primary)] transition-colors">How It Works</a>
-            <a href="#features" className="hover:text-[var(--text-primary)] transition-colors">Features</a>
-            <a href="#stats" className="hover:text-[var(--text-primary)] transition-colors">Protocol</a>
-            <a href="/invest" className="hover:text-[var(--text-primary)] transition-colors">Invest</a>
-            <a href="/dashboard" className="hover:text-[var(--text-primary)] transition-colors">Dashboard</a>
-            <a href="/history" className="hover:text-[var(--text-primary)] transition-colors">History</a>
+          {/* Desktop Nav Links */}
+          <nav className="hidden lg:flex items-center gap-6 text-sm">
             {process.env.NODE_ENV !== "production" && (
-              <a href="/developer-playground" className="text-amber-500 hover:text-amber-400 font-semibold transition-colors">
+              <a href="/developer-playground" className="text-amber-400 hover:text-amber-300 font-semibold px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-xs transition-colors">
                 Playground
               </a>
             )}
             {NAV_LINKS.map(({ href, label }) => (
-              <a key={href} href={href} className="hover:text-[var(--text-primary)] transition-colors">
+              <a
+                key={href}
+                href={href}
+                className="text-slate-300 font-medium tracking-wide hover:text-cyan-400 transition-colors"
+              >
                 {label}
               </a>
             ))}
-          </div>
+          </nav>
 
-          {/* Desktop wallet */}
-          <div className="hidden md:flex">
+          {/* Desktop Wallet */}
+          <div className="hidden lg:flex items-center gap-3">
             <WalletButton isConnected={isConnected} publicKey={publicKey} usdcBalance={usdcBalance} connect={connect} disconnect={disconnect} />
           </div>
 
-          {/* Mobile: wallet + hamburger */}
-          <div className="flex md:hidden items-center gap-3">
+          {/* Mobile hamburger */}
+          <div className="flex lg:hidden items-center gap-3">
             <WalletButton isConnected={isConnected} publicKey={publicKey} usdcBalance={usdcBalance} connect={connect} disconnect={disconnect} />
             <button
               aria-label={menuOpen ? "Close menu" : "Open menu"}
               aria-expanded={menuOpen}
               aria-controls="mobile-menu"
               onClick={() => setMenuOpen((prev) => !prev)}
-              className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] transition-colors"
+              className="p-2 rounded-lg text-slate-200 hover:bg-slate-800/80 transition-colors"
             >
               {menuOpen ? (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6" aria-hidden="true">
                   <path d="M18 6 6 18M6 6l12 12" />
                 </svg>
               ) : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6" aria-hidden="true">
                   <path d="M4 6h16M4 12h16M4 18h16" />
                 </svg>
               )}
             </button>
           </div>
         </div>
-      </nav>
+      </header>
 
       {/* Overlay */}
       {menuOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden"
           aria-hidden="true"
           onClick={() => setMenuOpen(false)}
         />
       )}
 
-      {/* Mobile slide-out drawer */}
+      {/* Mobile Slide-Out Drawer */}
       <div
         id="mobile-menu"
         role="dialog"
         aria-modal="true"
         aria-label="Mobile navigation"
-        className={`fixed top-0 right-0 z-50 h-full w-72 bg-[var(--bg-primary)] border-l border-[var(--border-color)] flex flex-col pt-20 pb-8 px-6 md:hidden transition-transform duration-300 ease-in-out ${
+        className={`fixed top-0 right-0 z-50 h-full w-72 bg-[#0b0f1d] border-l border-slate-800 flex flex-col pt-24 pb-8 px-6 lg:hidden transition-transform duration-300 ease-in-out ${
           menuOpen ? "translate-x-0" : "translate-x-full"
         }`}
       >
-        <nav className="flex flex-col gap-1">
+        <nav className="flex flex-col gap-2">
           {process.env.NODE_ENV !== "production" && (
             <a
               href="/developer-playground"
               onClick={() => setMenuOpen(false)}
-              className="py-3 px-3 rounded-md text-amber-500 hover:text-amber-400 hover:bg-[var(--bg-card)] transition-colors text-base font-medium"
+              className="py-3 px-3 rounded-lg text-amber-400 bg-amber-500/10 border border-amber-500/20 text-sm font-semibold"
             >
               Playground
             </a>
@@ -122,7 +119,7 @@ function InnerNavbar() {
               key={href}
               href={href}
               onClick={() => setMenuOpen(false)}
-              className="py-3 px-3 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] transition-colors text-base font-medium"
+              className="py-3 px-4 rounded-xl text-slate-200 hover:text-cyan-400 hover:bg-slate-800/60 transition-colors text-base font-medium"
             >
               {label}
             </a>
@@ -131,8 +128,8 @@ function InnerNavbar() {
       </div>
 
       {wrongNetwork && (
-        <div className="fixed top-16 left-0 right-0 z-40 bg-amber-100 text-amber-900 border-b border-amber-200 text-center py-2">
-          You are connected to the wrong Stellar network. Please switch Freighter to Testnet.
+        <div className="fixed top-20 left-0 right-0 z-40 bg-amber-500/20 text-amber-300 border-b border-amber-500/30 text-center py-2 text-xs font-semibold backdrop-blur-md">
+          ⚠️ Connected to non-testnet account. Please switch Freighter wallet to Stellar Testnet.
         </div>
       )}
     </>
@@ -150,18 +147,23 @@ interface WalletButtonProps {
 function WalletButton({ isConnected, publicKey, usdcBalance, connect, disconnect }: WalletButtonProps) {
   if (!isConnected) {
     return (
-      <button onClick={connect} className="btn-primary !py-2.5 !px-5 !text-sm">
+      <button onClick={connect} className="btn-cta !py-2.5 !px-4 !text-xs md:!text-sm shadow-cyan-500/20">
         Connect Wallet
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+        </svg>
       </button>
     );
   }
   return (
-    <div className="flex items-center gap-3">
-      <div className="text-sm text-[var(--text-secondary)]">{usdcBalance != null ? `${usdcBalance} USDC` : "—"}</div>
-      <div className="px-3 py-1 rounded-md bg-[var(--bg-card)] border border-[var(--border-color)] text-sm">
+    <div className="flex items-center gap-2">
+      <div className="text-xs md:text-sm text-cyan-400 font-semibold px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
+        {usdcBalance != null ? `${usdcBalance} USDC` : "—"}
+      </div>
+      <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs font-semibold text-slate-200 font-mono">
         {publicKey ? shorten(publicKey) : "Connected"}
       </div>
-      <button onClick={disconnect} className="btn-ghost text-sm">
+      <button onClick={disconnect} className="btn-ghost text-xs hover:text-red-400">
         Disconnect
       </button>
     </div>
@@ -169,9 +171,5 @@ function WalletButton({ isConnected, publicKey, usdcBalance, connect, disconnect
 }
 
 export default function Navbar() {
-  return (
-    <WalletProvider>
-      <InnerNavbar />
-    </WalletProvider>
-  );
+  return <InnerNavbar />;
 }

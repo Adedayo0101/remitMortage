@@ -19,9 +19,9 @@ function TxStatusContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  const hash = typeof params.hash === "string" ? params.hash : "";
-  const txType = parseTransactionType(searchParams.get("type"));
-  const senderOverride = searchParams.get("from");
+  const hash = typeof params?.hash === "string" ? params.hash : "";
+  const txType = parseTransactionType(searchParams?.get("type") ?? null);
+  const senderOverride = searchParams?.get("from") ?? null;
 
   const monitor = useTransactionMonitor(hash);
 
