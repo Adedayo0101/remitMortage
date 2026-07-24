@@ -16,12 +16,28 @@ export const EVENT_POLL_INTERVAL_MS = 10_000;
 const STROOPS_PER_UNIT = BigInt(10_000_000);
 const ONE_HUNDRED = BigInt(100);
 
+type StreamEventPayload = {
+  source?: "escrow" | "pool";
+  name?: string;
+  data?: unknown[];
+  wallet?: string;
+  contractId?: string;
+  contract_id?: string;
+  topic?: unknown[];
+  value?: unknown;
+  event?: string;
+};
+
 function escrowContractId(): string {
   return process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID || "";
 }
 
 function lendingPoolContractId(): string {
   return process.env.NEXT_PUBLIC_LENDING_POOL_CONTRACT_ID || "";
+}
+
+function indexerEventsUrl(): string {
+  return process.env.NEXT_PUBLIC_INDEXER_EVENTS_URL || "";
 }
 
 /** Formats an i128 stroop amount (bigint) as a `$1,234.56` USDC string. */
@@ -133,6 +149,41 @@ function buildToast(
   }
 }
 
+function normalizeStreamPayload(payload: unknown): StreamEventPayload[] {
+  if (Array.isArray(payload)) {
+    return payload.flatMap((item) => normalizeStreamPayload(item));
+  }
+
+  if (payload && typeof payload === "object") {
+    return [payload as StreamEventPayload];
+  }
+
+  return [];
+}
+
+function emitStreamEvent(record: StreamEventPayload, wallet: string, notify: (toast: ToastInput) => string) {
+  const source =
+    record.source === "pool" || record.source === "escrow"
+      ? record.source
+      : record.contractId === lendingPoolContractId() || record.contract_id === lendingPoolContractId()
+      ? "pool"
+      : record.contractId === escrowContractId() || record.contract_id === escrowContractId()
+      ? "escrow"
+      : null;
+
+  if (!source) return;
+
+  const name =
+    record.name ??
+    record.event ??
+    (Array.isArray(record.topic) ? String(scValToNative(record.topic[0])) : "");
+
+  const decoded = record.data ?? (Array.isArray(record.value) ? record.value : []);
+  const data = Array.isArray(decoded) ? decoded : [decoded];
+  const toast = buildToast(source, name, data, wallet);
+  if (toast) notify(toast);
+}
+
 /**
  * Polls Soroban RPC `getEvents` every 10 seconds while a wallet is connected,
  * filtering the escrow and lending-pool contracts and raising contextual toast
@@ -153,6 +204,7 @@ export function useContractEvents() {
   useEffect(() => {
     const escrowId = escrowContractId();
     const poolId = lendingPoolContractId();
+    const streamUrl = indexerEventsUrl();
 
     if (!isConnected || !publicKey) return;
     if (!escrowId && !poolId) return;
@@ -160,6 +212,7 @@ export function useContractEvents() {
     const server = getRpcServer();
     const contractIds = [escrowId, poolId].filter(Boolean);
     let cancelled = false;
+    let fallbackCleanup: (() => void) | null = null;
     cursorRef.current = null;
 
     async function poll() {
@@ -215,12 +268,56 @@ export function useContractEvents() {
       }
     }
 
+    function startPollingFallback() {
+      if (fallbackCleanup) return;
+      poll();
+      const interval = setInterval(poll, EVENT_POLL_INTERVAL_MS);
+      fallbackCleanup = () => clearInterval(interval);
+    }
+
+    if (streamUrl) {
+      try {
+        const url = new URL(streamUrl);
+        url.searchParams.set("wallet", publicKey);
+        url.searchParams.set("contracts", contractIds.join(","));
+        const eventSource = new EventSource(url.toString(), { withCredentials: true });
+
+        eventSource.onmessage = (event) => {
+          if (cancelled) return;
+
+          try {
+            const parsed = JSON.parse(event.data as string) as unknown;
+            for (const record of normalizeStreamPayload(parsed)) {
+              emitStreamEvent(record, publicKey as string, notifyRef.current);
+            }
+          } catch (error) {
+            console.warn("Indexer event payload could not be parsed", error);
+          }
+        };
+
+        eventSource.onerror = (error) => {
+          console.warn("Indexer stream failed, falling back to RPC polling", error);
+          eventSource.close();
+          startPollingFallback();
+        };
+
+        return () => {
+          cancelled = true;
+          eventSource.close();
+          fallbackCleanup?.();
+        };
+      } catch (error) {
+        console.warn("Indexer stream unavailable, falling back to RPC polling", error);
+      }
+    }
+
     poll();
     const interval = setInterval(poll, EVENT_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       clearInterval(interval);
+      fallbackCleanup?.();
     };
   }, [isConnected, publicKey]);
 }

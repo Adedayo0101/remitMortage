@@ -3,6 +3,12 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { Horizon } from "@stellar/stellar-sdk";
+import {
+  createStatementMetadata,
+  downloadStatementCsv,
+  downloadStatementPdf,
+  type StatementRow,
+} from "@/lib/statementExport";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -44,32 +50,6 @@ function formatDate(iso: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function toCSV(rows: TxRecord[], publicKey: string): string {
-  const headers = ["Date", "Type", "Amount (USDC)", "Status", "Transaction Hash", "From", "To"];
-  const lines = rows.map((r) =>
-    [
-      `"${formatDate(r.date)}"`,
-      r.category.slice(0, -1),
-      r.amount,
-      r.status,
-      r.hash,
-      r.from,
-      r.to,
-    ].join(",")
-  );
-  return [headers.join(","), ...lines].join("\n");
-}
-
-function downloadCSV(content: string) {
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `remitmortgage-transactions-${Date.now()}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 function parsePaymentOp(op: any, publicKey: string): TxRecord | null {
@@ -235,9 +215,47 @@ export default function HistoryPage() {
     return true;
   });
 
-  function handleExport() {
+  function buildStatementRows(): StatementRow[] {
+    return filtered.map((row) => ({
+      date: formatDate(row.date),
+      type: row.category.slice(0, -1),
+      amount: `${row.amount} USDC`,
+      status: row.status,
+      reference: row.hash,
+      counterparty: `${shorten(row.from)} → ${shorten(row.to)}`,
+      notes: row.category,
+    }));
+  }
+
+  function buildStatementPayload() {
     if (!publicKey) return;
-    downloadCSV(toCSV(filtered, publicKey));
+    return {
+      title: "RemitMortgage Borrower Audit Statement",
+      subtitle: "Verified Horizon payment history for underwriting review.",
+      metadata: createStatementMetadata({
+        borrowerName: publicKey ? `Wallet ${shorten(publicKey)}` : "Unknown borrower",
+        borrowerAddress: publicKey,
+        walletType: "Freighter / Stellar",
+      }),
+      summary: [
+        { label: "Verified transactions", value: String(filtered.length) },
+        { label: "Amount range", value: `${amountMin.toLocaleString()} - ${amountMax.toLocaleString()} USDC` },
+        { label: "Category filter", value: category },
+      ],
+      rows: buildStatementRows(),
+    };
+  }
+
+  function handleExportCsv() {
+    const payload = buildStatementPayload();
+    if (!payload) return;
+    downloadStatementCsv(payload, `remitmortgage-audit-statement-${Date.now()}.csv`);
+  }
+
+  function handleExportPdf() {
+    const payload = buildStatementPayload();
+    if (!payload) return;
+    downloadStatementPdf(payload, `remitmortgage-audit-statement-${Date.now()}.pdf`);
   }
 
   return (
@@ -258,13 +276,22 @@ export default function HistoryPage() {
               Verified USDC payment operations and contract interactions on Stellar Testnet.
             </p>
           </div>
-          <button
-            onClick={handleExport}
-            disabled={filtered.length === 0}
-            className="btn-cta !py-2.5 !px-5 !text-sm disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Export CSV Log
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={handleExportCsv}
+              disabled={filtered.length === 0}
+              className="btn-cta disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Export CSV Log
+            </button>
+            <button
+              onClick={handleExportPdf}
+              disabled={filtered.length === 0}
+              className="btn-outline-blue disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Download PDF Statement
+            </button>
+          </div>
         </div>
 
         {/* Wallet not connected */}

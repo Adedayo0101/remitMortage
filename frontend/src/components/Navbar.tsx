@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useWallet } from "../context/WalletContext";
+import { useNotifications } from "@/context/NotificationContext";
 
 function shorten(pk: string) {
   return `${pk.slice(0, 6)}...${pk.slice(-4)}`;
@@ -19,6 +20,7 @@ const NAV_LINKS = [
 
 function InnerNavbar() {
   const { publicKey, isConnected, usdcBalance, connect, disconnect, wrongNetwork } = useWallet();
+  const { unreadCount, togglePanel } = useNotifications();
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -58,11 +60,13 @@ function InnerNavbar() {
 
           {/* Desktop Wallet */}
           <div className="hidden lg:flex items-center gap-3">
+            <NotificationButton unreadCount={unreadCount} onClick={togglePanel} />
             <WalletButton isConnected={isConnected} publicKey={publicKey} usdcBalance={usdcBalance} connect={connect} disconnect={disconnect} />
           </div>
 
           {/* Mobile hamburger */}
           <div className="flex lg:hidden items-center gap-3">
+            <NotificationButton unreadCount={unreadCount} onClick={togglePanel} compact />
             <WalletButton isConnected={isConnected} publicKey={publicKey} usdcBalance={usdcBalance} connect={connect} disconnect={disconnect} />
             <button
               aria-label={menuOpen ? "Close menu" : "Open menu"}
@@ -167,6 +171,37 @@ function WalletButton({ isConnected, publicKey, usdcBalance, connect, disconnect
         Disconnect
       </button>
     </div>
+  );
+}
+
+function NotificationButton({
+  unreadCount,
+  onClick,
+  compact = false,
+}: {
+  unreadCount: number;
+  onClick: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Open notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ""}`}
+      className={`relative inline-flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900/70 text-slate-200 transition-colors hover:border-cyan-400/40 hover:text-cyan-300 ${
+        compact ? "h-10 w-10" : "h-11 w-11"
+      }`}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={compact ? "h-4.5 w-4.5" : "h-5 w-5"} aria-hidden="true">
+        <path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0 1 18 14.172V11a6 6 0 1 0-12 0v3.172a2.032 2.032 0 0 1-.595 1.423L4 17h5" />
+        <path d="M9.73 21a2 2 0 0 0 3.54 0" />
+      </svg>
+      {unreadCount > 0 && (
+        <span className="absolute -right-1 -top-1 inline-flex min-w-5 items-center justify-center rounded-full bg-cyan-400 px-1.5 py-0.5 text-[10px] font-bold leading-none text-slate-950 shadow-lg shadow-cyan-400/30">
+          {unreadCount > 9 ? "9+" : unreadCount}
+        </span>
+      )}
+    </button>
   );
 }
 
