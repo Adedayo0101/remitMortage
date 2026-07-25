@@ -71,3 +71,86 @@ jobs:
       - name: Run cargo-audit
         run: cargo audit
         working-directory: contracts
+
+  # ── Container Security Scans with Trivy ─────────────────────────────────
+  # Scans Docker images for vulnerabilities before deployment.
+  # Blocks builds if High/Critical vulnerabilities are detected.
+  trivy-backend-scan:
+    name: Trivy Container Scan - Backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Backend Docker Image
+        run: docker build -t remitmortgage-backend:${{ github.sha }} ./backend
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: remitmortgage-backend:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-backend-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-backend-results.sarif'
+
+      - name: Generate Human-Readable Report
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: remitmortgage-backend:${{ github.sha }}
+          format: 'table'
+          output: 'trivy-backend-report.txt'
+
+      - name: Upload Vulnerability Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-backend-report
+          path: trivy-backend-report.txt
+
+  trivy-frontend-scan:
+    name: Trivy Container Scan - Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Frontend Docker Image
+        run: docker build -t remitmortgage-frontend:${{ github.sha }} ./frontend
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: remitmortgage-frontend:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-frontend-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-frontend-results.sarif'
+
+      - name: Generate Human-Readable Report
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: remitmortgage-frontend:${{ github.sha }}
+          format: 'table'
+          output: 'trivy-frontend-report.txt'
+
+      - name: Upload Vulnerability Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-frontend-report
+          path: trivy-frontend-report.txt
