@@ -15,6 +15,7 @@ export interface Config {
   networkPassphrase: string;
   horizonUrl: string;
   sorobanRpcUrl: string;
+  sorobanRpcUrls: string[];
   escrowContractId: string;
   lendingPoolContractId: string;
   usdcTokenId: string;
@@ -45,6 +46,9 @@ export function loadConfig(): Config {
       process.env.HORIZON_URL || "https://horizon-testnet.stellar.org",
     sorobanRpcUrl:
       process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org",
+    sorobanRpcUrls: process.env.SOROBAN_RPC_URLS
+      ? process.env.SOROBAN_RPC_URLS.split(",").map((url) => url.trim())
+      : [process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org"],
     escrowContractId: process.env.ESCROW_CONTRACT_ID || "",
     lendingPoolContractId: process.env.LENDING_POOL_CONTRACT_ID || "",
     usdcTokenId: process.env.USDC_TOKEN_ID || "",

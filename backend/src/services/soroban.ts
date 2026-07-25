@@ -11,6 +11,8 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { loadConfig } from "../config.js";
+import { RpcFailoverManager } from "./rpcFailover.js";
+import logger from "../utils/logger.js";
 
 const config = loadConfig();
 
@@ -19,8 +21,16 @@ const networkPassphrase =
   config.stellarNetwork === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 
 /**
+ * RPC failover manager for automatic load balancing and failover across
+ * multiple Soroban RPC nodes.
+ */
+const rpcManager = new RpcFailoverManager(config.sorobanRpcUrls);
+
+/**
  * Soroban RPC server used to simulate read-only contract calls. The server
  * exposes on-chain state without requiring any account to sign or pay fees.
+ * 
+ * @deprecated Use rpcManager.execute() for automatic failover support
  */
 const server = new rpc.Server(config.sorobanRpcUrl, {
   allowHttp: config.sorobanRpcUrl.startsWith("http://"),
@@ -88,6 +98,8 @@ export class SorobanQueryError extends Error {
  * value. No keypair is required — the transaction is built against a dummy
  * source account and never submitted, so nothing is signed or charged.
  *
+ * Uses automatic RPC failover for resilience against node outages.
+ *
  * @throws SorobanQueryError when the contract id is unset, the RPC call fails,
  *   or the contract returns an error.
  */
@@ -102,25 +114,22 @@ async function simulateRead(
     );
   }
 
-  let result: rpc.Api.SimulateTransactionResponse;
-  try {
-    const contract = new Contract(contractId);
-    const source = new Account(SIMULATION_SOURCE, "0");
-    const tx = new TransactionBuilder(source, {
-      fee: BASE_FEE,
-      networkPassphrase,
-    })
-      .addOperation(contract.call(method, ...args))
-      .setTimeout(30)
-      .build();
+  const contract = new Contract(contractId);
+  const source = new Account(SIMULATION_SOURCE, "0");
+  const tx = new TransactionBuilder(source, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(30)
+    .build();
 
-    result = await server.simulateTransaction(tx);
-  } catch (error) {
-    throw new SorobanQueryError(
-      `RPC simulation failed for ${method}`,
-      error
-    );
-  }
+  const result = await rpcManager.execute(
+    async (rpcServer) => {
+      return await rpcServer.simulateTransaction(tx);
+    },
+    `simulateRead:${method}`
+  );
 
   if (rpc.Api.isSimulationError(result)) {
     throw new SorobanQueryError(
