@@ -5,6 +5,7 @@ import {
   BorrowerBalanceRepository,
 } from "./balanceStore.js";
 import { logAudit } from "./audit.js";
+import { deleteCacheByPattern } from "./redis.js";
 
 /** Soroban testnet RPC endpoint. */
 export const SOROBAN_TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
@@ -302,6 +303,11 @@ export class SorobanEventListener {
         contractId: event.contractId,
       },
     });
+
+    // Invalidate analytics cache since the underlying data changed
+    deleteCacheByPattern("analytics:*").catch((err) =>
+      this.logger.warn(`[event-listener] Failed to invalidate cache: ${err}`)
+    );
   }
 }
 
