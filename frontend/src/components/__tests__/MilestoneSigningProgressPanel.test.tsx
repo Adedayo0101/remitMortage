@@ -13,9 +13,24 @@ function makeStatus(overrides: Partial<MilestoneSigningStatus> = {}): MilestoneS
     totalWeight: 4,
     currentWeight: 1,
     signers: [
-      { address: "GLEAD00000000000000000000000000000000000000000000000", label: "Committee Lead", weight: 2, status: "pending" },
-      { address: "GLEGAL0000000000000000000000000000000000000000000000", label: "Legal Review", weight: 1, status: "approved" },
-      { address: "GFIN00000000000000000000000000000000000000000000000A", label: "Finance Board", weight: 1, status: "pending" },
+      {
+        address: "GLEAD00000000000000000000000000000000000000000000000",
+        label: "Committee Lead",
+        weight: 2,
+        status: "pending",
+      },
+      {
+        address: "GLEGAL0000000000000000000000000000000000000000000000",
+        label: "Legal Review",
+        weight: 1,
+        status: "approved",
+      },
+      {
+        address: "GFIN00000000000000000000000000000000000000000000000A",
+        label: "Finance Board",
+        weight: 1,
+        status: "pending",
+      },
     ],
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",

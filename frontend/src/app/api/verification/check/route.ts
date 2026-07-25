@@ -10,8 +10,7 @@ import {
   VerificationResult,
 } from "@/lib/verification";
 
-const HORIZON_URL =
-  process.env.NEXT_PUBLIC_HORIZON_URL ?? "https://horizon-testnet.stellar.org";
+const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL ?? "https://horizon-testnet.stellar.org";
 
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 5;
@@ -105,13 +104,13 @@ export async function POST(request: Request) {
     if (notFound) {
       return NextResponse.json(
         { error: "The sender account was not found on this Stellar network." },
-        { status: 404 },
+        { status: 404 }
       );
     }
 
     return NextResponse.json(
       { error: "Could not retrieve payment history. Please try again." },
-      { status: 502 },
+      { status: 502 }
     );
   }
 }

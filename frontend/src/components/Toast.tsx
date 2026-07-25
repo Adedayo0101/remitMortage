@@ -1,14 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import {
-  CheckCircle2,
-  Info,
-  AlertTriangle,
-  XCircle,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { CheckCircle2, Info, AlertTriangle, XCircle, X, type LucideIcon } from "lucide-react";
 import {
   useNotifications,
   type ToastNotification,
@@ -63,9 +56,7 @@ export function Toast({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
           {message ? (
-            <p className="mt-0.5 break-words text-xs text-[var(--text-secondary)]">
-              {message}
-            </p>
+            <p className="mt-0.5 break-words text-xs text-[var(--text-secondary)]">{message}</p>
           ) : null}
         </div>
         <button

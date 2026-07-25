@@ -1,26 +1,30 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Loader2, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useRef } from "react";
+import { Loader2, AlertCircle } from "lucide-react";
 
 interface IPFSMediaPlayerProps {
   cid: string;
   altText?: string;
-  fileType?: 'image' | 'video';
+  fileType?: "image" | "video";
 }
 
-const PRIMARY_GATEWAY = 'https://cloudflare-ipfs.com/ipfs/';
-const FALLBACK_GATEWAY = 'https://ipfs.io/ipfs/';
+const PRIMARY_GATEWAY = "https://cloudflare-ipfs.com/ipfs/";
+const FALLBACK_GATEWAY = "https://ipfs.io/ipfs/";
 const TIMEOUT_MS = 5000;
 
-export const IPFSMediaPlayer: React.FC<IPFSMediaPlayerProps> = ({ cid, altText = 'IPFS Media', fileType }) => {
+export const IPFSMediaPlayer: React.FC<IPFSMediaPlayerProps> = ({
+  cid,
+  altText = "IPFS Media",
+  fileType,
+}) => {
   const [gateway, setGateway] = useState<string>(PRIMARY_GATEWAY);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<boolean>(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Derive type if not passed
-  const isVideo = fileType === 'video' || cid.toLowerCase().endsWith('.mp4');
+  const isVideo = fileType === "video" || cid.toLowerCase().endsWith(".mp4");
 
   const url = `${gateway}${cid}`;
 
@@ -72,16 +76,19 @@ export const IPFSMediaPlayer: React.FC<IPFSMediaPlayerProps> = ({ cid, altText =
   return (
     <div className="relative w-full h-full min-h-[200px] flex items-center justify-center bg-zinc-900 rounded-lg overflow-hidden group">
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-zinc-900/80 z-10" data-testid="loading-indicator">
+        <div
+          className="absolute inset-0 flex items-center justify-center bg-zinc-900/80 z-10"
+          data-testid="loading-indicator"
+        >
           <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
         </div>
       )}
-      
+
       {isVideo ? (
         <video
           src={url}
           controls
-          className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${loading ? 'opacity-0' : 'opacity-100'}`}
+          className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${loading ? "opacity-0" : "opacity-100"}`}
           onCanPlay={handleLoadSuccess}
           onError={handleError}
           data-testid="ipfs-video"
@@ -90,7 +97,7 @@ export const IPFSMediaPlayer: React.FC<IPFSMediaPlayerProps> = ({ cid, altText =
         <img
           src={url}
           alt={altText}
-          className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${loading ? 'opacity-0' : 'opacity-100'}`}
+          className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${loading ? "opacity-0" : "opacity-100"}`}
           onLoad={handleLoadSuccess}
           onError={handleError}
           data-testid="ipfs-image"

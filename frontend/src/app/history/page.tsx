@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
@@ -29,7 +29,13 @@ type TxRecord = {
   to: string;
 };
 
-const CATEGORY_OPTIONS: TxCategory[] = ["All", "Deposits", "Withdrawals", "Repayments", "Disbursements"];
+const CATEGORY_OPTIONS: TxCategory[] = [
+  "All",
+  "Deposits",
+  "Withdrawals",
+  "Repayments",
+  "Disbursements",
+];
 
 const CATEGORY_STYLES: Record<string, string> = {
   Deposits: "text-emerald-400 bg-emerald-400/10",
@@ -120,11 +126,7 @@ export default function HistoryPage() {
     async (cursor?: string) => {
       if (!publicKey) return null;
       const server = new Horizon.Server(HORIZON_TESTNET);
-      let query = server
-        .payments()
-        .forAccount(publicKey)
-        .limit(PAGE_SIZE)
-        .order("desc");
+      let query = server.payments().forAccount(publicKey).limit(PAGE_SIZE).order("desc");
       if (cursor) query = (query as any).cursor(cursor);
       return query.call();
     },
@@ -175,7 +177,9 @@ export default function HistoryPage() {
     }
 
     load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [publicKey, fetchPage]);
 
   async function loadMore() {
@@ -239,7 +243,10 @@ export default function HistoryPage() {
       }),
       summary: [
         { label: "Verified transactions", value: String(filtered.length) },
-        { label: "Amount range", value: `${amountMin.toLocaleString()} - ${amountMax.toLocaleString()} USDC` },
+        {
+          label: "Amount range",
+          value: `${amountMin.toLocaleString()} - ${amountMax.toLocaleString()} USDC`,
+        },
         { label: "Category filter", value: category },
       ],
       rows: buildStatementRows(),
@@ -298,8 +305,18 @@ export default function HistoryPage() {
         {walletChecked && !publicKey && (
           <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-10 text-center">
             <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-[var(--accent-primary)]/10 flex items-center justify-center">
-              <svg className="w-6 h-6 text-[var(--accent-primary-light)]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" />
+              <svg
+                className="w-6 h-6 text-[var(--accent-primary-light)]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3"
+                />
               </svg>
             </div>
             <h2 className="text-lg font-semibold mb-2">Connect your wallet</h2>

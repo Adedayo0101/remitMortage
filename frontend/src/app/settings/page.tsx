@@ -105,7 +105,9 @@ export default function SettingsPage() {
 
   const emailError = email && !isValidEmail(email) ? "Enter a valid linked email address." : "";
   const webhookError =
-    webhookUrl && !isValidWebhookUrl(webhookUrl) ? "Webhook URL must start with http:// or https://." : "";
+    webhookUrl && !isValidWebhookUrl(webhookUrl)
+      ? "Webhook URL must start with http:// or https://."
+      : "";
   const canSave = isValidEmail(email) && isValidWebhookUrl(webhookUrl);
 
   const enabledNotificationCount = useMemo(
@@ -140,9 +142,13 @@ export default function SettingsPage() {
 
     try {
       await fetch(webhookUrl, { method: "HEAD", mode: "no-cors" });
-      setWebhookStatus("Webhook URL format is valid and the endpoint accepted a reachability check.");
+      setWebhookStatus(
+        "Webhook URL format is valid and the endpoint accepted a reachability check."
+      );
     } catch {
-      setWebhookStatus("Webhook URL format is valid, but the endpoint could not be reached from this browser.");
+      setWebhookStatus(
+        "Webhook URL format is valid, but the endpoint could not be reached from this browser."
+      );
     }
   }
 
@@ -193,16 +199,23 @@ export default function SettingsPage() {
       <section className="pt-24 pb-16 px-6">
         <div className="max-w-6xl mx-auto">
           <div className="mb-8">
-            <p className="text-sm font-semibold uppercase text-[var(--accent-secondary)]">Account control center</p>
+            <p className="text-sm font-semibold uppercase text-[var(--accent-secondary)]">
+              Account control center
+            </p>
             <h1 className="text-3xl md:text-4xl font-bold mt-2">User Settings</h1>
             <p className="text-[var(--text-secondary)] mt-3 max-w-2xl">
-              Manage profile details, verified sending wallets, notification endpoints, and contractor registration data.
+              Manage profile details, verified sending wallets, notification endpoints, and
+              contractor registration data.
             </p>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
             <aside className="glass-card p-3 h-fit">
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-1 gap-2" role="tablist" aria-label="Settings tabs">
+              <div
+                className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-1 gap-2"
+                role="tablist"
+                aria-label="Settings tabs"
+              >
                 {tabs.map((tab) => (
                   <button
                     key={tab.id}
@@ -227,7 +240,9 @@ export default function SettingsPage() {
                 <section role="tabpanel" aria-label="Profile settings" className="space-y-6">
                   <div>
                     <h2 className="text-2xl font-semibold">Profile</h2>
-                    <p className="text-[var(--text-secondary)] mt-2">Keep the borrower profile and linked email current.</p>
+                    <p className="text-[var(--text-secondary)] mt-2">
+                      Keep the borrower profile and linked email current.
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -266,19 +281,32 @@ export default function SettingsPage() {
                   <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-5">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                       <div>
-                        <p className="text-sm text-[var(--text-muted)]">Connected Stellar address</p>
-                        <p className="font-mono break-all mt-1">{stellarAddress || "No Stellar wallet connected"}</p>
+                        <p className="text-sm text-[var(--text-muted)]">
+                          Connected Stellar address
+                        </p>
+                        <p className="font-mono break-all mt-1">
+                          {stellarAddress || "No Stellar wallet connected"}
+                        </p>
                       </div>
-                      <button type="button" onClick={connectStellarWallet} className="btn-primary !py-3 !px-5">
+                      <button
+                        type="button"
+                        onClick={connectStellarWallet}
+                        className="btn-primary !py-3 !px-5"
+                      >
                         Connect Freighter
                       </button>
                     </div>
-                    {walletMessage && <p className="text-sm text-[var(--text-secondary)] mt-4">{walletMessage}</p>}
+                    {walletMessage && (
+                      <p className="text-sm text-[var(--text-secondary)] mt-4">{walletMessage}</p>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {verifiedWallets.map((wallet) => (
-                      <article key={`${wallet.chain}-${wallet.address}`} className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-5">
+                      <article
+                        key={`${wallet.chain}-${wallet.address}`}
+                        className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-5"
+                      >
                         <span className="inline-flex rounded-full bg-cyan-500/10 px-3 py-1 text-xs font-bold text-cyan-200">
                           {wallet.chain}
                         </span>
@@ -315,7 +343,9 @@ export default function SettingsPage() {
                         }`}
                       >
                         <span className="block text-sm text-[var(--text-muted)]">Email toggle</span>
-                        <span className="block text-lg font-semibold mt-1">{notificationLabels[key]}</span>
+                        <span className="block text-lg font-semibold mt-1">
+                          {notificationLabels[key]}
+                        </span>
                         <span className="block text-sm mt-3 text-[var(--text-secondary)]">
                           {notifications[key] ? "Enabled" : "Disabled"}
                         </span>
@@ -335,12 +365,20 @@ export default function SettingsPage() {
                         placeholder="https://partner.example.com/webhook"
                         className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)]"
                       />
-                      <button type="button" onClick={checkWebhookAccessibility} className="btn-outline !py-3 !px-5">
+                      <button
+                        type="button"
+                        onClick={checkWebhookAccessibility}
+                        className="btn-outline !py-3 !px-5"
+                      >
                         Check URL
                       </button>
                     </div>
                     {webhookError && <span className="text-sm text-red-300">{webhookError}</span>}
-                    {webhookStatus && <span className="block text-sm text-[var(--text-secondary)]">{webhookStatus}</span>}
+                    {webhookStatus && (
+                      <span className="block text-sm text-[var(--text-secondary)]">
+                        {webhookStatus}
+                      </span>
+                    )}
                   </label>
 
                   <p className="text-sm text-[var(--text-muted)]">
@@ -350,7 +388,11 @@ export default function SettingsPage() {
               )}
 
               {activeTab === "contractor" && (
-                <section role="tabpanel" aria-label="Developer and contractor settings" className="space-y-6">
+                <section
+                  role="tabpanel"
+                  aria-label="Developer and contractor settings"
+                  className="space-y-6"
+                >
                   <div>
                     <h2 className="text-2xl font-semibold">Developer/Contractor</h2>
                     <p className="text-[var(--text-secondary)] mt-2">
@@ -365,7 +407,9 @@ export default function SettingsPage() {
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                     <label className="space-y-2">
-                      <span className="text-sm text-[var(--text-muted)]">Registered business name</span>
+                      <span className="text-sm text-[var(--text-muted)]">
+                        Registered business name
+                      </span>
                       <input
                         value={businessName}
                         onChange={(event) => setBusinessName(event.target.value)}
@@ -393,8 +437,14 @@ export default function SettingsPage() {
               )}
 
               <div className="mt-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-t border-[var(--border-color)] pt-6">
-                <p className="text-sm text-[var(--text-secondary)]">{saveStatus || "Changes save to POST /api/user/settings."}</p>
-                <button type="submit" disabled={!canSave || isSaving} className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed">
+                <p className="text-sm text-[var(--text-secondary)]">
+                  {saveStatus || "Changes save to POST /api/user/settings."}
+                </p>
+                <button
+                  type="submit"
+                  disabled={!canSave || isSaving}
+                  className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed"
+                >
                   {isSaving ? "Saving..." : "Save Settings"}
                 </button>
               </div>

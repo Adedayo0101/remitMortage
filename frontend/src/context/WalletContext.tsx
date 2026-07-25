@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { Horizon } from "@stellar/stellar-sdk";
@@ -109,7 +109,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
     try {
       const win = getWalletWindow();
-      const freighter = (win.freighterApi ?? (await import("@stellar/freighter-api").then((module) => module as FreighterClient).catch(() => null))) as FreighterClient | null;
+      const freighter = (win.freighterApi ??
+        (await import("@stellar/freighter-api")
+          .then((module) => module as FreighterClient)
+          .catch(() => null))) as FreighterClient | null;
 
       if (!freighter) throw new Error("Freighter not available");
 
@@ -238,7 +241,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
       return null;
     } catch (err) {
-      const messageText = getErrorMessage(err, "Message signing failed or was rejected by the user");
+      const messageText = getErrorMessage(
+        err,
+        "Message signing failed or was rejected by the user"
+      );
       setError(messageText);
       return null;
     }

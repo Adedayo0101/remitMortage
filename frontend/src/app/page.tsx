@@ -11,58 +11,146 @@ const Navbar = dynamic(() => import("../components/Navbar"), { ssr: false });
 
 const STATS = [
   { value: "$2.45M+", label: "USDC Escrowed", change: "+18% this month", color: "text-cyan-400" },
-  { value: "4.5%", label: "Avg Interest Rate", change: "Fixed via Soroban", color: "text-emerald-400" },
-  { value: "480+", label: "Families Funded", change: "Across 4 countries", color: "text-indigo-400" },
+  {
+    value: "4.5%",
+    label: "Avg Interest Rate",
+    change: "Fixed via Soroban",
+    color: "text-emerald-400",
+  },
+  {
+    value: "480+",
+    label: "Families Funded",
+    change: "Across 4 countries",
+    color: "text-indigo-400",
+  },
   { value: "3.2s", label: "Horizon Finality", change: "Sub-cent fees", color: "text-purple-400" },
 ];
 
 const FEATURES = [
   {
     icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+      </svg>
     ),
     title: "Instant Settlement",
-    description: "USDC remittances settle in 3–5 seconds on Stellar. No delays, no hidden wire fees.",
+    description:
+      "USDC remittances settle in 3–5 seconds on Stellar. No delays, no hidden wire fees.",
     accent: "from-cyan-500/20 to-blue-500/20 text-cyan-400 border-cyan-500/30",
   },
   {
     icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/></svg>
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M3 3v18h18" />
+        <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3" />
+      </svg>
     ),
     title: "Objective Credit Score",
-    description: "Your verified on-chain payment history builds a transparent credit rating — zero traditional bias.",
+    description:
+      "Your verified on-chain payment history builds a transparent credit rating — zero traditional bias.",
     accent: "from-indigo-500/20 to-purple-500/20 text-indigo-400 border-indigo-500/30",
   },
   {
     icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+      </svg>
     ),
     title: "Non-Custodial Safety",
-    description: "We never hold your private keys. All transactions are authorized via your own Freighter wallet.",
+    description:
+      "We never hold your private keys. All transactions are authorized via your own Freighter wallet.",
     accent: "from-emerald-500/20 to-teal-500/20 text-emerald-400 border-emerald-500/30",
   },
   {
     icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/></svg>
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M3 21h18" />
+        <path d="M5 21V7l7-4 7 4v14" />
+        <path d="M9 21v-6h6v6" />
+      </svg>
     ),
     title: "Soroban Smart Contracts",
-    description: "Audited Soroban contracts hold your escrow down-payment and automate tranche disbursements.",
+    description:
+      "Audited Soroban contracts hold your escrow down-payment and automate tranche disbursements.",
     accent: "from-purple-500/20 to-pink-500/20 text-purple-400 border-purple-500/30",
   },
   {
     icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <path d="M2 12h20" />
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+      </svg>
     ),
     title: "Global Diaspora Focus",
-    description: "Remit from anywhere worldwide. Finance family homes in Nigeria, Ghana, Kenya, and beyond.",
+    description:
+      "Remit from anywhere worldwide. Finance family homes in Nigeria, Ghana, Kenya, and beyond.",
     accent: "from-amber-500/20 to-orange-500/20 text-amber-400 border-amber-500/30",
   },
   {
     icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </svg>
     ),
     title: "IPFS Photo Evidence",
-    description: "Contractor progress payouts are protected by multisig votes and IPFS photo evidence.",
+    description:
+      "Contractor progress payouts are protected by multisig votes and IPFS photo evidence.",
     accent: "from-cyan-500/20 to-emerald-500/20 text-cyan-400 border-cyan-500/30",
   },
 ];
@@ -90,19 +178,22 @@ const STEPS = [
 
 const TESTIMONIALS = [
   {
-    quote: "Been using RemitMortgage since January. My regular USDC transfers to family now build my credit score on Stellar. Truly revolutionary diaspora financing.",
+    quote:
+      "Been using RemitMortgage since January. My regular USDC transfers to family now build my credit score on Stellar. Truly revolutionary diaspora financing.",
     name: "Ayinde O.",
     role: "Diaspora Professional (UK -> Nigeria)",
     initials: "AO",
   },
   {
-    quote: "Smooth, fast, and transparent! I never thought my remittance history could help me secure a mortgage for my parents in Lagos.",
+    quote:
+      "Smooth, fast, and transparent! I never thought my remittance history could help me secure a mortgage for my parents in Lagos.",
     name: "Farida K.",
     role: "Software Engineer (US -> Nigeria)",
     initials: "FK",
   },
   {
-    quote: "RemitMortgage solves the exact barrier diaspora Africans face: lack of local credit history. The Soroban escrow yield is a huge bonus.",
+    quote:
+      "RemitMortgage solves the exact barrier diaspora Africans face: lack of local credit history. The Soroban escrow yield is a huge bonus.",
     name: "Luisa M.",
     role: "Healthcare Specialist (Canada -> Ghana)",
     initials: "LM",
@@ -135,7 +226,15 @@ function FAQItem({ q, a }: { q: string; a: string }) {
       <button className="faq-trigger" onClick={() => setOpen(!open)} type="button">
         <span>{q}</span>
         <span className="faq-trigger-icon">
-          <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          >
             <path d="M6 1v10M1 6h10" />
           </svg>
         </span>
@@ -163,12 +262,15 @@ export default function LandingPage() {
           </div>
 
           <h1 className="hero__title">
-            Convert Your Remittances<br />
+            Convert Your Remittances
+            <br />
             Into A <span className="hero__highlight">Home Mortgage</span>
           </h1>
 
           <p className="hero__subtitle">
-            Stop letting cross-border payments go uncredited. Prove your financial capacity on-chain, accumulate your 30% down payment in Soroban escrow, and unlock low-interest property loans.
+            Stop letting cross-border payments go uncredited. Prove your financial capacity
+            on-chain, accumulate your 30% down payment in Soroban escrow, and unlock low-interest
+            property loans.
           </p>
 
           <div className="hero__actions">
@@ -180,19 +282,48 @@ export default function LandingPage() {
               className="btn-cta"
             >
               Start Onboarding
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M5 12h14" />
+                <path d="m12 5 7 7-7 7" />
+              </svg>
             </button>
             <a href="/verify" className="btn-outline-blue">
               Verify Remittance Wallet
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M5 12h14" />
+                <path d="m12 5 7 7-7 7" />
+              </svg>
             </a>
           </div>
 
           {/* Stats Bar */}
           <div className="mt-16 grid grid-cols-2 md:grid-cols-4 gap-4 max-w-5xl mx-auto">
             {STATS.map((s) => (
-              <div key={s.label} className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800/80 backdrop-blur-xl text-left hover:border-cyan-500/30 transition-all">
-                <div className={`text-2xl md:text-3xl font-extrabold ${s.color} font-mono tracking-tight`}>
+              <div
+                key={s.label}
+                className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800/80 backdrop-blur-xl text-left hover:border-cyan-500/30 transition-all"
+              >
+                <div
+                  className={`text-2xl md:text-3xl font-extrabold ${s.color} font-mono tracking-tight`}
+                >
                   {s.value}
                 </div>
                 <div className="text-xs font-semibold text-slate-200 mt-1">{s.label}</div>
@@ -208,13 +339,20 @@ export default function LandingPage() {
         <div className="section__inner">
           <div className="section__header">
             <h2 className="section__title">Built for the Global Diaspora</h2>
-            <p className="section__subtitle">Direct, non-custodial property financing backed by transparent Stellar payment rails.</p>
+            <p className="section__subtitle">
+              Direct, non-custodial property financing backed by transparent Stellar payment rails.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {FEATURES.map((f) => (
-              <div key={f.title} className="p-6 rounded-2xl bg-slate-900/70 border border-slate-800/80 backdrop-blur-xl hover:border-cyan-500/40 hover:-translate-y-1 transition-all group">
-                <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${f.accent} border flex items-center justify-center mb-5 group-hover:scale-110 transition-transform`}>
+              <div
+                key={f.title}
+                className="p-6 rounded-2xl bg-slate-900/70 border border-slate-800/80 backdrop-blur-xl hover:border-cyan-500/40 hover:-translate-y-1 transition-all group"
+              >
+                <div
+                  className={`w-12 h-12 rounded-xl bg-gradient-to-br ${f.accent} border flex items-center justify-center mb-5 group-hover:scale-110 transition-transform`}
+                >
                   {f.icon}
                 </div>
                 <h3 className="text-lg font-bold text-white mb-2">{f.title}</h3>
@@ -230,17 +368,24 @@ export default function LandingPage() {
         <div className="section__inner">
           <div className="section__header">
             <h2 className="section__title">How The Protocol Works</h2>
-            <p className="section__subtitle">Three automated phases that turn historical payments into property ownership.</p>
+            <p className="section__subtitle">
+              Three automated phases that turn historical payments into property ownership.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {STEPS.map((s) => (
-              <div key={s.num} className="p-8 rounded-2xl bg-slate-900/80 border border-slate-800/80 relative overflow-hidden flex flex-col justify-between hover:border-indigo-500/40 transition-all">
+              <div
+                key={s.num}
+                className="p-8 rounded-2xl bg-slate-900/80 border border-slate-800/80 relative overflow-hidden flex flex-col justify-between hover:border-indigo-500/40 transition-all"
+              >
                 <div className="absolute top-0 right-0 px-4 py-1.5 bg-indigo-500/10 border-l border-b border-indigo-500/20 text-[11px] font-semibold text-indigo-400 rounded-bl-xl font-mono">
                   {s.badge}
                 </div>
                 <div>
-                  <div className="text-4xl font-extrabold text-cyan-400/40 mb-4 font-mono">{s.num}</div>
+                  <div className="text-4xl font-extrabold text-cyan-400/40 mb-4 font-mono">
+                    {s.num}
+                  </div>
                   <h3 className="text-xl font-bold text-white mb-3">{s.title}</h3>
                   <p className="text-xs text-slate-400 leading-relaxed">{s.desc}</p>
                 </div>
@@ -255,7 +400,9 @@ export default function LandingPage() {
         <div className="section__inner">
           <div className="section__header">
             <h2 className="section__title">
-              {activeTab === "calculator" ? "Credit Reputation Calculator" : "Borrower Onboarding Wizard"}
+              {activeTab === "calculator"
+                ? "Credit Reputation Calculator"
+                : "Borrower Onboarding Wizard"}
             </h2>
             <p className="section__subtitle">
               {activeTab === "calculator"
@@ -303,12 +450,17 @@ export default function LandingPage() {
         <div className="section__inner">
           <div className="section__header">
             <h2 className="section__title">Trusted by Diaspora Communities</h2>
-            <p className="section__subtitle">Hear from professionals using RemitMortgage to build homes across Africa.</p>
+            <p className="section__subtitle">
+              Hear from professionals using RemitMortgage to build homes across Africa.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {TESTIMONIALS.map((t) => (
-              <div key={t.name} className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex flex-col justify-between">
+              <div
+                key={t.name}
+                className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex flex-col justify-between"
+              >
                 <p className="text-xs text-slate-300 leading-relaxed italic mb-6">"{t.quote}"</p>
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-400 to-indigo-600 flex items-center justify-center font-bold text-slate-950 text-xs shadow-md">
@@ -330,7 +482,9 @@ export default function LandingPage() {
         <div className="section__inner section__inner--narrow">
           <div className="section__header">
             <h2 className="section__title">Frequently Asked Questions</h2>
-            <p className="section__subtitle">Everything you need to know about remittance verification and Soroban escrow.</p>
+            <p className="section__subtitle">
+              Everything you need to know about remittance verification and Soroban escrow.
+            </p>
           </div>
           <div className="faq-list">
             {FAQ_ITEMS.map((item) => (

@@ -49,9 +49,13 @@ export default function CreditScoreSimulator() {
       const durationScore = Math.min(20, (month / 12) * 20);
       const volumeScore = Math.min(
         15,
-        (monthlyPayment * month) >= 5000 ? 15 :
-        (monthlyPayment * month) >= 2000 ? 10 :
-        (monthlyPayment * month) >= 500 ? 5 : 0
+        monthlyPayment * month >= 5000
+          ? 15
+          : monthlyPayment * month >= 2000
+            ? 10
+            : monthlyPayment * month >= 500
+              ? 5
+              : 0
       );
 
       const totalScore = Math.min(
@@ -106,9 +110,7 @@ export default function CreditScoreSimulator() {
   return (
     <div className="p-8 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl backdrop-blur-xl">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-white mb-2">
-          Credit Score Simulator
-        </h2>
+        <h2 className="text-2xl font-bold text-white mb-2">Credit Score Simulator</h2>
         <p className="text-slate-400 text-sm">
           Adjust your remittance parameters to see how consistent payments build credit over time
         </p>
@@ -177,10 +179,7 @@ export default function CreditScoreSimulator() {
       {/* Credit Score Graph */}
       <div className="mb-6 p-6 bg-slate-950/60 border border-slate-800 rounded-xl">
         <ResponsiveContainer width="100%" height={300}>
-          <AreaChart
-            data={simulationData}
-            margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
-          >
+          <AreaChart data={simulationData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="scoreGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
@@ -203,9 +202,24 @@ export default function CreditScoreSimulator() {
             <Tooltip content={<CustomTooltip />} />
 
             {/* Tier boundary lines */}
-            <ReferenceLine y={80} stroke={TIER_THRESHOLDS.Excellent.color} strokeDasharray="3 3" label={{ value: "Excellent", fill: TIER_THRESHOLDS.Excellent.color, fontSize: 10 }} />
-            <ReferenceLine y={60} stroke={TIER_THRESHOLDS.Good.color} strokeDasharray="3 3" label={{ value: "Good", fill: TIER_THRESHOLDS.Good.color, fontSize: 10 }} />
-            <ReferenceLine y={40} stroke={TIER_THRESHOLDS.Fair.color} strokeDasharray="3 3" label={{ value: "Fair", fill: TIER_THRESHOLDS.Fair.color, fontSize: 10 }} />
+            <ReferenceLine
+              y={80}
+              stroke={TIER_THRESHOLDS.Excellent.color}
+              strokeDasharray="3 3"
+              label={{ value: "Excellent", fill: TIER_THRESHOLDS.Excellent.color, fontSize: 10 }}
+            />
+            <ReferenceLine
+              y={60}
+              stroke={TIER_THRESHOLDS.Good.color}
+              strokeDasharray="3 3"
+              label={{ value: "Good", fill: TIER_THRESHOLDS.Good.color, fontSize: 10 }}
+            />
+            <ReferenceLine
+              y={40}
+              stroke={TIER_THRESHOLDS.Fair.color}
+              strokeDasharray="3 3"
+              label={{ value: "Fair", fill: TIER_THRESHOLDS.Fair.color, fontSize: 10 }}
+            />
 
             <Area
               type="monotone"
@@ -227,9 +241,7 @@ export default function CreditScoreSimulator() {
             borderColor: `${TIER_THRESHOLDS[currentScore.tier].color}30`,
           }}
         >
-          <p className="text-slate-400 text-xs font-semibold uppercase mb-1">
-            Projected Score
-          </p>
+          <p className="text-slate-400 text-xs font-semibold uppercase mb-1">Projected Score</p>
           <p className="text-white text-3xl font-extrabold">{currentScore.score}</p>
           <p
             className="text-sm font-semibold mt-1"
@@ -240,19 +252,13 @@ export default function CreditScoreSimulator() {
         </div>
 
         <div className="p-5 rounded-xl bg-slate-950/60 border border-slate-800">
-          <p className="text-slate-400 text-xs font-semibold uppercase mb-1">
-            Interest Rate
-          </p>
-          <p className="text-white text-3xl font-extrabold">
-            {currentScore.interestRate}%
-          </p>
+          <p className="text-slate-400 text-xs font-semibold uppercase mb-1">Interest Rate</p>
+          <p className="text-white text-3xl font-extrabold">{currentScore.interestRate}%</p>
           <p className="text-slate-400 text-sm mt-1">APR</p>
         </div>
 
         <div className="p-5 rounded-xl bg-slate-950/60 border border-slate-800">
-          <p className="text-slate-400 text-xs font-semibold uppercase mb-1">
-            Total Paid
-          </p>
+          <p className="text-slate-400 text-xs font-semibold uppercase mb-1">Total Paid</p>
           <p className="text-white text-3xl font-extrabold">
             ${(monthlyPayment * duration).toLocaleString()}
           </p>
@@ -266,10 +272,7 @@ export default function CreditScoreSimulator() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {Object.entries(TIER_THRESHOLDS).map(([tier, config]) => (
             <div key={tier} className="flex items-center gap-2">
-              <div
-                className="w-3 h-3 rounded-full"
-                style={{ backgroundColor: config.color }}
-              />
+              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: config.color }} />
               <div>
                 <p className="text-white text-xs font-semibold">{tier}</p>
                 <p className="text-slate-400 text-[10px]">

@@ -112,7 +112,9 @@ export async function signAndSubmit(txXdr: string): Promise<string> {
   return sendResponse.hash;
 }
 
-export async function queryEscrowConfig(publicKey: string): Promise<{ earlyWithdrawalPenaltyBps: number; savingsTarget: string }> {
+export async function queryEscrowConfig(
+  publicKey: string
+): Promise<{ earlyWithdrawalPenaltyBps: number; savingsTarget: string }> {
   const server = getRpcServer();
   const source = await server.getAccount(publicKey);
   const contract = new Contract(escrowContractId());
@@ -138,6 +140,6 @@ export async function queryEscrowConfig(publicKey: string): Promise<{ earlyWithd
   const val = result.retval;
   return {
     earlyWithdrawalPenaltyBps: Number(val._attributes.early_withdrawal_penalty_bps) || 500,
-    savingsTarget: (val._attributes.savings_target?.toString() || "0"),
+    savingsTarget: val._attributes.savings_target?.toString() || "0",
   };
 }

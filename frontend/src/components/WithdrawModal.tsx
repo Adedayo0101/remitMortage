@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import React, { useEffect, useState } from "react";
 import { toast } from "react-hot-toast";
@@ -31,7 +31,8 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
 
   const depositNum = parseFloat(deposited) || 0;
   const penaltyPct = penaltyBps !== null ? penaltyBps / 100 : null;
-  const penaltyAmount = penaltyPct !== null && penaltyPct !== null ? (depositNum * penaltyPct) / 100 : null;
+  const penaltyAmount =
+    penaltyPct !== null && penaltyPct !== null ? (depositNum * penaltyPct) / 100 : null;
   const refundAmount = penaltyAmount !== null ? depositNum - penaltyAmount : null;
 
   function resetTransactionState() {
@@ -79,13 +80,7 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
       setTxError(txMonitor.pollError);
       setTxPhase("error");
     }
-  }, [
-    txHash,
-    txMonitor.contractError,
-    txMonitor.phase,
-    txMonitor.pollError,
-    txPhase,
-  ]);
+  }, [txHash, txMonitor.contractError, txMonitor.phase, txMonitor.pollError, txPhase]);
 
   if (!isOpen) return null;
 
@@ -125,7 +120,10 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
       <div className="relative w-full max-w-md bg-[var(--bg-card)] border border-[var(--border-color)] shadow-2xl rounded-2xl overflow-hidden">
         <div className="flex items-center justify-between p-5 border-b border-[var(--border-color)]">
           <h2 className="text-lg font-bold text-[var(--text-primary)]">Early Withdrawal</h2>
-          <button onClick={onClose} className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors">
+          <button
+            onClick={onClose}
+            className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -134,31 +132,43 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
           {loadingConfig ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-[var(--accent-primary)]" />
-              <span className="ml-3 text-sm text-[var(--text-secondary)]">Loading contract config...</span>
+              <span className="ml-3 text-sm text-[var(--text-secondary)]">
+                Loading contract config...
+              </span>
             </div>
           ) : (
             <>
               <div className="space-y-3 p-4 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-color)]">
                 <div className="flex justify-between text-sm">
                   <span className="text-[var(--text-secondary)]">Deposited amount</span>
-                  <span className="text-[var(--text-primary)] font-mono">{depositNum.toLocaleString()} USDC</span>
+                  <span className="text-[var(--text-primary)] font-mono">
+                    {depositNum.toLocaleString()} USDC
+                  </span>
                 </div>
                 {penaltyPct !== null && (
                   <div className="flex justify-between text-sm">
                     <span className="text-[var(--text-secondary)]">Early exit penalty</span>
-                    <span className="text-[var(--warning)] font-mono">{penaltyPct}% ({penaltyBps} bps)</span>
+                    <span className="text-[var(--warning)] font-mono">
+                      {penaltyPct}% ({penaltyBps} bps)
+                    </span>
                   </div>
                 )}
                 {penaltyAmount !== null && (
                   <div className="flex justify-between text-sm">
                     <span className="text-[var(--text-secondary)]">Penalty amount</span>
-                    <span className="text-[var(--error)] font-mono">-{penaltyAmount.toLocaleString()} USDC</span>
+                    <span className="text-[var(--error)] font-mono">
+                      -{penaltyAmount.toLocaleString()} USDC
+                    </span>
                   </div>
                 )}
                 {refundAmount !== null && (
                   <div className="flex justify-between text-sm pt-2 border-t border-[var(--border-color)]">
-                    <span className="text-[var(--text-secondary)] font-semibold">Estimated refund</span>
-                    <span className="text-[var(--success)] font-mono font-bold">{refundAmount.toLocaleString()} USDC</span>
+                    <span className="text-[var(--text-secondary)] font-semibold">
+                      Estimated refund
+                    </span>
+                    <span className="text-[var(--success)] font-mono font-bold">
+                      {refundAmount.toLocaleString()} USDC
+                    </span>
                   </div>
                 )}
               </div>
@@ -167,7 +177,9 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
                 <div className="flex items-start gap-3">
                   <AlertTriangle className="w-5 h-5 text-[var(--warning)] shrink-0 mt-0.5" />
                   <div className="text-sm text-[var(--text-secondary)]">
-                    Early withdrawal applies a penalty of <strong className="text-[var(--text-primary)]">{penaltyPct}%</strong> of your deposited amount. This action cannot be undone.
+                    Early withdrawal applies a penalty of{" "}
+                    <strong className="text-[var(--text-primary)]">{penaltyPct}%</strong> of your
+                    deposited amount. This action cannot be undone.
                   </div>
                 </div>
               </div>
