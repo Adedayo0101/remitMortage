@@ -50,13 +50,7 @@ enum VerificationStatus {
   INELIGIBLE
 }
 
-enum LoanStatus {
-  PENDING
-  APPROVED
-  ACTIVE
-  REPAID
-  DEFAULTED
-}
+
 
 model Applicant {
   id                 String             @id @default(uuid())
@@ -91,7 +85,7 @@ model LoanApplication {
   escrowContractId   String?
   loanId             String?
   principal          Float
-  status             LoanStatus @default(PENDING)
+  status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 
   // New fields for repayment tracking
@@ -131,4 +125,14 @@ model BorrowerCredential {
 
   @@index([applicantId])
   @@index([did])
+}
+
+model WebhookDLQ {
+  id              String   @id @default(uuid())
+  url             String
+  payload         Json
+  statusCode      Int?
+  responsePayload String?
+  error           String?
+  createdAt       DateTime @default(now())
 }
