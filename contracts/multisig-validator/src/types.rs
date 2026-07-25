@@ -22,10 +22,45 @@ pub struct MultisigConfig {
     pub threshold: u32,
 }
 
+/// Timelock configuration for an account.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelockConfig {
+    /// Delay in seconds that must elapse after threshold is met.
+    pub delay_seconds: u64,
+}
+
+/// State of a timelocked action proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProposalState {
+    /// Submitted but has not yet reached the approval threshold.
+    Pending,
+    /// Threshold met; waiting for the timelock delay to elapse.
+    Locked,
+    /// Successfully executed.
+    Executed,
+}
+
+/// A timelocked action proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Proposal {
+    pub state: ProposalState,
+    /// Ledger timestamp when threshold was met (0 if still Pending).
+    pub ready_at: u64,
+    /// Ledger timestamp when the proposal was first submitted.
+    pub created_at: u64,
+}
+
 /// Storage keys.
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     /// Per-account multisig configuration, keyed by the account address.
     Config(Address),
+    /// Per-account timelock configuration.
+    TimelockConfig(Address),
+    /// A timelocked action proposal, keyed by proposal ID (32-byte hash).
+    ActionProposal(BytesN<32>),
 }
