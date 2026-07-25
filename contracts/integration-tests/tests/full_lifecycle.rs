@@ -246,3 +246,55 @@ fn over_repayment_fails() {
     let result = p.pool.try_repay(&borrower, &loan_id, &(50_000 * USDC));
     assert_eq!(result.unwrap_err(), Ok(PoolError::OverPayment));
 }
+
+#[test]
+fn unauthenticated_escrow_deposit_reverts() {
+    let env = Env::default();
+    // Do NOT mock_all_auths to test strict require_auth enforcement.
+
+    let p = deploy_protocol(&env);
+    let borrower = Address::generate(&env);
+    let goal = Symbol::new(&env, "home_2026");
+
+    let result = p.escrow.try_deposit(&borrower, &goal, &(10_000 * USDC));
+    assert!(result.is_err());
+}
+
+#[test]
+fn unauthenticated_escrow_withdraw_reverts() {
+    let env = Env::default();
+    // Do NOT mock_all_auths to test strict require_auth enforcement.
+
+    let p = deploy_protocol(&env);
+    let borrower = Address::generate(&env);
+    let goal = Symbol::new(&env, "home_2026");
+
+    let result = p.escrow.try_withdraw(&borrower, &goal);
+    assert!(result.is_err());
+}
+
+#[test]
+fn unauthenticated_lending_pool_request_loan_reverts() {
+    let env = Env::default();
+    // Do NOT mock_all_auths to test strict require_auth enforcement.
+
+    let p = deploy_protocol(&env);
+    let borrower = Address::generate(&env);
+    let loan_id = BytesN::from_array(&env, &[9u8; 32]);
+
+    let result = p.pool.try_request_loan(&borrower, &loan_id, &(70_000 * USDC));
+    assert!(result.is_err());
+}
+
+#[test]
+fn unauthenticated_lending_pool_repay_reverts() {
+    let env = Env::default();
+    // Do NOT mock_all_auths to test strict require_auth enforcement.
+
+    let p = deploy_protocol(&env);
+    let borrower = Address::generate(&env);
+    let loan_id = BytesN::from_array(&env, &[9u8; 32]);
+
+    let result = p.pool.try_repay(&borrower, &loan_id, &(10_000 * USDC));
+    assert!(result.is_err());
+}
