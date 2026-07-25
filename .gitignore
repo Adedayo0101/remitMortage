@@ -38,3 +38,6 @@ target/
 # Misc
 *.pem
 fix.md
+
+# Private KYC document storage (envelope-encrypted at rest, never committed)
+backend/storage/kyc-private/
