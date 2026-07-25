@@ -69,6 +69,24 @@ model Applicant {
   updatedAt          DateTime           @updatedAt
   verificationResults VerificationResult[]
   loanApplications    LoanApplication[]
+  notificationPreference NotificationPreference?
+}
+
+model NotificationPreference {
+  id                  String    @id @default(uuid())
+  applicantId         String    @unique
+  applicant           Applicant @relation(fields: [applicantId], references: [id])
+  email               String?
+  phone               String?
+  emailAlerts         Boolean   @default(true)
+  smsAlerts           Boolean   @default(false)
+  escrowApproaching   Boolean   @default(true)
+  escrowReached       Boolean   @default(true)
+  paymentMissed       Boolean   @default(true)
+  loanMilestones      Boolean   @default(true)
+  webhookUrl          String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 }
 
 model VerificationResult {

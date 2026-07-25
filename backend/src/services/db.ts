@@ -60,6 +60,7 @@ export async function getApplicant(stellarAddress: string) {
     include: {
       verificationResults: { orderBy: { analyzedAt: "desc" }, take: 1 },
       loanApplications: { orderBy: { createdAt: "desc" }, take: 1 },
+      notificationPreference: true,
     },
   });
   return decryptApplicant(applicant);
@@ -88,3 +89,82 @@ export async function createLoanApplication(data: {
 }) {
   return prisma.loanApplication.create({ data });
 }
+
+// ── NotificationPreference ─────────────────────────────────────────────────
+
+export type NotificationPreferenceData = {
+  email?: string;
+  phone?: string;
+  emailAlerts?: boolean;
+  smsAlerts?: boolean;
+  escrowApproaching?: boolean;
+  escrowReached?: boolean;
+  paymentMissed?: boolean;
+  loanMilestones?: boolean;
+  webhookUrl?: string;
+};
+
+export async function getNotificationPreference(stellarAddressOrId: string) {
+  // First try finding applicant by stellarAddress or id
+  let applicant = await prisma.applicant.findFirst({
+    where: {
+      OR: [
+        { stellarAddress: stellarAddressOrId },
+        { id: stellarAddressOrId },
+      ],
+    },
+    include: { notificationPreference: true },
+  });
+
+  if (!applicant) {
+    // Auto-create applicant if address matches Stellar public key pattern
+    if (stellarAddressOrId.startsWith("G") && stellarAddressOrId.length === 56) {
+      applicant = await prisma.applicant.create({
+        data: { stellarAddress: stellarAddressOrId },
+        include: { notificationPreference: true },
+      });
+    } else {
+      return null;
+    }
+  }
+
+  return applicant.notificationPreference;
+}
+
+export async function upsertNotificationPreference(
+  stellarAddressOrId: string,
+  data: NotificationPreferenceData
+) {
+  let applicant = await prisma.applicant.findFirst({
+    where: {
+      OR: [
+        { stellarAddress: stellarAddressOrId },
+        { id: stellarAddressOrId },
+      ],
+    },
+  });
+
+  if (!applicant) {
+    const stellarAddress =
+      stellarAddressOrId.startsWith("G") && stellarAddressOrId.length === 56
+        ? stellarAddressOrId
+        : `G_${stellarAddressOrId.slice(0, 50)}`;
+
+    applicant = await prisma.applicant.create({
+      data: { stellarAddress },
+    });
+  }
+
+  return prisma.notificationPreference.upsert({
+    where: { applicantId: applicant.id },
+    update: {
+      ...data,
+      updatedAt: new Date(),
+    },
+    create: {
+      applicantId: applicant.id,
+      ...data,
+    },
+  });
+}
+

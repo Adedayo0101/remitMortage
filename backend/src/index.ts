@@ -15,6 +15,7 @@ import { milestoneRouter } from "./routes/milestone.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
+import { notificationsRouter } from "./routes/notifications.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { authMiddleware } from "./middleware/auth.js";
@@ -75,6 +76,7 @@ app.use("/api/audit-logs", auditRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
+app.use("/api/notifications", notificationsRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
