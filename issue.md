@@ -74,13 +74,128 @@ This document tracks the issues that have been completed and implemented.
 
 ---
 
+### #257 - Dynamic Interest Rate Formulas (PARTIAL - Registry Side Complete) ✓
+
+**Rationale:** Decouple static interest rate logic from contracts by querying the Verification Registry dynamically.
+
+**Implementation:**
+- Added `RateConfig` struct to verification registry types with 4 tier rates
+- Implemented `set_rate_config()` admin function for updating rates globally
+- Implemented `get_rate_config()` getter with sensible defaults
+- Implemented `get_borrower_rate()` to resolve rates dynamically based on credit score
+
+**Remaining Work:**
+- Update `resolve_borrower_interest_rate()` in lending-pool to call `registry.get_borrower_rate()`
+- Add unit tests verifying rate changes affect new loans but not existing ones
+
+**Files Modified:**
+- `contracts/verification-registry/src/types.rs` - Added RateConfig struct
+- `contracts/verification-registry/src/lib.rs` - Added rate management functions
+
+---
+
+### #261 - Automated Database Backup and Recovery ✓
+
+**Rationale:** Ensure high availability and disaster recovery compliance with automated PostgreSQL backups.
+
+**Implementation:**
+- Created `DatabaseBackupService` class with encryption and cloud upload
+- Supports both AWS S3 and Google Cloud Storage providers  
+- AES-256-CBC encryption before upload for security
+- Automated daily cron scheduler (default 2:00 AM UTC)
+- Recovery script with decryption and pg_restore
+- Comprehensive logging with Winston structured format
+- Environment-based configuration
+
+**Features:**
+- ✓ Daily automated backups via cron
+- ✓ Pre-upload encryption with AES-256
+- ✓ AWS S3 and GCS support
+- ✓ Recovery workflow with pg_restore
+- ✓ Structured logging of backup operations
+- ✓ Configurable schedule via BACKUP_CRON_SCHEDULE
+
+**Files Created:**
+- `backend/src/services/databaseBackup.ts` - Backup service implementation
+- `backend/src/jobs/backupScheduler.ts` - Cron scheduler
+
+**Files Modified:**
+- `backend/src/index.ts` - Initialize backup scheduler
+- `backend/package.json` - Added AWS SDK and GCS dependencies
+- `backend/.env.example` - Added backup configuration variables
+
+---
+
+## ⚠️ Incomplete Issues (Requires Rust Contract Development)
+
+### #256 - Yield Distribution Clawback for Defaulters
+
+**Status:** Not Started
+
+**Required Implementation:**
+1. Add `clawback_defaulter_balance(borrower: Address)` to lending pool contract
+2. Call escrow contract to transfer locked funds back to pool
+3. Distribute recovered funds across tranches based on loss waterfall
+4. Add admin-only authorization check via multisig
+5. Update tranche balances in instance storage
+6. Write comprehensive tests for partial/full recovery scenarios
+
+**Complexity:** High - requires cross-contract calls and tranche rebalancing logic
+
+---
+
+### #258 - Multi-Stablecoin Support (USDC, EURC)
+
+**Status:** Not Started
+
+**Required Implementation:**
+1. Refactor token client initialization to accept dynamic SAC addresses
+2. Add `token_address` field to PoolConfig struct
+3. Store asset-specific metadata per currency
+4. Update all token operations (deposit, withdraw, repay) to use configured token
+5. Add integration tests for both USDC and EURC flows
+
+**Design Decision Needed:** Architecture for multi-currency support (separate pools vs unified vault)
+
+**Complexity:** High - affects core contract logic and requires extensive testing
+
+---
+
+## Implementation Notes
+
+**Contracts Work (#256, #258):**
+The Soroban smart contract modifications require:
+- Rust development environment with stellar-sdk
+- Contract testing infrastructure
+- Soroban CLI for deployment
+- Testnet testing before mainnet deployment
+
+These are complex blockchain features that require careful design, implementation, and auditing.
+
+**Backend Work (#261) - COMPLETE:**
+The database backup feature is production-ready and can be deployed immediately with proper environment configuration.
+
+---
+
 ## Branch Information
 
 All features have been implemented on branch: `feat/multi-issue-fixes`
 
 ## Testing Status
 
+**Infrastructure & Backend:**
 - ✓ Backend RPC failover tested with multiple nodes
-- ✓ Onboarding autosave tested across page reloads
 - ✓ Structured logging verified in JSON format
+- ✓ Database backup with AWS S3 (manual testing)
+- ✓ Encryption/decryption workflow verified
+- ✓ Winston structured logging validated
+
+**Frontend:**
+- ✓ Onboarding autosave tested across page reloads
 - ✓ Credit score simulator tested with various parameter combinations
+
+**Smart Contracts:**
+- ✓ RateConfig storage and retrieval
+- ⏳ Pending: Lending pool integration tests for #257
+- ⏳ Pending: Integration tests for #256 clawback scenarios
+- ⏳ Pending: Multi-currency flow tests for #258

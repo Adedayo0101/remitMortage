@@ -20,6 +20,7 @@ import { authMiddleware } from "./middleware/auth.js";
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
+import { startBackupScheduler } from "./jobs/backupScheduler.js";
 import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
 import { initializeRedis } from "./services/redis.js";
@@ -78,7 +79,10 @@ app.use(errorHandler);
 
 // ── Start Server ────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 RemitMortgage API running on http://localhost:${PORT}`);
+  logger.info("RemitMortgage API server started", {
+    port: PORT,
+    environment: process.env.NODE_ENV || "development",
+  });
 
   // Start the Soroban contract event listener alongside the HTTP server. It
   // runs in the background and self-heals via exponential backoff, so a failing
@@ -86,6 +90,7 @@ app.listen(PORT, () => {
   startEventListener();
   startNotificationScheduler();
   startScheduler();
+  startBackupScheduler();
 });
 
 export default app;

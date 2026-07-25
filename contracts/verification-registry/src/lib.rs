@@ -4,7 +4,7 @@ mod errors;
 mod types;
 
 use crate::errors::RegistryError;
-use crate::types::{DataKey, VerificationRecord};
+use crate::types::{DataKey, RateConfig, VerificationRecord};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env};
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
@@ -196,6 +196,74 @@ impl VerificationRegistryContract {
     /// Returns the contract version.
     pub fn version(_env: Env) -> u32 {
         1
+    }
+
+    /// Set dynamic interest rate configuration.
+    ///
+    /// Admin-only. Updates the global interest rate tiers that lending pools
+    /// query when resolving borrower interest rates. Allows the protocol to
+    /// adapt to macroeconomic conditions without redeploying contracts.
+    pub fn set_rate_config(
+        env: Env,
+        rate_excellent_bps: u32,
+        rate_good_bps: u32,
+        rate_fair_bps: u32,
+        rate_fallback_bps: u32,
+    ) -> Result<(), RegistryError> {
+        let admin = Self::read_admin(&env)?;
+        admin.require_auth();
+
+        let config = RateConfig {
+            rate_excellent_bps,
+            rate_good_bps,
+            rate_fair_bps,
+            rate_fallback_bps,
+        };
+
+        env.storage().instance().set(&DataKey::RateConfig, &config);
+        Self::bump_instance(&env);
+
+        Ok(())
+    }
+
+    /// Get the current dynamic interest rate configuration.
+    ///
+    /// Returns the rate config if set, or defaults if not yet configured.
+    pub fn get_rate_config(env: Env) -> RateConfig {
+        env.storage()
+            .instance()
+            .get(&DataKey::RateConfig)
+            .unwrap_or(RateConfig {
+                rate_excellent_bps: 400,  // 4% APR
+                rate_good_bps: 600,        // 6% APR
+                rate_fair_bps: 800,        // 8% APR
+                rate_fallback_bps: 1200,   // 12% APR
+            })
+    }
+
+    /// Resolve the interest rate for a borrower based on their credit score.
+    ///
+    /// Uses the current rate configuration and the borrower's verification
+    /// record. Returns the fallback rate if no valid verification exists.
+    pub fn get_borrower_rate(env: Env, borrower: Address) -> u32 {
+        let config = Self::get_rate_config(env.clone());
+
+        // Check if borrower has valid, non-expired verification
+        match Self::read_record(&env, &borrower) {
+            Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
+                let score = record.score;
+                if score >= 80 {
+                    config.rate_excellent_bps
+                } else if score >= 60 {
+                    config.rate_good_bps
+                } else if score >= 40 {
+                    config.rate_fair_bps
+                } else {
+                    config.rate_fallback_bps
+                }
+            }
+            _ => config.rate_fallback_bps,
+        }
     }
 }
 
