@@ -4,6 +4,7 @@ import { useState } from "react";
 import dynamic from "next/dynamic";
 import OnboardingWizard from "@/components/onboarding/OnboardingWizard";
 import CreditCalculator from "@/components/CreditCalculator";
+import YieldAnalyticsChart from "@/components/YieldAnalyticsChart";
 
 const Navbar = dynamic(() => import("../components/Navbar"), { ssr: false });
 
@@ -222,6 +223,18 @@ export default function LandingPage() {
               </div>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* ── ANALYTICS ───────────────────────────────────────────── */}
+      <section id="analytics" className="section">
+        <div className="section__inner">
+          <div className="section__header">
+            <h2 className="section__title">Protocol Analytics</h2>
+            <p className="section__subtitle">Transparent historical growth of Total Value Locked and average Yield metrics.</p>
+          </div>
+          
+          <YieldAnalyticsChart />
         </div>
       </section>
 

@@ -177,8 +177,7 @@ export default function OnboardingWizard() {
     }
   };
 
-  const watchedTarget = useWatch({ control, name: "savingsTarget" });
-  const watchedDuration = useWatch({ control, name: "savingsDuration" });
+
   const monthlyContribution = useMemo(() => {
     if (watchedDuration > 0 && watchedTarget > 0) {
       return (watchedTarget / watchedDuration).toFixed(2);
