@@ -22,6 +22,7 @@ import { milestoneRouter } from "./routes/milestone.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
+import { didRouter } from "./routes/did.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { authMiddleware } from "./middleware/auth.js";
@@ -78,6 +79,7 @@ app.use("/api/borrower", authMiddleware, borrowerRouter);
 app.use("/api/loan", authMiddleware, loanRouter);
 app.use("/api/milestone", milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/did", didRouter);
 app.use("/api/audit-logs", auditRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
