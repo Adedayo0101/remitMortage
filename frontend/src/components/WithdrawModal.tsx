@@ -11,6 +11,8 @@ import {
   type TransactionModalPhase,
 } from "../lib/transaction-status";
 import TransactionModal from "./tx/TransactionModal";
+import { useXlmPrice } from "../hooks/useXlmPrice";
+import { useGasEstimate } from "../hooks/useGasEstimate";
 
 type Props = {
   isOpen: boolean;
@@ -27,7 +29,12 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
   const [txPhase, setTxPhase] = useState<TransactionModalPhase>("idle");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
+  const [txXdr, setTxXdr] = useState<string | null>(null);
+  const [estimatingTx, setEstimatingTx] = useState(false);
   const txMonitor = useTransactionMonitor(txHash ?? undefined);
+
+  const xlmPrice = useXlmPrice();
+  const gasEstimate = useGasEstimate(txXdr, xlmPrice);
 
   const depositNum = parseFloat(deposited) || 0;
   const penaltyPct = penaltyBps !== null ? penaltyBps / 100 : null;
@@ -63,6 +70,28 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
   }, [isOpen, publicKey]);
 
   useEffect(() => {
+    if (!isOpen || !publicKey) {
+      setTxXdr(null);
+      return;
+    }
+    let active = true;
+    setEstimatingTx(true);
+    buildWithdrawTx(publicKey)
+      .then((xdr) => {
+        if (active) setTxXdr(xdr);
+      })
+      .catch((e) => {
+        if (active) setTxXdr(null);
+      })
+      .finally(() => {
+        if (active) setEstimatingTx(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOpen, publicKey]);
+
+  useEffect(() => {
     if (txPhase !== "pending" || !txHash) return;
 
     if (txMonitor.phase === "confirmed") {
@@ -90,19 +119,18 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
 
     if (wasSuccessful) {
       setConfirmed(false);
+      setTxXdr(null);
       onClose();
     }
   }
 
   async function handleWithdraw() {
-    if (!publicKey || !confirmed) return;
+    if (!publicKey || !confirmed || !txXdr) return;
     setSubmitting(true);
     setTxError(null);
     setTxHash(null);
-    setTxPhase("simulating");
+    setTxPhase("signing");
     try {
-      const txXdr = await buildWithdrawTx(publicKey);
-      setTxPhase("signing");
       const hash = await signAndSubmit(txXdr);
       setTxHash(hash);
       setTxPhase("pending");
@@ -171,6 +199,29 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
                     </span>
                   </div>
                 )}
+                
+                {gasEstimate && (
+                  <div className="pt-2 mt-2 border-t border-[var(--border-color)]">
+                    <div className="flex items-center gap-2 mb-2 text-sm text-[var(--text-primary)] font-semibold">
+                      <ArrowRight className="w-4 h-4 text-[var(--accent-primary)]" />
+                      Transaction Fee Estimate
+                    </div>
+                    <div className="space-y-1 pl-6">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-[var(--text-secondary)]">Standard</span>
+                        <span className="text-[var(--text-primary)] font-mono">
+                          ~${gasEstimate.standardFeeUsd} <span className="text-[var(--text-muted)] text-xs">({gasEstimate.standardFeeXlm} XLM)</span>
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-[var(--text-secondary)]">High Congestion</span>
+                        <span className="text-[var(--text-primary)] font-mono">
+                          ~${gasEstimate.highFeeUsd} <span className="text-[var(--text-muted)] text-xs">({gasEstimate.highFeeXlm} XLM)</span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20">
@@ -198,7 +249,7 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
 
               <button
                 onClick={handleWithdraw}
-                disabled={!confirmed || submitting}
+                disabled={!confirmed || submitting || estimatingTx || !txXdr}
                 className="w-full btn-primary justify-center disabled:opacity-40"
               >
                 {submitting ? (
