@@ -25,7 +25,7 @@ import { kycRouter } from "./routes/kyc.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { authMiddleware } from "./middleware/auth.js";
-import { startEventListener } from "./services/eventListener.js";
+import { startEventIndexer } from "./services/eventIndexer.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
 import { startBackupScheduler } from "./jobs/backupScheduler.js";
@@ -96,10 +96,9 @@ app.listen(PORT, () => {
     environment: process.env.NODE_ENV || "development",
   });
 
-  // Start the Soroban contract event listener alongside the HTTP server. It
-  // runs in the background and self-heals via exponential backoff, so a failing
-  // RPC node never takes down the API process.
-  startEventListener();
+  // Start the Soroban contract event indexer alongside the HTTP server. It
+  // polls /getEvents and persists borrower activity into PostgreSQL.
+  startEventIndexer();
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();
