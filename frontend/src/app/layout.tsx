@@ -91,9 +91,7 @@ export default function RootLayout({
           <WalletProvider>
             <NotificationProvider>
               <ToastProvider>
-                <div className="flex-1">
-                  {children}
-                </div>
+                <div className="flex-1">{children}</div>
                 <Footer />
                 <NotificationLayer />
                 <ToastContainer />

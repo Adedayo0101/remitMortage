@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import React from "react";
 
@@ -23,11 +23,21 @@ export default function LoanStatusCard({ loan }: { loan: Loan }) {
         <div className="text-sm text-[var(--text-muted)]">No active loan</div>
       ) : (
         <div className="space-y-2 text-sm">
-          <div>Principal: <strong>{principal.toLocaleString()} USDC</strong></div>
-          <div>Disbursed: <strong>{disbursed.toLocaleString()} USDC</strong></div>
-          <div>Repaid: <strong>{repaid.toLocaleString()} USDC</strong></div>
-          <div>Remaining (principal - disbursed): <strong>{remaining.toLocaleString()} USDC</strong></div>
-          <div>Status: <strong>{loan.status}</strong></div>
+          <div>
+            Principal: <strong>{principal.toLocaleString()} USDC</strong>
+          </div>
+          <div>
+            Disbursed: <strong>{disbursed.toLocaleString()} USDC</strong>
+          </div>
+          <div>
+            Repaid: <strong>{repaid.toLocaleString()} USDC</strong>
+          </div>
+          <div>
+            Remaining (principal - disbursed): <strong>{remaining.toLocaleString()} USDC</strong>
+          </div>
+          <div>
+            Status: <strong>{loan.status}</strong>
+          </div>
         </div>
       )}
     </div>

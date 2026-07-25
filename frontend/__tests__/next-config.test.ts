@@ -9,13 +9,21 @@ describe("Next.js content security policy headers", () => {
     const headers = await nextConfig.headers();
     expect(Array.isArray(headers)).toBe(true);
 
-    const route = headers.find((h: any) => h.source === "(/.*)" || h.source === "\\/(.*)" || h.source === "(/.*)" || h.source === "/(.*)");
+    const route = headers.find(
+      (h: any) =>
+        h.source === "(/.*)" ||
+        h.source === "\\/(.*)" ||
+        h.source === "(/.*)" ||
+        h.source === "/(.*)"
+    );
     // Fallback to first item if matching by source fails
     const headerGroup = (route ?? headers[0]) as any;
     expect(headerGroup).toBeDefined();
     expect(Array.isArray(headerGroup.headers)).toBe(true);
 
-    const cspHeader = headerGroup.headers.find((h: any) => typeof h.key === "string" && h.key.toLowerCase() === "content-security-policy");
+    const cspHeader = headerGroup.headers.find(
+      (h: any) => typeof h.key === "string" && h.key.toLowerCase() === "content-security-policy"
+    );
     expect(cspHeader).toBeDefined();
     const value: string = cspHeader.value;
 

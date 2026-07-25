@@ -6,11 +6,7 @@ import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { getOnboardingStore, useOnboardingState } from "@/hooks/useOnboardingState";
 import { useFormAutosave } from "@/hooks/useFormAutosave";
-import {
-  onboardingSchema,
-  STEP_FIELDS,
-  type OnboardingFormValues,
-} from "@/lib/onboardingSchema";
+import { onboardingSchema, STEP_FIELDS, type OnboardingFormValues } from "@/lib/onboardingSchema";
 import ProgressStepper from "./ProgressStepper";
 import { toast } from "react-hot-toast";
 import { useWallet } from "@/context/WalletContext";
@@ -55,12 +51,7 @@ export default function OnboardingWizard() {
   const watchedDeposit = useWatch({ control, name: "firstDepositAmount" });
 
   // Autosave hook
-  const {
-    hasDraft,
-    restoreDraft,
-    clearDraft,
-    dismissDraft,
-  } = useFormAutosave(
+  const { hasDraft, restoreDraft, clearDraft, dismissDraft } = useFormAutosave(
     {
       recipientAddress: watchedRecipient,
       savingsTarget: watchedTarget,
@@ -98,7 +89,9 @@ export default function OnboardingWizard() {
         await fetchUSDCBalance(connectedPublicKey);
         toast.success("Wallet connected!");
       } else {
-        toast.error("Freighter is not available. Please install and set up the Freighter wallet extension.");
+        toast.error(
+          "Freighter is not available. Please install and set up the Freighter wallet extension."
+        );
       }
     } catch (e) {
       console.error(e);
@@ -141,7 +134,9 @@ export default function OnboardingWizard() {
         toast.success("Remittance history verified!");
       } else {
         store.getState().setIsVerified(false);
-        setVerificationMessage(data.message || "Verification failed. Please check the address and try again.");
+        setVerificationMessage(
+          data.message || "Verification failed. Please check the address and try again."
+        );
         toast.error(data.message || "Verification failed.");
       }
     } catch (e) {
@@ -193,16 +188,22 @@ export default function OnboardingWizard() {
           <div className="text-center space-y-6">
             <div>
               <h3 className="text-xl font-bold text-white mb-2">Connect Freighter Wallet</h3>
-              <p className="text-xs text-slate-400">Connect your wallet to check USDC balance and interact with Soroban escrow.</p>
+              <p className="text-xs text-slate-400">
+                Connect your wallet to check USDC balance and interact with Soroban escrow.
+              </p>
             </div>
             {publicKey ? (
               <div className="p-5 rounded-2xl bg-slate-950/60 border border-slate-800 text-left space-y-3">
                 <div>
-                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Connected Address</p>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">
+                    Connected Address
+                  </p>
                   <p className="font-mono text-xs text-cyan-400 break-all">{publicKey}</p>
                 </div>
                 <div>
-                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">USDC Balance</p>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">
+                    USDC Balance
+                  </p>
                   <p className="font-mono text-xl font-extrabold text-white">${usdcBalance} USDC</p>
                 </div>
               </div>
@@ -218,7 +219,9 @@ export default function OnboardingWizard() {
           <div className="space-y-4">
             <div>
               <h3 className="text-xl font-bold text-white mb-1">Verify Remittance History</h3>
-              <p className="text-xs text-slate-400">Enter the Stellar wallet address of your remittance recipient.</p>
+              <p className="text-xs text-slate-400">
+                Enter the Stellar wallet address of your remittance recipient.
+              </p>
             </div>
             <Controller
               name="recipientAddress"
@@ -237,7 +240,11 @@ export default function OnboardingWizard() {
                     onBlur={field.onBlur}
                     disabled={isLoading || isVerified}
                   />
-                  <button onClick={handleVerify} className="btn-cta py-2.5 px-5 !text-xs" disabled={isLoading || !field.value || isVerified}>
+                  <button
+                    onClick={handleVerify}
+                    className="btn-cta py-2.5 px-5 !text-xs"
+                    disabled={isLoading || !field.value || isVerified}
+                  >
                     {isLoading ? "Auditing..." : isVerified ? "Verified ✓" : "Verify"}
                   </button>
                 </div>
@@ -247,7 +254,9 @@ export default function OnboardingWizard() {
               <p className="text-red-400 text-xs">{errors.recipientAddress.message}</p>
             )}
             {verificationMessage && (
-              <div className={`p-4 rounded-xl text-xs ${isVerified ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300" : "bg-red-500/10 border border-red-500/20 text-red-300"}`}>
+              <div
+                className={`p-4 rounded-xl text-xs ${isVerified ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300" : "bg-red-500/10 border border-red-500/20 text-red-300"}`}
+              >
                 {verificationMessage}
               </div>
             )}
@@ -258,11 +267,15 @@ export default function OnboardingWizard() {
           <div className="space-y-5">
             <div>
               <h3 className="text-xl font-bold text-white mb-1">Set 30% Down-Payment Goal</h3>
-              <p className="text-xs text-slate-400">Specify target USDC escrow accumulation and savings timeframe.</p>
+              <p className="text-xs text-slate-400">
+                Specify target USDC escrow accumulation and savings timeframe.
+              </p>
             </div>
             <div className="space-y-4">
               <div>
-                <label className="text-xs text-slate-300 font-semibold block mb-1">Down Payment Goal (USDC)</label>
+                <label className="text-xs text-slate-300 font-semibold block mb-1">
+                  Down Payment Goal (USDC)
+                </label>
                 <Controller
                   name="savingsTarget"
                   control={control}
@@ -285,7 +298,9 @@ export default function OnboardingWizard() {
                 )}
               </div>
               <div>
-                <label className="text-xs text-slate-300 font-semibold block mb-1">Savings Duration</label>
+                <label className="text-xs text-slate-300 font-semibold block mb-1">
+                  Savings Duration
+                </label>
                 <Controller
                   name="savingsDuration"
                   control={control}
@@ -310,7 +325,9 @@ export default function OnboardingWizard() {
 
               <div className="p-4 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs flex justify-between items-center">
                 <span>Estimated Monthly Saving:</span>
-                <span className="font-mono font-extrabold text-sm">${monthlyContribution} USDC / mo</span>
+                <span className="font-mono font-extrabold text-sm">
+                  ${monthlyContribution} USDC / mo
+                </span>
               </div>
             </div>
           </div>
@@ -320,10 +337,14 @@ export default function OnboardingWizard() {
           <div className="space-y-5">
             <div>
               <h3 className="text-xl font-bold text-white mb-1">First Deposit Commitment</h3>
-              <p className="text-xs text-slate-400">Make your initial deposit into the Soroban escrow contract.</p>
+              <p className="text-xs text-slate-400">
+                Make your initial deposit into the Soroban escrow contract.
+              </p>
             </div>
             <div>
-              <label className="text-xs text-slate-300 font-semibold block mb-1">Initial Deposit Amount (USDC)</label>
+              <label className="text-xs text-slate-300 font-semibold block mb-1">
+                Initial Deposit Amount (USDC)
+              </label>
               <Controller
                 name="firstDepositAmount"
                 control={control}
@@ -345,7 +366,11 @@ export default function OnboardingWizard() {
                 <p className="text-red-400 text-xs mt-1">{errors.firstDepositAmount.message}</p>
               )}
             </div>
-            <button onClick={handleDeposit} className="btn-cta w-full justify-center py-3.5" disabled={isLoading}>
+            <button
+              onClick={handleDeposit}
+              className="btn-cta w-full justify-center py-3.5"
+              disabled={isLoading}
+            >
               {isLoading ? "Signing Transaction..." : "Deposit USDC & Unlock Escrow"}
             </button>
           </div>
@@ -384,7 +409,9 @@ export default function OnboardingWizard() {
         <div className="mb-5 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between">
           <div>
             <p className="text-amber-300 font-semibold text-sm">Resume Session</p>
-            <p className="text-amber-200/70 text-xs">You have unsaved form data from a previous session</p>
+            <p className="text-amber-200/70 text-xs">
+              You have unsaved form data from a previous session
+            </p>
           </div>
           <div className="flex gap-2">
             <button

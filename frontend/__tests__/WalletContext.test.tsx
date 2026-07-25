@@ -52,7 +52,9 @@ describe("WalletContext", () => {
     expect(screen.getByTestId("wallet-type")).toHaveTextContent("evm");
 
     await user.click(screen.getByRole("button", { name: /connect-solana/i }));
-    await waitFor(() => expect(screen.getByTestId("solana-address")).toHaveTextContent("solana-address"));
+    await waitFor(() =>
+      expect(screen.getByTestId("solana-address")).toHaveTextContent("solana-address")
+    );
     expect(screen.getByTestId("wallet-type")).toHaveTextContent("solana");
 
     await user.click(screen.getByRole("button", { name: /disconnect-all/i }));

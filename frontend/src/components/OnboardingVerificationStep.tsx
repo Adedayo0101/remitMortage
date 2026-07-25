@@ -1,20 +1,23 @@
 "use client";
 
-import React, { useState } from 'react';
-import { MultiWalletModal } from './MultiWalletModal';
-import { ShieldCheck, ArrowRight } from 'lucide-react';
+import React, { useState } from "react";
+import { MultiWalletModal } from "./MultiWalletModal";
+import { ShieldCheck, ArrowRight } from "lucide-react";
 
 export const OnboardingVerificationStep: React.FC = () => {
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
-  const [verificationData, setVerificationData] = useState<{ address: string, chainType: string } | null>(null);
+  const [verificationData, setVerificationData] = useState<{
+    address: string;
+    chainType: string;
+  } | null>(null);
 
   const handleVerificationComplete = (address: string, chainType: string, signature: string) => {
     // Save verification state to onboarding context
     console.log("Identity verified:", { address, chainType, signature });
     setVerificationData({ address, chainType });
-    
+
     // Close the modal and proceed
-    setTimeout(() => setIsWalletModalOpen(false), 2000); 
+    setTimeout(() => setIsWalletModalOpen(false), 2000);
   };
 
   return (
@@ -22,7 +25,8 @@ export const OnboardingVerificationStep: React.FC = () => {
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-zinc-100 mb-2">Proof of Ownership</h2>
         <p className="text-zinc-400">
-          To comply with our anti-fraud protocols, please prove you control the wallet that sent the initial remittances.
+          To comply with our anti-fraud protocols, please prove you control the wallet that sent the
+          initial remittances.
         </p>
       </div>
 
@@ -31,11 +35,14 @@ export const OnboardingVerificationStep: React.FC = () => {
           <div className="w-16 h-16 bg-indigo-500/10 rounded-full flex items-center justify-center mb-4">
             <ShieldCheck className="w-8 h-8 text-indigo-400" />
           </div>
-          <h3 className="text-lg font-semibold text-zinc-200 mb-2">Identity Verification Required</h3>
+          <h3 className="text-lg font-semibold text-zinc-200 mb-2">
+            Identity Verification Required
+          </h3>
           <p className="text-sm text-zinc-500 text-center max-w-md mb-6">
-            We'll ask you to cryptographically sign a simple message. This does not cost any gas and does not authorize any transactions.
+            We'll ask you to cryptographically sign a simple message. This does not cost any gas and
+            does not authorize any transactions.
           </p>
-          <button 
+          <button
             onClick={() => setIsWalletModalOpen(true)}
             className="flex items-center px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl transition-all shadow-lg shadow-indigo-900/20"
           >
@@ -52,7 +59,8 @@ export const OnboardingVerificationStep: React.FC = () => {
             <div>
               <h3 className="text-emerald-400 font-bold text-lg">Identity Verified</h3>
               <p className="text-zinc-400 text-sm">
-                Connected with {verificationData.chainType === 'evm' ? 'Ethereum' : 'Solana'} ({verificationData.address.slice(0, 6)}...{verificationData.address.slice(-4)})
+                Connected with {verificationData.chainType === "evm" ? "Ethereum" : "Solana"} (
+                {verificationData.address.slice(0, 6)}...{verificationData.address.slice(-4)})
               </p>
             </div>
           </div>
@@ -62,10 +70,10 @@ export const OnboardingVerificationStep: React.FC = () => {
         </div>
       )}
 
-      <MultiWalletModal 
-        isOpen={isWalletModalOpen} 
-        onClose={() => setIsWalletModalOpen(false)} 
-        onVerificationComplete={handleVerificationComplete} 
+      <MultiWalletModal
+        isOpen={isWalletModalOpen}
+        onClose={() => setIsWalletModalOpen(false)}
+        onVerificationComplete={handleVerificationComplete}
       />
     </div>
   );

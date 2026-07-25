@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import React, { useEffect, useState } from "react";
 import { toast } from "react-hot-toast";
@@ -63,13 +63,7 @@ export default function DepositModal({ isOpen, onClose }: Props) {
       setTxError(txMonitor.pollError);
       setTxPhase("error");
     }
-  }, [
-    txHash,
-    txMonitor.contractError,
-    txMonitor.phase,
-    txMonitor.pollError,
-    txPhase,
-  ]);
+  }, [txHash, txMonitor.contractError, txMonitor.phase, txMonitor.pollError, txPhase]);
 
   if (!isOpen) return null;
 
@@ -117,7 +111,10 @@ export default function DepositModal({ isOpen, onClose }: Props) {
       <div className="relative w-full max-w-md bg-[var(--bg-card)] border border-[var(--border-color)] shadow-2xl rounded-2xl overflow-hidden">
         <div className="flex items-center justify-between p-5 border-b border-[var(--border-color)]">
           <h2 className="text-lg font-bold text-[var(--text-primary)]">Deposit USDC</h2>
-          <button onClick={onClose} className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors">
+          <button
+            onClick={onClose}
+            className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>

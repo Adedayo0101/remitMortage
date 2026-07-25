@@ -13,7 +13,7 @@ jest.mock("next/navigation", () => ({
 
 // Mock the dynamic imports (Navbar and MilestoneCard) if necessary
 // But since they are dynamic, in Jest we typically render them eagerly for tests if possible.
-// For this test suite, we will just test the EvidenceUpload component in isolation for file stuff, 
+// For this test suite, we will just test the EvidenceUpload component in isolation for file stuff,
 // and the ContractorDashboard for the render list.
 
 describe("Contractor Portal Tests", () => {
@@ -33,10 +33,10 @@ describe("Contractor Portal Tests", () => {
   it("renders the contractor page successfully", async () => {
     // The dynamic imports might take a tick to render
     render(<ContractorDashboard />);
-    
+
     // We expect the main heading
     expect(screen.getByText("Contractor Portal")).toBeInTheDocument();
-    
+
     // Test 2: Milestone list appears
     // The page renders MilestoneCards for Foundation, Structure, Roofing, Finishing
     // Since dynamic imports are used with { ssr: false }, in a real Jest env they might need suspense boundary or await.
@@ -54,17 +54,20 @@ describe("Contractor Portal Tests", () => {
     const handleUploadSuccess = jest.fn();
     render(<EvidenceUpload milestoneId="m1" onUploadSuccess={handleUploadSuccess} />);
 
-    const fileInput = screen.getByLabelText(/Upload Evidence/i) || document.querySelector('input[type="file"]');
+    const fileInput =
+      screen.getByLabelText(/Upload Evidence/i) || document.querySelector('input[type="file"]');
     expect(fileInput).toBeInTheDocument();
 
     // 1. Upload invalid type
     const invalidFile = new File(["dummy content"], "test.txt", { type: "text/plain" });
     fireEvent.change(fileInput!, { target: { files: [invalidFile] } });
-    expect(screen.getByText("Unsupported file type. Please upload JPG, PNG, WEBP, or MP4.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Unsupported file type. Please upload JPG, PNG, WEBP, or MP4.")
+    ).toBeInTheDocument();
 
     // 2. Upload oversized file (>10MB)
     const largeFile = new File(["x"], "large.jpg", { type: "image/jpeg" });
-    Object.defineProperty(largeFile, 'size', { value: 11 * 1024 * 1024 });
+    Object.defineProperty(largeFile, "size", { value: 11 * 1024 * 1024 });
     fireEvent.change(fileInput!, { target: { files: [largeFile] } });
     expect(screen.getByText("File size exceeds 10MB limit.")).toBeInTheDocument();
   });
@@ -84,14 +87,14 @@ describe("Contractor Portal Tests", () => {
     render(<EvidenceUpload milestoneId="m1" onUploadSuccess={handleUploadSuccess} />);
 
     const fileInput = document.querySelector('input[type="file"]');
-    
+
     // Select valid file
     const validFile = new File(["image"], "test.png", { type: "image/png" });
     fireEvent.change(fileInput!, { target: { files: [validFile] } });
-    
+
     // Preview should appear
     expect(screen.getByText("Preview:")).toBeInTheDocument();
-    
+
     const submitBtn = screen.getByRole("button", { name: /Submit Evidence/i });
     expect(submitBtn).not.toBeDisabled();
 
@@ -107,6 +110,9 @@ describe("Contractor Portal Tests", () => {
     // Verify CID is displayed
     expect(screen.getByText("Upload Successful")).toBeInTheDocument();
     expect(screen.getByText(`CID: ${mockCid}`)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "View on IPFS" })).toHaveAttribute("href", `https://ipfs.io/ipfs/${mockCid}`);
+    expect(screen.getByRole("link", { name: "View on IPFS" })).toHaveAttribute(
+      "href",
+      `https://ipfs.io/ipfs/${mockCid}`
+    );
   });
 });

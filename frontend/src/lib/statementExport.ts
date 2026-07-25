@@ -45,7 +45,9 @@ export function buildStatementCsv(payload: StatementPayload): string {
     ["Generated At", escapeCsvCell(generatedAt)].join(","),
     "",
     ["Summary", "Value"].join(","),
-    ...payload.summary.map((item) => [escapeCsvCell(item.label), escapeCsvCell(item.value)].join(",")),
+    ...payload.summary.map((item) =>
+      [escapeCsvCell(item.label), escapeCsvCell(item.value)].join(",")
+    ),
     "",
     ["Date", "Type", "Amount", "Status", "Reference", "Counterparty", "Notes"].join(","),
     ...payload.rows.map((row) =>
@@ -135,7 +137,13 @@ export function downloadStatementPdf(payload: StatementPayload, filename: string
   doc.setFont("helvetica", "normal");
 
   if (payload.rows.length === 0) {
-    cursorY = drawWrappedLines(doc, "No verified transactions matched the current filters.", margin, cursorY + 4, contentWidth);
+    cursorY = drawWrappedLines(
+      doc,
+      "No verified transactions matched the current filters.",
+      margin,
+      cursorY + 4,
+      contentWidth
+    );
   }
 
   for (const row of payload.rows) {
