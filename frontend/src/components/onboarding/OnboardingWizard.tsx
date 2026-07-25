@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { getOnboardingStore, useOnboardingState } from "@/hooks/useOnboardingState";
+import { useFormAutosave } from "@/hooks/useFormAutosave";
 import {
   onboardingSchema,
   STEP_FIELDS,
@@ -34,6 +35,7 @@ export default function OnboardingWizard() {
     control,
     trigger,
     getValues,
+    setValue,
     formState: { errors },
   } = useForm<OnboardingFormValues>({
     resolver: zodResolver(onboardingSchema),
@@ -45,6 +47,39 @@ export default function OnboardingWizard() {
       firstDepositAmount: store.getState().firstDepositAmount,
     },
   });
+
+  // Watch all form values for autosave
+  const watchedRecipient = useWatch({ control, name: "recipientAddress" });
+  const watchedTarget = useWatch({ control, name: "savingsTarget" });
+  const watchedDuration = useWatch({ control, name: "savingsDuration" });
+  const watchedDeposit = useWatch({ control, name: "firstDepositAmount" });
+
+  // Autosave hook
+  const {
+    hasDraft,
+    restoreDraft,
+    clearDraft,
+    dismissDraft,
+  } = useFormAutosave(
+    {
+      recipientAddress: watchedRecipient,
+      savingsTarget: watchedTarget,
+      savingsDuration: watchedDuration,
+      firstDepositAmount: watchedDeposit,
+      step,
+    },
+    {
+      key: "onboarding-form-draft",
+      debounceMs: 800,
+      onRestore: (data) => {
+        if (data.recipientAddress) setValue("recipientAddress", data.recipientAddress);
+        if (data.savingsTarget) setValue("savingsTarget", data.savingsTarget);
+        if (data.savingsDuration) setValue("savingsDuration", data.savingsDuration);
+        if (data.firstDepositAmount) setValue("firstDepositAmount", data.firstDepositAmount);
+        if (data.step) store.getState().setStep(data.step);
+      },
+    }
+  );
 
   const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL!;
   const USDC_TOKEN_ID = process.env.NEXT_PUBLIC_USDC_TOKEN_ID!;
@@ -130,6 +165,7 @@ export default function OnboardingWizard() {
     try {
       toast.dismiss();
       toast.success("Simulated deposit success! Redirecting to Escrow Dashboard...");
+      clearDraft(); // Clear autosaved data on successful submission
       store.getState().reset();
       router.push("/dashboard");
     } catch (e) {
@@ -344,6 +380,36 @@ export default function OnboardingWizard() {
 
   return (
     <div className="p-6 md:p-8 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl max-w-xl mx-auto backdrop-blur-xl">
+      {hasDraft && (
+        <div className="mb-5 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between">
+          <div>
+            <p className="text-amber-300 font-semibold text-sm">Resume Session</p>
+            <p className="text-amber-200/70 text-xs">You have unsaved form data from a previous session</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                const draft = restoreDraft();
+                if (draft) {
+                  toast.success("Draft restored!");
+                }
+              }}
+              className="btn-cta text-xs !py-2 !px-4"
+            >
+              Restore
+            </button>
+            <button
+              onClick={() => {
+                dismissDraft();
+                toast("Draft dismissed", { icon: "👋" });
+              }}
+              className="btn-outline text-xs !py-2 !px-4"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
       <ProgressStepper steps={STEPS} currentStep={step} />
       <div className="my-8">{renderStepContent()}</div>
       <div className="flex justify-between border-t border-slate-800/80 pt-5">
