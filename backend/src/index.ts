@@ -1,4 +1,11 @@
 import "dotenv/config";
+import * as Sentry from "@sentry/node";
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  tracesSampleRate: 1.0,
+});
+
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -79,6 +86,7 @@ app.use("/api/kyc", kycRouter);
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Global error handler (must be after routes)
+Sentry.setupExpressErrorHandler(app);
 app.use(errorHandler);
 
 // ── Start Server ────────────────────────────────────────────────────────
