@@ -69,6 +69,7 @@ model Applicant {
   updatedAt          DateTime           @updatedAt
   verificationResults VerificationResult[]
   loanApplications    LoanApplication[]
+  borrowerCredentials BorrowerCredential[]
 }
 
 model VerificationResult {
@@ -110,4 +111,24 @@ model AuditLog {
 
   @@index([action])
   @@index([actorAddress])
+}
+
+model BorrowerCredential {
+  id             String   @id @default(uuid())
+  applicantId    String
+  applicant      Applicant @relation(fields: [applicantId], references: [id])
+  did            String   @unique
+  didHash        String   @unique
+  verificationMethod     String
+  challenge      String?
+  issuer         String?
+  verifiedAt     DateTime @default(now())
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  isRevoked      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([applicantId])
+  @@index([did])
 }
