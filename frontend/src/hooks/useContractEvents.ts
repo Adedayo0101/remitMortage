@@ -178,7 +178,7 @@ function emitStreamEvent(
   const name =
     record.name ??
     record.event ??
-    (Array.isArray(record.topic) ? String(scValToNative(record.topic[0])) : "");
+    (Array.isArray(record.topic) ? String(scValToNative(record.topic[0] as any)) : "");
 
   const decoded = record.data ?? (Array.isArray(record.value) ? record.value : []);
   const data = Array.isArray(decoded) ? decoded : [decoded];

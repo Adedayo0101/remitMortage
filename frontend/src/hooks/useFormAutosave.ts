@@ -20,7 +20,7 @@ export function useFormAutosave<T extends Record<string, any>>(
   const { key, debounceMs = 500, onSave, onRestore } = options;
   const [hasDraft, setHasDraft] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
-  const timeoutRef = useRef<NodeJS.Timeout>();
+  const timeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const initialLoadRef = useRef(false);
 
   // Check for existing draft on mount
