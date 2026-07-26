@@ -18,9 +18,7 @@ export default function TransactionResult({
   return (
     <div
       className={`rounded-xl border p-8 text-center animate-fade-in-up ${
-        success
-          ? "bg-emerald-500/5 border-emerald-500/30"
-          : "bg-red-500/5 border-red-500/30"
+        success ? "bg-emerald-500/5 border-emerald-500/30" : "bg-red-500/5 border-red-500/30"
       }`}
     >
       <div className="flex justify-center mb-5">

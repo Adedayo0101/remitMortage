@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     { month: "Mar 26", deposits: 85000, repayments: 32000, disbursements: 55000 },
     { month: "Apr 26", deposits: 90000, repayments: 35000, disbursements: 60000 },
     { month: "May 26", deposits: 105000, repayments: 40000, disbursements: 70000 },
-    { month: "Jun 26", deposits: 120000, repayments: 45000, disbursements: 80000 }
+    { month: "Jun 26", deposits: 120000, repayments: 45000, disbursements: 80000 },
   ];
 
   return NextResponse.json(data.slice(-targetMonths));

@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import React, { useEffect, useState } from "react";
 import { toast } from "react-hot-toast";
@@ -11,6 +11,8 @@ import {
   type TransactionModalPhase,
 } from "../lib/transaction-status";
 import TransactionModal from "./tx/TransactionModal";
+import { useXlmPrice } from "../hooks/useXlmPrice";
+import { useGasEstimate } from "../hooks/useGasEstimate";
 
 type Props = {
   isOpen: boolean;
@@ -27,11 +29,17 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
   const [txPhase, setTxPhase] = useState<TransactionModalPhase>("idle");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
+  const [txXdr, setTxXdr] = useState<string | null>(null);
+  const [estimatingTx, setEstimatingTx] = useState(false);
   const txMonitor = useTransactionMonitor(txHash ?? undefined);
+
+  const xlmPrice = useXlmPrice();
+  const gasEstimate = useGasEstimate(txXdr, xlmPrice);
 
   const depositNum = parseFloat(deposited) || 0;
   const penaltyPct = penaltyBps !== null ? penaltyBps / 100 : null;
-  const penaltyAmount = penaltyPct !== null && penaltyPct !== null ? (depositNum * penaltyPct) / 100 : null;
+  const penaltyAmount =
+    penaltyPct !== null && penaltyPct !== null ? (depositNum * penaltyPct) / 100 : null;
   const refundAmount = penaltyAmount !== null ? depositNum - penaltyAmount : null;
 
   function resetTransactionState() {
@@ -62,6 +70,28 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
   }, [isOpen, publicKey]);
 
   useEffect(() => {
+    if (!isOpen || !publicKey) {
+      setTxXdr(null);
+      return;
+    }
+    let active = true;
+    setEstimatingTx(true);
+    buildWithdrawTx(publicKey)
+      .then((xdr) => {
+        if (active) setTxXdr(xdr);
+      })
+      .catch((e) => {
+        if (active) setTxXdr(null);
+      })
+      .finally(() => {
+        if (active) setEstimatingTx(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOpen, publicKey]);
+
+  useEffect(() => {
     if (txPhase !== "pending" || !txHash) return;
 
     if (txMonitor.phase === "confirmed") {
@@ -79,13 +109,7 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
       setTxError(txMonitor.pollError);
       setTxPhase("error");
     }
-  }, [
-    txHash,
-    txMonitor.contractError,
-    txMonitor.phase,
-    txMonitor.pollError,
-    txPhase,
-  ]);
+  }, [txHash, txMonitor.contractError, txMonitor.phase, txMonitor.pollError, txPhase]);
 
   if (!isOpen) return null;
 
@@ -95,19 +119,18 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
 
     if (wasSuccessful) {
       setConfirmed(false);
+      setTxXdr(null);
       onClose();
     }
   }
 
   async function handleWithdraw() {
-    if (!publicKey || !confirmed) return;
+    if (!publicKey || !confirmed || !txXdr) return;
     setSubmitting(true);
     setTxError(null);
     setTxHash(null);
-    setTxPhase("simulating");
+    setTxPhase("signing");
     try {
-      const txXdr = await buildWithdrawTx(publicKey);
-      setTxPhase("signing");
       const hash = await signAndSubmit(txXdr);
       setTxHash(hash);
       setTxPhase("pending");
@@ -125,7 +148,10 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
       <div className="relative w-full max-w-md bg-[var(--bg-card)] border border-[var(--border-color)] shadow-2xl rounded-2xl overflow-hidden">
         <div className="flex items-center justify-between p-5 border-b border-[var(--border-color)]">
           <h2 className="text-lg font-bold text-[var(--text-primary)]">Early Withdrawal</h2>
-          <button onClick={onClose} className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors">
+          <button
+            onClick={onClose}
+            className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -134,31 +160,66 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
           {loadingConfig ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-[var(--accent-primary)]" />
-              <span className="ml-3 text-sm text-[var(--text-secondary)]">Loading contract config...</span>
+              <span className="ml-3 text-sm text-[var(--text-secondary)]">
+                Loading contract config...
+              </span>
             </div>
           ) : (
             <>
               <div className="space-y-3 p-4 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-color)]">
                 <div className="flex justify-between text-sm">
                   <span className="text-[var(--text-secondary)]">Deposited amount</span>
-                  <span className="text-[var(--text-primary)] font-mono">{depositNum.toLocaleString()} USDC</span>
+                  <span className="text-[var(--text-primary)] font-mono">
+                    {depositNum.toLocaleString()} USDC
+                  </span>
                 </div>
                 {penaltyPct !== null && (
                   <div className="flex justify-between text-sm">
                     <span className="text-[var(--text-secondary)]">Early exit penalty</span>
-                    <span className="text-[var(--warning)] font-mono">{penaltyPct}% ({penaltyBps} bps)</span>
+                    <span className="text-[var(--warning)] font-mono">
+                      {penaltyPct}% ({penaltyBps} bps)
+                    </span>
                   </div>
                 )}
                 {penaltyAmount !== null && (
                   <div className="flex justify-between text-sm">
                     <span className="text-[var(--text-secondary)]">Penalty amount</span>
-                    <span className="text-[var(--error)] font-mono">-{penaltyAmount.toLocaleString()} USDC</span>
+                    <span className="text-[var(--error)] font-mono">
+                      -{penaltyAmount.toLocaleString()} USDC
+                    </span>
                   </div>
                 )}
                 {refundAmount !== null && (
                   <div className="flex justify-between text-sm pt-2 border-t border-[var(--border-color)]">
-                    <span className="text-[var(--text-secondary)] font-semibold">Estimated refund</span>
-                    <span className="text-[var(--success)] font-mono font-bold">{refundAmount.toLocaleString()} USDC</span>
+                    <span className="text-[var(--text-secondary)] font-semibold">
+                      Estimated refund
+                    </span>
+                    <span className="text-[var(--success)] font-mono font-bold">
+                      {refundAmount.toLocaleString()} USDC
+                    </span>
+                  </div>
+                )}
+                
+                {gasEstimate && (
+                  <div className="pt-2 mt-2 border-t border-[var(--border-color)]">
+                    <div className="flex items-center gap-2 mb-2 text-sm text-[var(--text-primary)] font-semibold">
+                      <ArrowRight className="w-4 h-4 text-[var(--accent-primary)]" />
+                      Transaction Fee Estimate
+                    </div>
+                    <div className="space-y-1 pl-6">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-[var(--text-secondary)]">Standard</span>
+                        <span className="text-[var(--text-primary)] font-mono">
+                          ~${gasEstimate.standardFeeUsd} <span className="text-[var(--text-muted)] text-xs">({gasEstimate.standardFeeXlm} XLM)</span>
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-[var(--text-secondary)]">High Congestion</span>
+                        <span className="text-[var(--text-primary)] font-mono">
+                          ~${gasEstimate.highFeeUsd} <span className="text-[var(--text-muted)] text-xs">({gasEstimate.highFeeXlm} XLM)</span>
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -167,7 +228,9 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
                 <div className="flex items-start gap-3">
                   <AlertTriangle className="w-5 h-5 text-[var(--warning)] shrink-0 mt-0.5" />
                   <div className="text-sm text-[var(--text-secondary)]">
-                    Early withdrawal applies a penalty of <strong className="text-[var(--text-primary)]">{penaltyPct}%</strong> of your deposited amount. This action cannot be undone.
+                    Early withdrawal applies a penalty of{" "}
+                    <strong className="text-[var(--text-primary)]">{penaltyPct}%</strong> of your
+                    deposited amount. This action cannot be undone.
                   </div>
                 </div>
               </div>
@@ -186,7 +249,7 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
 
               <button
                 onClick={handleWithdraw}
-                disabled={!confirmed || submitting}
+                disabled={!confirmed || submitting || estimatingTx || !txXdr}
                 className="w-full btn-primary justify-center disabled:opacity-40"
               >
                 {submitting ? (

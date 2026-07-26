@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { useWallet } from "../context/WalletContext";
-import { WalletSelectModal } from "./WalletSelectModal";
+import { useNotifications } from "@/context/NotificationContext";
 
 function shorten(pk: string) {
   return `${pk.slice(0, 6)}...${pk.slice(-4)}`;
@@ -19,7 +19,8 @@ const NAV_LINKS = [
 ];
 
 function InnerNavbar() {
-  const { publicKey, isConnected, usdcBalance, walletType, disconnect, wrongNetwork } = useWallet();
+  const { publicKey, isConnected, usdcBalance, connect, disconnect, wrongNetwork } = useWallet();
+  const { unreadCount, togglePanel } = useNotifications();
   const [menuOpen, setMenuOpen] = useState(false);
   const [walletModalOpen, setWalletModalOpen] = useState(false);
 
@@ -30,7 +31,14 @@ function InnerNavbar() {
           {/* Logo */}
           <a href="/" className="flex items-center gap-3 hover:opacity-90 transition-all group">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 via-indigo-500 to-emerald-400 flex items-center justify-center shadow-lg shadow-cyan-500/20 group-hover:shadow-cyan-500/40 transition-all">
-              <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" className="w-5 h-5">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="white"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                className="w-5 h-5"
+              >
                 <path d="M3 21h18" />
                 <path d="M5 21V7l7-4 7 4v14" />
               </svg>
@@ -43,7 +51,10 @@ function InnerNavbar() {
           {/* Desktop Nav Links */}
           <nav className="hidden lg:flex items-center gap-6 text-sm">
             {process.env.NODE_ENV !== "production" && (
-              <a href="/developer-playground" className="text-amber-400 hover:text-amber-300 font-semibold px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-xs transition-colors">
+              <a
+                href="/developer-playground"
+                className="text-amber-400 hover:text-amber-300 font-semibold px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-xs transition-colors"
+              >
                 Playground
               </a>
             )}
@@ -60,12 +71,26 @@ function InnerNavbar() {
 
           {/* Desktop Wallet */}
           <div className="hidden lg:flex items-center gap-3">
-            <WalletButton isConnected={isConnected} publicKey={publicKey} usdcBalance={usdcBalance} walletType={walletType} openModal={() => setWalletModalOpen(true)} disconnect={disconnect} />
+            <NotificationButton unreadCount={unreadCount} onClick={togglePanel} />
+            <WalletButton
+              isConnected={isConnected}
+              publicKey={publicKey}
+              usdcBalance={usdcBalance}
+              connect={connect}
+              disconnect={disconnect}
+            />
           </div>
 
           {/* Mobile hamburger */}
           <div className="flex lg:hidden items-center gap-3">
-            <WalletButton isConnected={isConnected} publicKey={publicKey} usdcBalance={usdcBalance} walletType={walletType} openModal={() => setWalletModalOpen(true)} disconnect={disconnect} />
+            <NotificationButton unreadCount={unreadCount} onClick={togglePanel} compact />
+            <WalletButton
+              isConnected={isConnected}
+              publicKey={publicKey}
+              usdcBalance={usdcBalance}
+              connect={connect}
+              disconnect={disconnect}
+            />
             <button
               aria-label={menuOpen ? "Close menu" : "Open menu"}
               aria-expanded={menuOpen}
@@ -74,11 +99,29 @@ function InnerNavbar() {
               className="p-2 rounded-lg text-slate-200 hover:bg-slate-800/80 transition-colors"
             >
               {menuOpen ? (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="w-6 h-6"
+                  aria-hidden="true"
+                >
                   <path d="M18 6 6 18M6 6l12 12" />
                 </svg>
               ) : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="w-6 h-6"
+                  aria-hidden="true"
+                >
                   <path d="M4 6h16M4 12h16M4 18h16" />
                 </svg>
               )}
@@ -156,13 +199,34 @@ interface WalletButtonProps {
   disconnect: () => void;
 }
 
-function WalletButton({ isConnected, publicKey, usdcBalance, walletType, openModal, disconnect }: WalletButtonProps) {
+function WalletButton({
+  isConnected,
+  publicKey,
+  usdcBalance,
+  connect,
+  disconnect,
+}: WalletButtonProps) {
   if (!isConnected) {
     return (
-      <button onClick={openModal} className="btn-cta !py-2.5 !px-4 !text-xs md:!text-sm shadow-cyan-500/20">
+      <button
+        onClick={connect}
+        className="btn-cta !py-2.5 !px-4 !text-xs md:!text-sm shadow-cyan-500/20"
+      >
         Connect Wallet
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M5 12h14" />
+          <path d="m12 5 7 7-7 7" />
         </svg>
       </button>
     );
@@ -208,6 +272,46 @@ function WalletButton({ isConnected, publicKey, usdcBalance, walletType, openMod
         Disconnect
       </button>
     </div>
+  );
+}
+
+function NotificationButton({
+  unreadCount,
+  onClick,
+  compact = false,
+}: {
+  unreadCount: number;
+  onClick: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Open notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ""}`}
+      className={`relative inline-flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900/70 text-slate-200 transition-colors hover:border-cyan-400/40 hover:text-cyan-300 ${
+        compact ? "h-10 w-10" : "h-11 w-11"
+      }`}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={compact ? "h-4.5 w-4.5" : "h-5 w-5"}
+        aria-hidden="true"
+      >
+        <path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0 1 18 14.172V11a6 6 0 1 0-12 0v3.172a2.032 2.032 0 0 1-.595 1.423L4 17h5" />
+        <path d="M9.73 21a2 2 0 0 0 3.54 0" />
+      </svg>
+      {unreadCount > 0 && (
+        <span className="absolute -right-1 -top-1 inline-flex min-w-5 items-center justify-center rounded-full bg-cyan-400 px-1.5 py-0.5 text-[10px] font-bold leading-none text-slate-950 shadow-lg shadow-cyan-400/30">
+          {unreadCount > 9 ? "9+" : unreadCount}
+        </span>
+      )}
+    </button>
   );
 }
 

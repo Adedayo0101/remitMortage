@@ -15,7 +15,9 @@ export function getRpcServer(): rpc.Server {
   return rpcServer;
 }
 
-export async function fetchTransactionStatus(hash: string): Promise<rpc.Api.GetTransactionResponse> {
+export async function fetchTransactionStatus(
+  hash: string
+): Promise<rpc.Api.GetTransactionResponse> {
   const server = getRpcServer();
   return server.getTransaction(hash);
 }

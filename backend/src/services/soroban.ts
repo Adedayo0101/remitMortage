@@ -11,6 +11,8 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { loadConfig } from "../config.js";
+import { RpcFailoverManager } from "./rpcFailover.js";
+import logger from "../utils/logger.js";
 
 const config = loadConfig();
 
@@ -19,8 +21,16 @@ const networkPassphrase =
   config.stellarNetwork === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 
 /**
+ * RPC failover manager for automatic load balancing and failover across
+ * multiple Soroban RPC nodes.
+ */
+const rpcManager = new RpcFailoverManager(config.sorobanRpcUrls);
+
+/**
  * Soroban RPC server used to simulate read-only contract calls. The server
  * exposes on-chain state without requiring any account to sign or pay fees.
+ * 
+ * @deprecated Use rpcManager.execute() for automatic failover support
  */
 const server = new rpc.Server(config.sorobanRpcUrl, {
   allowHttp: config.sorobanRpcUrl.startsWith("http://"),
@@ -88,6 +98,8 @@ export class SorobanQueryError extends Error {
  * value. No keypair is required — the transaction is built against a dummy
  * source account and never submitted, so nothing is signed or charged.
  *
+ * Uses automatic RPC failover for resilience against node outages.
+ *
  * @throws SorobanQueryError when the contract id is unset, the RPC call fails,
  *   or the contract returns an error.
  */
@@ -102,25 +114,22 @@ async function simulateRead(
     );
   }
 
-  let result: rpc.Api.SimulateTransactionResponse;
-  try {
-    const contract = new Contract(contractId);
-    const source = new Account(SIMULATION_SOURCE, "0");
-    const tx = new TransactionBuilder(source, {
-      fee: BASE_FEE,
-      networkPassphrase,
-    })
-      .addOperation(contract.call(method, ...args))
-      .setTimeout(30)
-      .build();
+  const contract = new Contract(contractId);
+  const source = new Account(SIMULATION_SOURCE, "0");
+  const tx = new TransactionBuilder(source, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(30)
+    .build();
 
-    result = await server.simulateTransaction(tx);
-  } catch (error) {
-    throw new SorobanQueryError(
-      `RPC simulation failed for ${method}`,
-      error
-    );
-  }
+  const result = await rpcManager.execute(
+    async (rpcServer) => {
+      return await rpcServer.simulateTransaction(tx);
+    },
+    `simulateRead:${method}`
+  );
 
   if (rpc.Api.isSimulationError(result)) {
     throw new SorobanQueryError(
@@ -298,52 +307,6 @@ export async function getInvestorInfo(
       return normalizeBigInts(raw) as InvestorInfo;
     }
   );
-}
-
-// ---------------------------------------------------------------------------
-// Reward halving queries
-// ---------------------------------------------------------------------------
-
-export interface HalvingInfo {
-  /** Number of ledgers between each epoch (immutable after init). */
-  halving_interval: number;
-  /** Ledger at which the most recent epoch began. */
-  last_halving_ledger: number;
-  /** Current epoch index (0 = genesis, 1 = after first halving, …). */
-  epoch: number;
-  /** Current reward multiplier in basis points (10 000 = 100 %, 5 000 = 50 %, …). */
-  reward_multiplier_bps: number;
-  /** Ledger at which the next halving will fire. */
-  next_halving_ledger: number;
-}
-
-/**
- * Returns a snapshot of the current halving epoch state for a lending-pool
- * contract.  This is a read-only simulation — it never advances the epoch.
- * Cache TTL is short (10 s) because the epoch can advance at any time once
- * the interval elapses.
- */
-export async function getHalvingInfo(contractId: string): Promise<HalvingInfo> {
-  return withCache(`pool:halving:${contractId}`, async () => {
-    const raw = (await simulateRead(
-      contractId,
-      "get_halving_info"
-    )) as Record<string, unknown>;
-    return normalizeBigInts(raw) as HalvingInfo;
-  });
-}
-
-/**
- * Returns just the current reward multiplier in basis points (10 000 = 100 %).
- * Lighter than `getHalvingInfo` when only the scalar is needed.
- */
-export async function getRewardMultiplierBps(
-  contractId: string
-): Promise<number> {
-  return withCache(`pool:multiplier:${contractId}`, async () => {
-    const value = await simulateRead(contractId, "get_reward_multiplier_bps");
-    return Number(value);
-  });
 }
 
 /**

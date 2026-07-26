@@ -4,7 +4,7 @@ mod errors;
 mod types;
 
 pub use crate::errors::ValidatorError;
-pub use crate::types::{DataKey, MultisigConfig, Signer};
+pub use crate::types::{DataKey, MultisigConfig, Proposal, ProposalState, Signer, TimelockConfig};
 
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 
@@ -180,9 +180,150 @@ impl MultisigValidator {
         Self::validate_signers(&config.signers)
     }
 
+    // ── Timelock ───────────────────────────────────────────────────────────────
+
+    /// Configure the timelock delay for `account`. The account itself must
+    /// authorize. A delay of 0 disables the timelock (immediate execution).
+    pub fn configure_timelock(
+        env: Env,
+        account: Address,
+        delay_seconds: u64,
+    ) -> Result<(), ValidatorError> {
+        account.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::TimelockConfig(account), &TimelockConfig { delay_seconds });
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Return the configured timelock delay for `account`.
+    pub fn get_timelock(env: Env, account: Address) -> Result<TimelockConfig, ValidatorError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TimelockConfig(account))
+            .ok_or(ValidatorError::TimelockNotConfigured)
+    }
+
+    /// Submit a new action proposal. `proposal_id` should be a unique 32-byte
+    /// value (e.g. a hash of the action details). Anyone may submit.
+    pub fn submit_action(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Result<(), ValidatorError> {
+        let now = env.ledger().timestamp();
+        let proposal = Proposal {
+            state: ProposalState::Pending,
+            ready_at: 0,
+            created_at: now,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ActionProposal(proposal_id), &proposal);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Approve a proposal with the given `signing_keys`. Once the cumulative
+    /// weight meets the account's threshold, the proposal transitions from
+    /// `Pending` to `Locked` and the timelock countdown begins.
+    pub fn approve_action(
+        env: Env,
+        account: Address,
+        proposal_id: BytesN<32>,
+        signing_keys: Vec<BytesN<32>>,
+    ) -> Result<(), ValidatorError> {
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActionProposal(proposal_id.clone()))
+            .ok_or(ValidatorError::ProposalNotFound)?;
+
+        if proposal.state == ProposalState::Executed {
+            return Err(ValidatorError::ProposalAlreadyExecuted);
+        }
+
+        // Already locked — no-op.
+        if proposal.state == ProposalState::Locked {
+            return Ok(());
+        }
+
+        // Check threshold via existing logic.
+        Self::enforce_threshold(env.clone(), account.clone(), signing_keys)?;
+
+        // Threshold met. Fetch timelock config and set ready_at.
+        let timelock = Self::get_timelock(env.clone(), account.clone())?;
+        let now = env.ledger().timestamp();
+        proposal.state = ProposalState::Locked;
+        proposal.ready_at = now.saturating_add(timelock.delay_seconds);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::ActionProposal(proposal_id), &proposal);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Returns `true` if the proposal has been approved and the timelock delay
+    /// has elapsed. Returns `false` if pending, locked-but-not-ready, or
+    /// already executed.
+    pub fn can_execute(env: Env, proposal_id: BytesN<32>) -> Result<bool, ValidatorError> {
+        let proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActionProposal(proposal_id))
+            .ok_or(ValidatorError::ProposalNotFound)?;
+
+        match proposal.state {
+            ProposalState::Locked => Ok(env.ledger().timestamp() >= proposal.ready_at),
+            ProposalState::Executed => Ok(false),
+            ProposalState::Pending => Ok(false),
+        }
+    }
+
+    /// Execute a timelocked proposal. Fails if not Locked, or if the timelock
+    /// delay has not yet elapsed.
+    pub fn execute_action(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Result<(), ValidatorError> {
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActionProposal(proposal_id.clone()))
+            .ok_or(ValidatorError::ProposalNotFound)?;
+
+        if proposal.state == ProposalState::Executed {
+            return Err(ValidatorError::ProposalAlreadyExecuted);
+        }
+        if proposal.state != ProposalState::Locked {
+            return Err(ValidatorError::NotYetApproved);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < proposal.ready_at {
+            return Err(ValidatorError::TimelockNotElapsed);
+        }
+
+        proposal.state = ProposalState::Executed;
+        env.storage()
+            .persistent()
+            .set(&DataKey::ActionProposal(proposal_id), &proposal);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read a proposal's current state.
+    pub fn get_proposal(env: Env, proposal_id: BytesN<32>) -> Result<Proposal, ValidatorError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ActionProposal(proposal_id))
+            .ok_or(ValidatorError::ProposalNotFound)
+    }
+
     /// Contract version.
     pub fn version(_env: Env) -> u32 {
-        1
+        2
     }
 }
 

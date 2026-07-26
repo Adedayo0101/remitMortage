@@ -46,9 +46,7 @@ describe("Onboarding wizard – form validation", () => {
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
 
     // An inline validation alert is shown and the step does not advance.
-    await waitFor(() =>
-      expect(screen.getByText(/Invalid Stellar address/i)).toBeInTheDocument()
-    );
+    await waitFor(() => expect(screen.getByText(/Invalid Stellar address/i)).toBeInTheDocument());
     expect(getOnboardingStore().getState().step).toBe(2);
   });
 
@@ -61,9 +59,7 @@ describe("Onboarding wizard – form validation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
 
-    await waitFor(() =>
-      expect(screen.getByText(/at least \$500/i)).toBeInTheDocument()
-    );
+    await waitFor(() => expect(screen.getByText(/at least \$500/i)).toBeInTheDocument());
     expect(getOnboardingStore().getState().step).toBe(3);
   });
 

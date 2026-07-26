@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { loadConfig } from "../config.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -31,4 +32,28 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
     res.status(401).json({ error: "unauthorized", message: "Invalid or expired token" });
     return;
   }
+}
+
+/**
+ * Gates admin-only routes (e.g. the audit log query endpoint) behind a static
+ * API key, kept separate from the wallet-based JWT flow in {@link authMiddleware}.
+ */
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    res
+      .status(401)
+      .json({ error: "missing_authorization", message: "Authorization header is required" });
+    return;
+  }
+
+  const token = authHeader.slice(7);
+  const { adminApiKey } = loadConfig();
+
+  if (token !== adminApiKey) {
+    res.status(403).json({ error: "forbidden", message: "Invalid admin credentials" });
+    return;
+  }
+
+  next();
 }

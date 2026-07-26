@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
       success: true,
       cid: fakeCid,
       milestoneId,
-      filename: file.name
+      filename: file.name,
     });
   } catch (error) {
     console.error("Upload error:", error);

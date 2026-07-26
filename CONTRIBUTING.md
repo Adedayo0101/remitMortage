@@ -105,6 +105,13 @@ Make sure tests run clean without any warnings. Use `cargo clippy` and `cargo fm
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
+These same two checks (plus a `cargo-audit` dependency scan) run in the `Security Checks` GitHub Actions workflow on every PR and **block merge** if formatting drifts or a lint/vulnerability is introduced.
+
+**Clippy exception overrides:** Soroban SDK macros (`#[contract]`, `#[contracttype]`, `#[contracterror]`) generate code that occasionally trips a clippy lint through no fault of the hand-written code around it — a common example is a lint firing on SDK-expanded trait impls that a fully hand-written type wouldn't hit. When that happens:
+*   Never silence it with a crate-wide `#![allow(...)]` — that hides the lint everywhere, including future genuine violations.
+*   Scope the override to the single item that needs it, e.g. `#[allow(clippy::too_many_arguments)]` directly above the `fn`/`struct` it applies to.
+*   Add a one-line comment stating *why* the override is needed (e.g. "SDK-generated constructor signature — not user-controlled"), so reviewers and `cargo clippy` alike can tell an intentional exception from an ignored warning.
+*   Prefer fixing the underlying code over suppressing the lint whenever the fix doesn't fight the SDK's generated interface.
 
 #### 3. State Management & Lifecycle
 *   Use `instance` storage for global protocol configurations (e.g., admin keys, fee models, token addresses).

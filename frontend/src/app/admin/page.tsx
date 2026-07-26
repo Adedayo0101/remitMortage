@@ -71,8 +71,7 @@ function AdminPageInner() {
       <AdminShell>
         <div className="text-center py-16">
           <p className="text-sm text-[var(--text-secondary)] mb-4">
-            Connect the admin wallet to manage loan approvals and milestone
-            disbursements.
+            Connect the admin wallet to manage loan approvals and milestone disbursements.
           </p>
           <button onClick={() => connect()} className="btn-primary !py-2.5 !px-5">
             Connect Wallet
@@ -89,9 +88,7 @@ function AdminPageInner() {
           role="alert"
           className="max-w-md mx-auto text-center py-16 px-6 rounded-lg border border-red-500/40 bg-red-500/10"
         >
-          <p className="text-lg font-bold text-red-400 mb-1">
-            Unauthorized — Admin access only
-          </p>
+          <p className="text-lg font-bold text-red-400 mb-1">Unauthorized — Admin access only</p>
           <p className="text-sm text-[var(--text-secondary)]">
             The connected wallet is not the configured protocol administrator.
           </p>
@@ -145,13 +142,34 @@ function AdminDashboard() {
       //   pool.get_pending_loans(), milestone.get_pending(), pool overview.
       await new Promise((resolve) => setTimeout(resolve, 400));
       setLoans([
-        { id: "loan-1", borrower: "GBORROWER1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", principal: 70000, verificationScore: 82 },
-        { id: "loan-2", borrower: "GBORROWER2BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", principal: 45000, verificationScore: 67 },
+        {
+          id: "loan-1",
+          borrower: "GBORROWER1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          principal: 70000,
+          verificationScore: 82,
+        },
+        {
+          id: "loan-2",
+          borrower: "GBORROWER2BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          principal: 45000,
+          verificationScore: 67,
+        },
       ]);
       setMilestones([
-        { id: "ms-1", loanId: "loan-3", contractor: "GCONTRACTOR1CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", amount: 25000, evidenceCid: "QmExampleEvidenceCid1111111111111111111111111111" },
+        {
+          id: "ms-1",
+          loanId: "loan-3",
+          contractor: "GCONTRACTOR1CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+          amount: 25000,
+          evidenceCid: "QmExampleEvidenceCid1111111111111111111111111111",
+        },
       ]);
-      setOverview({ totalLiquidity: 1_250_000, activeLoans: 3, totalDisbursed: 410_000, totalRepaid: 138_400 });
+      setOverview({
+        totalLiquidity: 1_250_000,
+        activeLoans: 3,
+        totalDisbursed: 410_000,
+        totalRepaid: 138_400,
+      });
     } catch {
       toast.error("Failed to load admin data.");
     } finally {
@@ -353,8 +371,7 @@ function PendingLoansTab({
 }
 
 function ScoreBadge({ score }: { score: number }) {
-  const color =
-    score >= 75 ? "text-emerald-400" : score >= 50 ? "text-amber-400" : "text-red-400";
+  const color = score >= 75 ? "text-emerald-400" : score >= 50 ? "text-amber-400" : "text-red-400";
   return <span className={color}>{score}/100</span>;
 }
 

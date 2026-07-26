@@ -87,46 +87,15 @@ export async function buildWithdrawTx(borrower: string): Promise<string> {
   return SorobanRpc.assembleTransaction(tx, simulated).build().toXDR();
 }
 
-/**
- * Sign and submit a pre-assembled Stellar transaction XDR.
- *
- * Accepts an optional `signer` callback so callers can inject the active
- * wallet's signing function (Freighter or Ledger) without creating a hard
- * dependency on the React context from this utility module.
- *
- * When `signer` is omitted the function falls back to Freighter for
- * backwards-compatibility with any code that has not yet been updated to
- * pass a signer.
- *
- * @param txXdr  Base-64 encoded assembled transaction XDR.
- * @param signer Optional async function that accepts the XDR string and
- *               returns the signed XDR string.  Provide
- *               `WalletContext.signStellarTx` here.
- */
-export async function signAndSubmit(
-  txXdr: string,
-  signer?: (xdr: string) => Promise<string>
-): Promise<string> {
-  let signedXdr: string;
-
-  if (signer) {
-    // Wallet-aware path: Freighter or Ledger via the context abstraction.
-    signedXdr = await signer(txXdr);
-  } else {
-    // Legacy fallback: always use Freighter directly.
-    const freighter = await import("@stellar/freighter-api");
-    if (typeof freighter.signTransaction !== "function") {
-      throw new Error("Freighter signing API is unavailable");
-    }
-    const result = await freighter.signTransaction(txXdr, {
-      networkPassphrase: networkPassphrase(),
-    });
-    // freighter-api v1 returns a plain string; v2+ wraps it.
-    signedXdr =
-      typeof result === "string"
-        ? result
-        : (result as { signedTxXdr: string }).signedTxXdr;
+export async function signAndSubmit(txXdr: string): Promise<string> {
+  const freighter = await import("@stellar/freighter-api");
+  if (typeof freighter.signTransaction !== "function") {
+    throw new Error("Freighter signing API is unavailable");
   }
+
+  const signedXdr = await freighter.signTransaction(txXdr, {
+    networkPassphrase: networkPassphrase(),
+  });
 
   const server = getRpcServer();
   const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase());
@@ -143,7 +112,9 @@ export async function signAndSubmit(
   return sendResponse.hash;
 }
 
-export async function queryEscrowConfig(publicKey: string): Promise<{ earlyWithdrawalPenaltyBps: number; savingsTarget: string }> {
+export async function queryEscrowConfig(
+  publicKey: string
+): Promise<{ earlyWithdrawalPenaltyBps: number; savingsTarget: string }> {
   const server = getRpcServer();
   const source = await server.getAccount(publicKey);
   const contract = new Contract(escrowContractId());
@@ -169,6 +140,6 @@ export async function queryEscrowConfig(publicKey: string): Promise<{ earlyWithd
   const val = result.retval;
   return {
     earlyWithdrawalPenaltyBps: Number(val._attributes.early_withdrawal_penalty_bps) || 500,
-    savingsTarget: (val._attributes.savings_target?.toString() || "0"),
+    savingsTarget: val._attributes.savings_target?.toString() || "0",
   };
 }
