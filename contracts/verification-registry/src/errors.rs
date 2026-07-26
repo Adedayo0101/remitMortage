@@ -20,4 +20,8 @@ pub enum RegistryError {
     NoProposedAdmin = 7,
     /// Score must be in the range 0–100 inclusive.
     InvalidScore = 8,
+    /// Repayment callback may only be pushed by the configured lending pool.
+    UnauthorizedPool = 9,
+    /// Referral or risk state update would create an invalid cycle.
+    InvalidRiskTransition = 10,
 }

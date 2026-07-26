@@ -159,6 +159,24 @@ pub struct PoolHealth {
     pub loss_ratio_bps: u32,
 }
 
+/// Snapshot of the halving state, returned by `get_halving_info`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HalvingInfo {
+    /// Number of ledgers between each halving epoch (e.g. 5_000_000).
+    pub halving_interval: u32,
+    /// Ledger sequence at which the most recent halving occurred (or the
+    /// pool initialisation ledger for the very first epoch).
+    pub last_halving_ledger: u32,
+    /// Current epoch index (0 = genesis, 1 = after first halving, …).
+    pub epoch: u32,
+    /// Current reward multiplier in basis points
+    /// (10_000 = 100 %, 5_000 = 50 %, 2_500 = 25 %, …).
+    pub reward_multiplier_bps: u32,
+    /// Ledger sequence at which the *next* halving will fire.
+    pub next_halving_ledger: u32,
+}
+
 /// Storage keys for the lending pool contract.
 #[contracttype]
 #[derive(Clone)]
@@ -212,12 +230,13 @@ pub enum DataKey {
     /// Whitelist flag for a contractor address. Present and `true` means the
     /// address is a vetted recipient eligible to receive disbursements.
     Whitelist(Address),
-    /// Configurable grace period, in ledgers, granted after an installment's
-    /// due date before late penalties begin to accrue. Absent means the default
-    /// grace period is used.
-    GracePeriodLedgers,
-    /// Configurable late-payment penalty rate, in basis points, charged per day
-    /// that a repayment is overdue beyond the grace period. Absent means the
-    /// default daily penalty rate is used.
-    DailyPenaltyBps,
+    // ── Reward Halving ──────────────────────────────────────────────────
+    /// Number of ledgers between each halving epoch. Set once during
+    /// `initialize` and never mutated (immutable schedule parameter).
+    HalvingInterval,
+    /// Ledger sequence at which the most recent epoch transition occurred.
+    /// Seeded to the pool's initialisation ledger; updated on each halving.
+    LastHalvingLedger,
+    /// Zero-based epoch counter. Incremented on every halving event.
+    HalvingEpoch,
 }

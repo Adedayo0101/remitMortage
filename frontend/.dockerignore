@@ -1,0 +1,38 @@
+# ── Build artefacts ──────────────────────────────────────────────────────────
+.next
+out
+build
+
+# ── Runtime / dev dependencies ───────────────────────────────────────────────
+# node_modules is re-installed from the lockfile inside the container so we
+# never copy the host's tree (wrong platform binaries, dirty cache, etc.).
+node_modules
+
+# ── Source-control metadata ───────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+
+# ── Local environment files (secrets must not enter the image) ───────────────
+.env
+.env.*
+!.env.example
+
+# ── Editor / OS noise ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea
+.vscode
+
+# ── Test outputs ─────────────────────────────────────────────────────────────
+coverage
+jest-results.xml
+
+# ── Docker files themselves (no need to COPY them into the image) ────────────
+Dockerfile
+.dockerignore
+
+# ── Docs ─────────────────────────────────────────────────────────────────────
+*.md
