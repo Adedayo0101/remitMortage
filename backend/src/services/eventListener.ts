@@ -15,6 +15,7 @@ import {
   indexerBackoffAttempt,
   indexerBatchSize,
 } from "./metrics.js";
+import { dispatchEvent, type EventTopic } from "./webhook.js";
 
 /** Soroban testnet RPC endpoint. */
 export const SOROBAN_TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
@@ -339,6 +340,18 @@ export class SorobanEventListener {
         contractId: event.contractId,
       },
     });
+
+    // ── Fan-out to webhook subscribers ────────────────────────────────
+    // dispatchEvent is fire-and-forget: it queues the delivery in the
+    // background and never blocks the poll loop.
+    if (kind !== "release") {
+      dispatchEvent(kind as EventTopic, {
+        contractId: event.contractId,
+        borrower: event.borrower,
+        amount: event.amount,
+        ledger: event.ledger,
+      });
+    }
 
     // Invalidate analytics cache since the underlying data changed
     deleteCacheByPattern("analytics:*").catch((err) =>

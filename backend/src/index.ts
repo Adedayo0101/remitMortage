@@ -26,6 +26,7 @@ import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
 import { workspaceRouter } from "./routes/workspace.js";
 import { metricsRouter } from "./routes/metrics.js";
+import { webhooksRouter } from "./routes/webhooks.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
@@ -95,6 +96,7 @@ app.use("/api/workspaces", workspaceRouter);
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
+app.use("/api/webhooks", authMiddleware, webhooksRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
