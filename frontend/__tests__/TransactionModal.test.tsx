@@ -81,4 +81,70 @@ describe("TransactionModal", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("The contract rejected the transaction");
   });
+  it("offers a Retry Signature CTA after a rejected signature", () => {
+    const onRetry = jest.fn();
+
+    render(
+      <TransactionModal
+        isOpen
+        phase="error"
+        transactionType="Deposit"
+        errorMessage="Transaction rejected by user."
+        recoveryHint="Nothing was submitted. Approve the request in Freighter to continue."
+        onRetry={onRetry}
+        onClose={jest.fn()}
+      />
+    );
+
+    expect(
+      screen.getByText(/approve the request in freighter/i)
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /retry signature/i }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the retry CTA while a retry is in flight", () => {
+    render(
+      <TransactionModal
+        isOpen
+        phase="error"
+        transactionType="Deposit"
+        errorMessage="Transaction rejected by user."
+        onRetry={jest.fn()}
+        retrying
+        onClose={jest.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /retrying/i })).toBeDisabled();
+  });
+
+  it("omits the retry CTA when no handler is supplied", () => {
+    render(
+      <TransactionModal
+        isOpen
+        phase="error"
+        transactionType="Deposit"
+        errorMessage="Freighter was not detected."
+        onClose={jest.fn()}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /retry signature/i })).not.toBeInTheDocument();
+  });
+
+  it("never shows the retry CTA on success", () => {
+    render(
+      <TransactionModal
+        isOpen
+        phase="success"
+        transactionType="Deposit"
+        onRetry={jest.fn()}
+        onClose={jest.fn()}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /retry signature/i })).not.toBeInTheDocument();
+  });
 });

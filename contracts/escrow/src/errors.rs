@@ -44,4 +44,6 @@ pub enum EscrowError {
     InvalidPenaltyBps = 19,
     /// Reentrant call detected — mutating function already in progress.
     ReentrancyGuard = 20,
+    /// TTL bump amounts and lifetime thresholds must be greater than zero.
+    InvalidTtlConfig = 21,
 }

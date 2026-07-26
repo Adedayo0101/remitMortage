@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Loader2,
+  RefreshCw,
   ShieldAlert,
   Sparkles,
   X,
@@ -25,6 +26,15 @@ interface TransactionModalProps {
   transactionType: TransactionType;
   hash?: string | null;
   errorMessage?: string | null;
+  /**
+   * Retry handler for a failed signature or submission. When provided, the
+   * error state offers a "Retry Signature" CTA instead of only a Close button.
+   */
+  onRetry?: () => void;
+  /** Set while a retry is in flight so the CTA can show progress. */
+  retrying?: boolean;
+  /** Extra guidance below the error, e.g. "Reconnect Freighter to continue." */
+  recoveryHint?: string | null;
   onClose: () => void;
 }
 
@@ -81,6 +91,9 @@ export default function TransactionModal({
   transactionType,
   hash,
   errorMessage,
+  onRetry,
+  retrying = false,
+  recoveryHint,
   onClose,
 }: TransactionModalProps) {
   useEffect(() => {
@@ -245,14 +258,33 @@ export default function TransactionModal({
                 Clean Error
               </p>
               <p className="mt-2 leading-6">{displayError}</p>
+              {recoveryHint && (
+                <p className="mt-2 text-xs leading-5 text-red-200/80">{recoveryHint}</p>
+              )}
             </div>
           )}
 
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-end gap-3">
             {canClose ? (
-              <button type="button" onClick={onClose} className="btn-primary !px-6 !py-3">
-                Close
-              </button>
+              <>
+                {phase === "error" && onRetry && (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    disabled={retrying}
+                    className="inline-flex items-center gap-2 rounded-full border border-cyan-300/50 px-5 py-3 text-sm font-semibold text-cyan-100 transition hover:border-cyan-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`h-4 w-4 ${retrying ? "animate-spin" : ""}`}
+                      aria-hidden="true"
+                    />
+                    {retrying ? "Retrying…" : "Retry Signature"}
+                  </button>
+                )}
+                <button type="button" onClick={onClose} className="btn-primary !px-6 !py-3">
+                  Close
+                </button>
+              </>
             ) : (
               <div className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs uppercase tracking-[0.18em] text-slate-400">
                 <ShieldAlert className="h-4 w-4" />
