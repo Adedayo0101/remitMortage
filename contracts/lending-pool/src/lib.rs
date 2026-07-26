@@ -836,6 +836,43 @@ impl LendingPoolContract {
         Ok(())
     }
 
+    /// Borrower cancels their own loan request before an admin acts on it.
+    ///
+    /// Only the borrower named on the loan may cancel, and only while the loan
+    /// is still `Requested`. Approved, repaid, defaulted or already cancelled
+    /// loans are rejected with `InvalidLoanState`. A requested loan holds no
+    /// pool liquidity, so cancelling only clears the record: the status moves
+    /// to `Cancelled` and the loan count is decremented.
+    pub fn cancel_loan(env: Env, loan_id: BytesN<32>) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+
+        let mut loan = Self::read_loan(&env, &loan_id)?;
+        loan.borrower.require_auth();
+
+        if loan.status != LoanStatus::Requested {
+            return Err(PoolError::InvalidLoanState);
+        }
+
+        loan.status = LoanStatus::Cancelled;
+        Self::set_loan(&env, &loan_id, &loan);
+
+        let count = Self::read_loan_count(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::LoanCount, &count.saturating_sub(1));
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "loan_cancelled"),),
+            (loan.borrower.clone(), loan_id.clone()),
+        );
+
+        Ok(())
+    }
+
     /// Refinance an active loan to extend its term or adjust its interest rate.
     pub fn refinance_loan(
         env: Env,
@@ -4241,5 +4278,155 @@ mod test {
             "get_halving_info must not mutate epoch state");
         assert_eq!(info.reward_multiplier_bps, 10_000u32,
             "get_halving_info must return stale (epoch 0) multiplier without triggering");
+    }
+
+    // ── Loan Cancellation Tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_borrower_cancels_requested_loan() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &70_000_0000000i128);
+
+        client.cancel_loan(&loan_id);
+
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Cancelled);
+        assert_eq!(loan.borrower, borrower);
+        // Cancelling never touched pool liquidity.
+        assert_eq!(client.get_liquidity(), 70_000_0000000i128);
+    }
+
+    #[test]
+    fn test_cancel_loan_requires_borrower_signature() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &70_000_0000000i128);
+
+        // The admin signs instead of the borrower — the loan is not theirs to cancel.
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "cancel_loan",
+                args: (loan_id.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_cancel_loan(&loan_id).is_err());
+
+        // Same for an unrelated third party.
+        let stranger = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "cancel_loan",
+                args: (loan_id.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_cancel_loan(&loan_id).is_err());
+
+        // The loan is untouched.
+        env.mock_all_auths();
+        assert_eq!(client.get_loan_info(&loan_id).status, LoanStatus::Requested);
+    }
+
+    #[test]
+    fn test_cancel_approved_loan_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &70_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        let result = client.try_cancel_loan(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::InvalidLoanState));
+        assert_eq!(client.get_loan_info(&loan_id).status, LoanStatus::Approved);
+    }
+
+    #[test]
+    fn test_cancel_loan_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &70_000_0000000i128);
+        client.cancel_loan(&loan_id);
+
+        let result = client.try_cancel_loan(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::InvalidLoanState));
+    }
+
+    #[test]
+    fn test_cancel_unknown_loan_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
+        let loan_id = mock_loan_id(&env);
+
+        let result = client.try_cancel_loan(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::LoanNotFound));
+    }
+
+    #[test]
+    fn test_cancel_loan_reverts_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &70_000_0000000i128);
+        client.pause();
+
+        let result = client.try_cancel_loan(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
+    }
+
+    #[test]
+    fn test_cancelled_loan_id_cannot_be_reused() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.cancel_loan(&loan_id);
+
+        // The record is retained as Cancelled, so the ID stays taken.
+        let result = client.try_request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::LoanAlreadyExists));
     }
 }
