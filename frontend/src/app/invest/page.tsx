@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useWallet, WalletProvider } from "../../context/WalletContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
+import ROIProjectionWidget from "../../components/ROIProjectionWidget";
 
 type Tranche = "Senior" | "Junior";
 
@@ -485,6 +486,14 @@ function InvestPageInner() {
             </div>
           </section>
         </div>
+
+        {isConnected && publicKey && position && parseFloat(position.deposited) > 0 && (
+          <ROIProjectionWidget
+            wallet={publicKey}
+            depositedAmount={parseFloat(position.deposited)}
+            apyBps={position.tranche === "Senior" ? seniorApyBps : juniorApyBps}
+          />
+        )}
       </main>
     </div>
   );
