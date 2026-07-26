@@ -268,7 +268,10 @@ impl EscrowContract {
     /// The penalty stays in the contract (future: route to protocol treasury).
     pub fn withdraw(env: Env, borrower: Address, goal_id: Symbol) -> Result<i128, EscrowError> {
         borrower.require_auth();
-        Self::check_not_paused(&env)?;
+        // NOTE: withdrawals are intentionally NOT gated by `check_not_paused`.
+        // The emergency stop freezes inflows (deposits) and releases, but must
+        // preserve a borrower's ability to reclaim their own funds so that a
+        // pause never traps user liquidity.
         Self::non_reentrant(&env, || {
 
         let config = Self::get_config(&env)?;
@@ -1564,7 +1567,7 @@ mod test {
     }
 
     #[test]
-    fn test_withdraw_reverts_when_paused() {
+    fn test_withdraw_works_when_paused() {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -1574,8 +1577,11 @@ mod test {
         client.deposit(&borrower, &goal, &2_000_0000000i128);
         client.pause();
 
-        let res = client.try_withdraw(&borrower, &goal);
-        assert_eq!(res.unwrap_err(), Ok(EscrowError::ContractPaused));
+        // Withdrawals must remain available while paused so a borrower can
+        // always reclaim their own funds during an emergency freeze.
+        let refunded = client.withdraw(&borrower, &goal);
+        assert!(refunded > 0);
+        assert!(client.get_borrower_info(&borrower, &goal).withdrawn);
     }
 
     #[test]
