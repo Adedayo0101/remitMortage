@@ -211,6 +211,8 @@ fn test_submit_and_get_proposal() {
     let proposal = client.get_proposal(&pid);
     assert_eq!(proposal.state, ProposalState::Pending);
     assert_eq!(proposal.created_at, 1_000_000);
+    // Default expiry should be set (non-zero in test = 1_000 ledgers from seq 0)
+    assert!(proposal.expiration_ledger > 0);
 }
 
 #[test]
@@ -220,7 +222,7 @@ fn test_approve_transitions_to_locked() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xAA);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     // A(2) + B(1) = 3 >= threshold 3
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
@@ -238,7 +240,7 @@ fn test_execute_after_timelock_elapsed() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xBB);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -259,7 +261,7 @@ fn test_execute_before_timelock_fails() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xCC);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -278,7 +280,7 @@ fn test_cannot_execute_twice() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xDD);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -297,7 +299,7 @@ fn test_cannot_approve_executed_proposal() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xEE);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -315,7 +317,7 @@ fn test_execute_without_approval_fails() {
     let (_account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xFF);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
     // Never approved.
 
     env.ledger().set_timestamp(1_000_011);
@@ -330,7 +332,7 @@ fn test_can_execute_returns_correctly() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0x11);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     // Pending → can_execute false.
     assert!(!client.can_execute(&pid));
@@ -359,7 +361,7 @@ fn test_zero_delay_timelock_allows_immediate_execution() {
 
     client.configure_timelock(&account, &0u64); // No delay.
     let pid = proposal_id(&env, 0x22);
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -376,7 +378,7 @@ fn test_approve_action_without_timelock_fails() {
     env.mock_all_auths();
     let (account, client) = setup(&env); // No timelock configured.
     let pid = proposal_id(&env, 0x33);
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     let res = client.try_approve_action(&account, &pid, &keys);
