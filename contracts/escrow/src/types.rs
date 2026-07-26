@@ -44,12 +44,33 @@ pub struct BorrowerRecord {
     pub deposited: i128,
     /// Ledger sequence when the borrower first deposited.
     pub start_ledger: u32,
+    /// Ledger sequence of the latest contribution.
+    pub last_contribution_ledger: u32,
     /// Whether the borrower has completed their savings target and funds were released.
     pub released: bool,
     /// Whether the borrower withdrew early.
     pub withdrawn: bool,
     /// Whether the collateral was seized by the lending pool due to default.
     pub seized: bool,
+}
+
+/// Pending upgrade proposal data.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingUpgradeRecord {
+    pub new_wasm_hash: BytesN<32>,
+    pub execute_after: u32,
+}
+
+/// Pending penalty tier proposal data.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingPenaltyProposal {
+    pub tier1: u32,
+    pub tier2: u32,
+    pub tier3: u32,
+    pub tier4: u32,
+    pub execute_after: u32,
 }
 
 /// Storage keys for the escrow contract.
@@ -66,6 +87,8 @@ pub enum DataKey {
     Version,
     /// Pending upgrade proposal (present only when a timelock delay is active).
     PendingUpgrade,
+    /// Pending penalty tier proposal (present only when a timelock delay is active).
+    PendingPenaltyTiers,
     /// Number of ledgers the admin must wait between proposing and executing an upgrade.
     UpgradeDelay,
     /// Emergency pause flag. When true, deposits and withdrawals are blocked.
