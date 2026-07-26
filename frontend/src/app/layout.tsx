@@ -9,6 +9,8 @@ import { ToastProvider } from "@/context/ToastContext";
 import { ToastContainer } from "@/components/ToastContainer";
 import { HotToaster } from "@/components/HotToaster";
 import Footer from "@/components/Footer";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getMessages } from "next-intl/server";
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? "https://remitmortgage.com";
 
@@ -80,29 +82,34 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const locale = await getLocale();
+  const messages = await getMessages();
+
   return (
-    <html lang="en">
+    <html lang={locale}>
       <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
-        <ThemeProvider>
-          <WalletProvider>
-            <AuthProvider>
-            <NotificationProvider>
-              <ToastProvider>
-                <div className="flex-1">{children}</div>
-                <Footer />
-                <NotificationLayer />
-                <ToastContainer />
-                <HotToaster />
-              </ToastProvider>
-              </NotificationProvider>
-            </AuthProvider>
-          </WalletProvider>
-        </ThemeProvider>
+        <NextIntlClientProvider locale={locale} messages={messages}>
+          <ThemeProvider>
+            <WalletProvider>
+              <AuthProvider>
+                <NotificationProvider>
+                  <ToastProvider>
+                    <div className="flex-1">{children}</div>
+                    <Footer />
+                    <NotificationLayer />
+                    <ToastContainer />
+                    <HotToaster />
+                  </ToastProvider>
+                </NotificationProvider>
+              </AuthProvider>
+            </WalletProvider>
+          </ThemeProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );

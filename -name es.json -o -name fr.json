@@ -1,0 +1,15 @@
+ frontend/next.config.ts                       |   9 [32m+[m[31m-[m
+ frontend/package-lock.json                    | 713 [32m++++++++++++++++++++++++++++++++++++++++++++++[m[31m-[m
+ frontend/package.json                         |   1 [32m+[m
+ frontend/src/app/dashboard/page.tsx           |  13 [32m+[m[31m-[m
+ frontend/src/app/layout.tsx                   |  41 [32m+[m[31m--[m
+ frontend/src/app/page.tsx                     |  20 [32m+[m[31m-[m
+ frontend/src/app/verify/page.tsx              |  31 [32m++[m[31m-[m
+ frontend/src/components/Footer.tsx            |  25 [32m+[m[31m-[m
+ frontend/src/components/Navbar.tsx            |  36 [32m++[m[31m-[m
+ frontend/src/components/WalletSelectModal.tsx |   2 [32m+[m[31m-[m
+ frontend/src/context/WalletContext.tsx        |  22 [32m++[m
+ frontend/src/lib/ledger.ts                    |  50 [32m+++[m[31m-[m
+ frontend/src/lib/soroban.ts                   |   2 [32m+[m[31m-[m
+ frontend/src/middleware.ts                    |  16 [32m+[m[31m-[m
+ 14 files changed, 886 insertions(+), 95 deletions(-)

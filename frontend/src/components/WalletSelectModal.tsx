@@ -90,7 +90,7 @@ export const WalletSelectModal: React.FC<WalletSelectModalProps> = ({
 
   if (!isOpen) return null;
 
-  const isStellarConnected = walletType === "stellar" || walletType === "ledger";
+  const isStellarConnected = walletType === "stellar";
 
   // ---------------------------------------------------------------------------
   // Handlers

@@ -123,7 +123,7 @@ function extractEstimate(
   // The simulation type narrows to SimulateTransactionSuccessResponse only
   // when it has a `result` field.  We access the raw `minResourceFee` and
   // the transaction data footprint defensively.
-  const raw = sim as Record<string, unknown>;
+  const raw = sim as unknown as Record<string, unknown>;
 
   const minResourceFeeStroops =
     typeof raw.minResourceFee === "string"
