@@ -1,11 +1,10 @@
 [package]
-name = "integration-tests"
+name = "yield-vault"
 version = "0.1.0"
 edition = "2021"
-publish = false
 
 [lib]
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
@@ -13,6 +12,3 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-escrow = { path = "../escrow" }
-lending-pool = { path = "../lending-pool" }
-yield-vault = { path = "../yield-vault" }

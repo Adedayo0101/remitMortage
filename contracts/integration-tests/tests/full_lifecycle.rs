@@ -53,6 +53,11 @@ fn deploy_protocol<'a>(env: &Env) -> Protocol<'a> {
     let token_id = env.register_stellar_asset_contract_v2(token_admin);
     let token = token_id.address();
 
+    // Lending pool: 8% annual interest, 4% fixed senior yield.
+    let pool_id = env.register(LendingPoolContract, ());
+    let pool = LendingPoolContractClient::new(env, &pool_id);
+    pool.initialize(&admin, &token, &800u32, &400u32, &treasury);
+
     // Escrow: 30,000 USDC savings target, no lockup so release is purely
     // target-gated.
     let escrow_id = env.register(EscrowContract, ());
@@ -60,6 +65,7 @@ fn deploy_protocol<'a>(env: &Env) -> Protocol<'a> {
     escrow.initialize(&EscrowConfig {
         admin: admin.clone(),
         token: token.clone(),
+        lending_pool: pool_id.clone(),
         savings_target: 30_000 * USDC,
         max_duration_ledgers: 10_000_000,
         early_withdrawal_penalty_bps: 500,
@@ -70,12 +76,8 @@ fn deploy_protocol<'a>(env: &Env) -> Protocol<'a> {
         penalty_bps_tier4: 200,
         grace_period_ledgers: 120_960,
         default_penalty_bps: 1_000,
+        yield_vault: None,
     });
-
-    // Lending pool: 8% annual interest, 4% fixed senior yield.
-    let pool_id = env.register(LendingPoolContract, ());
-    let pool = LendingPoolContractClient::new(env, &pool_id);
-    pool.initialize(&admin, &token, &800u32, &400u32, &treasury);
 
     Protocol {
         token,
