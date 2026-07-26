@@ -212,4 +212,12 @@ pub enum DataKey {
     /// Whitelist flag for a contractor address. Present and `true` means the
     /// address is a vetted recipient eligible to receive disbursements.
     Whitelist(Address),
+    /// Configurable grace period, in ledgers, granted after an installment's
+    /// due date before late penalties begin to accrue. Absent means the default
+    /// grace period is used.
+    GracePeriodLedgers,
+    /// Configurable late-payment penalty rate, in basis points, charged per day
+    /// that a repayment is overdue beyond the grace period. Absent means the
+    /// default daily penalty rate is used.
+    DailyPenaltyBps,
 }
