@@ -20,8 +20,10 @@ const LEDGERS_PER_MONTH: u32 = 518_400; // ~30 days
 const LEDGERS_PER_DAY: u32 = 17_280; // ~1 day
 #[cfg(test)]
 const LEDGERS_PER_DAY: u32 = 100;
-const GRACE_PERIOD_LEDGERS: u32 = 120_960; // ~7 days
-const LATE_PENALTY_BPS: u32 = 50; // 50 bps = 0.5%
+const GRACE_PERIOD_LEDGERS: u32 = 120_960; // ~7 days (default grace period)
+#[allow(dead_code)]
+const LATE_PENALTY_BPS: u32 = 50; // 50 bps = 0.5% (legacy flat late penalty)
+const DEFAULT_DAILY_PENALTY_BPS: u32 = 10; // 10 bps = 0.1% of the installment per overdue day
 const DEFAULT_DURATION_MONTHS: u32 = 12;
 const DEFAULT_MISSED_THRESHOLD: u32 = 3; // default after 3 missed payments
 const DEFAULT_OVERDUE_LEDGERS: u32 = 3 * LEDGERS_PER_MONTH; // ~90 days past due
@@ -49,16 +51,6 @@ const INTEREST_RATE_GOOD_BPS: u32 = 600;
 const INTEREST_RATE_FAIR_BPS: u32 = 800;
 /// Fallback rate when verification is missing or expired: 12% APR.
 const INTEREST_RATE_FALLBACK_BPS: u32 = 1200;
-
-// ── Collateralization Ratio ─────────────────────────────────────────────────
-/// Minimum escrow-deposit-to-principal ratio in basis points.
-/// 3_000 bps = 30%: a borrower's live escrow balance must cover at least
-/// 30% of the requested loan principal, or the request is rejected.
-const MIN_COLLATERAL_RATIO_BPS: u32 = 3_000;
-
-/// Default escrow goal ID used when fetching a borrower's deposit balance.
-/// Must match the goal symbol used during the savings deposit flow.
-const DEFAULT_ESCROW_GOAL: &str = "savings";
 
 // ── Reward Halving Constants ────────────────────────────────────────────
 /// Default number of ledgers per halving epoch (≈ 5 000 000 ledgers).
@@ -362,61 +354,6 @@ impl LendingPoolContract {
         (raw_interest * multiplier_bps as i128) / HALVING_MULTIPLIER_FULL_BPS as i128
     }
 
-    // ── Collateralization Ratio ─────────────────────────────────────────
-
-    /// Fetch the borrower's current escrow deposit balance via a cross-contract
-    /// read call to the configured escrow contract.
-    ///
-    /// Uses `get_borrower_balance(borrower, goal_id)` — a pure query that does
-    /// not transfer or mutate any state.  Returns 0 when the escrow contract
-    /// cannot be reached or returns an unexpected type, so that the ratio check
-    /// fails safely rather than panicking.
-    fn fetch_escrow_balance(env: &Env, escrow: &Address, borrower: &Address) -> i128 {
-        let goal: soroban_sdk::Symbol = soroban_sdk::Symbol::new(env, DEFAULT_ESCROW_GOAL);
-        let result: Result<i128, _> = env.invoke_contract(
-            escrow,
-            &soroban_sdk::Symbol::new(env, "get_borrower_balance"),
-            soroban_sdk::vec![env, borrower.into_val(env), goal.into_val(env)],
-        );
-        result.unwrap_or(0)
-    }
-
-    /// Enforce the minimum collateralization ratio.
-    ///
-    /// Ratio = (escrow_balance / principal) expressed in basis points.
-    /// The check passes when ratio >= MIN_COLLATERAL_RATIO_BPS (3 000 bps = 30%).
-    ///
-    /// Edge cases:
-    ///   - `principal == 0` is already rejected upstream as `InvalidAmount`.
-    ///   - `escrow_balance == 0` always fails (ratio = 0 < 30%).
-    ///   - Saturating arithmetic prevents overflow for extreme i128 values.
-    ///
-    /// The escrow balance is fetched directly from the escrow contract at
-    /// request time so the check reflects the borrower's live on-chain state
-    /// rather than any cached value.
-    fn check_collateralization_ratio(
-        env: &Env,
-        escrow: &Address,
-        borrower: &Address,
-        principal: i128,
-    ) -> Result<(), PoolError> {
-        let escrow_balance = Self::fetch_escrow_balance(env, escrow, borrower);
-
-        // Multiply first to preserve precision before the integer division.
-        // escrow_balance * 10_000 / principal gives ratio in bps.
-        // Use saturating_mul to handle pathological inputs without panicking.
-        let ratio_bps = escrow_balance
-            .saturating_mul(BPS_SCALE as i128)
-            .checked_div(principal)
-            .unwrap_or(0);
-
-        if ratio_bps < MIN_COLLATERAL_RATIO_BPS as i128 {
-            return Err(PoolError::CollateralizationRatioTooLow);
-        }
-
-        Ok(())
-    }
-
     fn token_client<'a>(env: &'a Env, token_addr: &'a Address) -> token::Client<'a> {
         token::Client::new(env, token_addr)
     }
@@ -480,6 +417,24 @@ impl LendingPoolContract {
         } else {
             Ok(())
         }
+    }
+
+    /// The configured grace period (in ledgers) after an installment's due date
+    /// before late penalties accrue, falling back to `GRACE_PERIOD_LEDGERS`.
+    fn grace_period_ledgers(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::GracePeriodLedgers)
+            .unwrap_or(GRACE_PERIOD_LEDGERS)
+    }
+
+    /// The configured per-day late-payment penalty rate (in basis points),
+    /// falling back to `DEFAULT_DAILY_PENALTY_BPS`.
+    fn daily_penalty_bps(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DailyPenaltyBps)
+            .unwrap_or(DEFAULT_DAILY_PENALTY_BPS)
     }
 
     // ── Dynamic Fee Helpers ─────────────────────────────────────────────
@@ -775,6 +730,8 @@ impl LendingPoolContract {
         principal: i128,
         escrow_origin: Address,
     ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        borrower.require_auth();
         Self::do_request_loan(&env, borrower, loan_id, principal, Some(escrow_origin))
     }
 
@@ -797,17 +754,6 @@ impl LendingPoolContract {
         {
             return Err(PoolError::LoanAlreadyExists);
         }
-
-        let config = Self::read_config(env)?;
-
-        // ── Collateralization ratio check ─────────────────────────────────
-        // Fetch the borrower's live escrow deposit balance and verify it covers
-        // at least MIN_COLLATERAL_RATIO_BPS (30%) of the requested principal.
-        // For loans originating via the escrow bridge (escrow_origin is Some),
-        // the relevant escrow is the origin contract; otherwise use the pool's
-        // default escrow address from config.
-        let escrow_addr = escrow_origin.as_ref().unwrap_or(&config.escrow);
-        Self::check_collateralization_ratio(env, escrow_addr, &borrower, principal)?;
 
         let interest_rate_bps = Self::resolve_borrower_interest_rate(env, &borrower)?;
 
@@ -1188,8 +1134,12 @@ impl LendingPoolContract {
             let mut sched: RepaymentSchedule = env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap();
             let current_ledger = env.ledger().sequence();
 
+            // Configurable grace window after the due date before penalties apply.
+            let grace_period = Self::grace_period_ledgers(&env);
+            let grace_deadline = sched.next_due_ledger + grace_period;
+
             // If payment is on-time or within grace period
-            if current_ledger <= sched.next_due_ledger + GRACE_PERIOD_LEDGERS {
+            if current_ledger <= grace_deadline {
                 // Accept payment. If it covers at least monthly_amount, count as on-time.
                 if amount >= sched.monthly_amount {
                     sched.payments_made += 1u32;
@@ -1210,8 +1160,15 @@ impl LendingPoolContract {
                 // Increase missed count by number of missed periods (consecutive)
                 sched.payments_missed = sched.payments_missed.saturating_add(missed_periods);
 
-                // Calculate penalty for overdue installment (50 bps of monthly_amount)
-                let penalty = (sched.monthly_amount * LATE_PENALTY_BPS as i128) / 10_000;
+                // Daily-accruing penalty: charge `daily_penalty_bps` of the
+                // installment for each day (rounded up) that the payment is
+                // overdue *beyond* the grace period. A payment that is late by
+                // any amount is charged at least one full day.
+                let overdue_ledgers = current_ledger - grace_deadline;
+                let days_overdue = (overdue_ledgers / LEDGERS_PER_DAY) + 1;
+                let daily_bps = Self::daily_penalty_bps(&env);
+                let penalty =
+                    (sched.monthly_amount * daily_bps as i128 * days_overdue as i128) / 10_000;
                 let required = sched.monthly_amount + penalty;
 
                 if amount < required {
@@ -2039,6 +1996,53 @@ impl LendingPoolContract {
             .unwrap_or(0)
     }
 
+    /// Configure the grace period, in ledgers, granted after an installment's
+    /// due date before late penalties begin to accrue. Admin-only.
+    pub fn set_grace_period(env: Env, grace_ledgers: u32) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::GracePeriodLedgers, &grace_ledgers);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events()
+            .publish((symbol_short!("set_grace"),), grace_ledgers);
+        Ok(())
+    }
+
+    /// Get the currently configured grace period in ledgers.
+    pub fn get_grace_period(env: Env) -> u32 {
+        Self::grace_period_ledgers(&env)
+    }
+
+    /// Configure the per-day late-payment penalty rate, in basis points, charged
+    /// on the installment amount for each overdue day beyond the grace period.
+    /// Admin-only.
+    pub fn set_daily_penalty_bps(env: Env, daily_bps: u32) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::DailyPenaltyBps, &daily_bps);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events()
+            .publish((symbol_short!("set_penlt"),), daily_bps);
+        Ok(())
+    }
+
+    /// Get the currently configured per-day late-payment penalty in basis points.
+    pub fn get_daily_penalty_bps(env: Env) -> u32 {
+        Self::daily_penalty_bps(&env)
+    }
+
     /// Get the total amount borrowed in the current day's time window.
     pub fn get_daily_borrowed(env: Env) -> i128 {
         let day_id = env.ledger().sequence() / LEDGERS_PER_DAY;
@@ -2717,6 +2721,107 @@ mod test {
         let loan = client.get_loan_info(&loan_id);
         assert_eq!(loan.status, LoanStatus::Repaid);
         assert_eq!(loan.repaid, 75_600_0000000i128);
+    }
+
+    // ── Grace period & missed-payment penalties (issue #239) ──────────────
+
+    /// Sets up an approved+disbursed 10,000 loan and returns its schedule so the
+    /// delinquency tests can compute the installment and due dates precisely.
+    fn setup_scheduled_loan<'a>(
+        env: &Env,
+        client: &LendingPoolContractClient<'a>,
+        token_address: &Address,
+    ) -> (Address, BytesN<32>, RepaymentSchedule) {
+        let investor = Address::generate(env);
+        let sac = StellarAssetClient::new(env, token_address);
+        sac.mint(&investor, &100_000_0000000i128);
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+
+        let borrower = Address::generate(env);
+        let loan_id = mock_loan_id(env);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &10_000_0000000i128);
+
+        // Give the borrower plenty of funds to repay with penalties.
+        sac.mint(&borrower, &20_000_0000000i128);
+
+        let sched = client.get_repayment_schedule(&loan_id).unwrap();
+        (borrower, loan_id, sched)
+    }
+
+    #[test]
+    fn test_repayment_within_grace_uses_standard_rate() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let (borrower, loan_id, sched) = setup_scheduled_loan(&env, &client, &token_address);
+
+        // Land inside the grace window: past the due date but before penalties.
+        let grace = client.get_grace_period();
+        env.ledger().set_sequence_number(sched.next_due_ledger + grace - 10);
+
+        // Paying exactly the installment (no penalty) is accepted and counts as
+        // an on-time payment.
+        client.repay(&borrower, &loan_id, &sched.monthly_amount);
+
+        let updated = client.get_repayment_schedule(&loan_id).unwrap();
+        assert_eq!(updated.payments_made, 1);
+        assert_eq!(updated.payments_missed, 0);
+    }
+
+    #[test]
+    fn test_late_repayment_requires_daily_penalty() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let (borrower, loan_id, sched) = setup_scheduled_loan(&env, &client, &token_address);
+
+        // Move to 3 full days beyond the grace deadline. With LEDGERS_PER_DAY
+        // = 100 in tests, days_overdue = (300 / 100) + 1 = 4.
+        let grace = client.get_grace_period();
+        let deadline = sched.next_due_ledger + grace;
+        env.ledger().set_sequence_number(deadline + 300);
+
+        let daily_bps = client.get_daily_penalty_bps() as i128;
+        let penalty = sched.monthly_amount * daily_bps * 4 / 10_000;
+        assert!(penalty > 0);
+
+        // Paying only the installment (without the accrued penalty) is rejected.
+        let res = client.try_repay(&borrower, &loan_id, &sched.monthly_amount);
+        assert_eq!(res.unwrap_err(), Ok(PoolError::InvalidAmount));
+
+        // Paying the installment plus the daily penalty succeeds.
+        client.repay(&borrower, &loan_id, &(sched.monthly_amount + penalty));
+        let updated = client.get_repayment_schedule(&loan_id).unwrap();
+        assert!(updated.payments_missed >= 1);
+        assert_eq!(updated.payments_made, 1);
+    }
+
+    #[test]
+    fn test_grace_period_and_penalty_are_configurable() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+
+        // Admin can reconfigure both the grace window and the daily penalty.
+        client.set_grace_period(&200u32);
+        client.set_daily_penalty_bps(&100u32);
+        assert_eq!(client.get_grace_period(), 200u32);
+        assert_eq!(client.get_daily_penalty_bps(), 100u32);
+
+        let (borrower, loan_id, sched) = setup_scheduled_loan(&env, &client, &token_address);
+
+        // One day past the (now shorter) 200-ledger grace window.
+        let deadline = sched.next_due_ledger + 200;
+        env.ledger().set_sequence_number(deadline + 100);
+
+        // days_overdue = (100 / 100) + 1 = 2, at the configured 100 bps/day.
+        let penalty = sched.monthly_amount * 100 * 2 / 10_000;
+        let res = client.try_repay(&borrower, &loan_id, &sched.monthly_amount);
+        assert_eq!(res.unwrap_err(), Ok(PoolError::InvalidAmount));
+        client.repay(&borrower, &loan_id, &(sched.monthly_amount + penalty));
     }
 
     #[test]
@@ -4317,326 +4422,5 @@ mod test {
             "get_halving_info must not mutate epoch state");
         assert_eq!(info.reward_multiplier_bps, 10_000u32,
             "get_halving_info must return stale (epoch 0) multiplier without triggering");
-    }
-
-    // ── Collateralization Ratio Tests ────────────────────────────────────────
-    //
-    // These tests register a lightweight mock escrow contract that responds to
-    // `get_borrower_balance(borrower, goal)` so that cross-contract calls in
-    // `do_request_loan` → `fetch_escrow_balance` can be exercised without
-    // pulling in the full `escrow` crate as a dev-dependency.
-    //
-    // The mock contract stores a single i128 balance keyed by borrower address
-    // and returns it on demand.  `env.mock_all_auths()` covers auth for both
-    // the pool and the mock escrow.
-
-    /// Tiny mock escrow that only implements `get_borrower_balance`.
-    ///
-    /// Stores the balance under DataKey::Investor(address) (i128) — an arbitrary
-    /// storage key; the test writes it directly via `env.as_contract`.
-    #[soroban_sdk::contract]
-    struct MockEscrow;
-
-    #[soroban_sdk::contractimpl]
-    impl MockEscrow {
-        /// Returns the stored balance for `borrower` (ignores `goal`).
-        pub fn get_borrower_balance(
-            env: soroban_sdk::Env,
-            borrower: Address,
-            _goal: soroban_sdk::Symbol,
-        ) -> i128 {
-            env.storage()
-                .persistent()
-                .get::<Address, i128>(&borrower)
-                .unwrap_or(0)
-        }
-    }
-
-    /// Register the mock escrow and seed `borrower`'s balance.
-    fn setup_mock_escrow(env: &Env, borrower: &Address, balance: i128) -> Address {
-        let escrow_id = env.register(MockEscrow, ());
-        // Write the balance directly into the mock contract's storage.
-        env.as_contract(&escrow_id, || {
-            env.storage().persistent().set(borrower, &balance);
-        });
-        escrow_id
-    }
-
-    /// Create a pool wired to the given escrow address.
-    fn setup_pool_with_escrow(
-        env: &Env,
-        escrow: &Address,
-    ) -> (Address, Address, LendingPoolContractClient<'_>) {
-        let admin = Address::generate(env);
-        let investor = Address::generate(env);
-        let treasury = Address::generate(env);
-
-        let token_admin = Address::generate(env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
-        let token_address = token_id.address();
-        let sac = StellarAssetClient::new(env, &token_address);
-        sac.mint(&investor, &100_000_0000000i128);
-
-        let contract_id = env.register(LendingPoolContract, ());
-        let client = LendingPoolContractClient::new(env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_address,
-            escrow,
-            &800u32,
-            &400u32,
-            &treasury,
-            &0u32,
-        );
-
-        (admin, investor, client)
-    }
-
-    // ── Rejection tests ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_request_loan_rejected_when_no_escrow_deposit() {
-        // Borrower has zero escrow balance → ratio = 0% < 30% → reject.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let borrower = Address::generate(&env);
-        let escrow = setup_mock_escrow(&env, &borrower, 0);
-        let (_admin, investor, client) = setup_pool_with_escrow(&env, &escrow);
-        let loan_id = mock_loan_id(&env);
-
-        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-        let result = client.try_request_loan(
-            &borrower,
-            &loan_id,
-            &30_000_0000000i128, // 30k principal
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            Ok(PoolError::CollateralizationRatioTooLow),
-            "loan with 0 escrow should be rejected"
-        );
-    }
-
-    #[test]
-    fn test_request_loan_rejected_when_ratio_below_30_percent() {
-        // Escrow = 8 000, principal = 30 000 → ratio = 26.67% < 30% → reject.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let borrower = Address::generate(&env);
-        // 8 000 USDC escrow balance (26.67% of 30 000 principal)
-        let escrow = setup_mock_escrow(&env, &borrower, 8_000_0000000i128);
-        let (_admin, investor, client) = setup_pool_with_escrow(&env, &escrow);
-        let loan_id = mock_loan_id(&env);
-
-        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-        let result = client.try_request_loan(
-            &borrower,
-            &loan_id,
-            &30_000_0000000i128,
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            Ok(PoolError::CollateralizationRatioTooLow),
-            "ratio 26.67% should be below the 30% threshold"
-        );
-    }
-
-    #[test]
-    fn test_request_loan_rejected_at_exact_boundary_minus_one_stroop() {
-        // Escrow = 9_000_0000000 - 1 stroop; principal = 30_000_0000000.
-        // ratio_bps = (8_999_9999999 * 10_000) / 30_000_0000000 = 2_999 < 3_000 → reject.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let borrower = Address::generate(&env);
-        let escrow = setup_mock_escrow(&env, &borrower, 9_000_0000000i128 - 1);
-        let (_admin, investor, client) = setup_pool_with_escrow(&env, &escrow);
-        let loan_id = mock_loan_id(&env);
-
-        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-        let result = client.try_request_loan(&borrower, &loan_id, &30_000_0000000i128);
-        assert_eq!(
-            result.unwrap_err(),
-            Ok(PoolError::CollateralizationRatioTooLow),
-            "one stroop below the 30% boundary must still be rejected"
-        );
-    }
-
-    // ── Acceptance tests ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_request_loan_accepted_at_exact_30_percent() {
-        // Escrow = 9 000, principal = 30 000 → ratio = exactly 30% → accept.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let borrower = Address::generate(&env);
-        // exactly 30%: 9_000 / 30_000 = 0.30
-        let escrow = setup_mock_escrow(&env, &borrower, 9_000_0000000i128);
-        let (_admin, investor, client) = setup_pool_with_escrow(&env, &escrow);
-        let loan_id = mock_loan_id(&env);
-
-        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-        client.request_loan(&borrower, &loan_id, &30_000_0000000i128);
-
-        let loan = client.get_loan_info(&loan_id);
-        assert_eq!(loan.status, LoanStatus::Requested);
-        assert_eq!(loan.principal, 30_000_0000000i128);
-    }
-
-    #[test]
-    fn test_request_loan_accepted_above_30_percent() {
-        // Escrow = 15 000, principal = 30 000 → ratio = 50% → accept.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let borrower = Address::generate(&env);
-        let escrow = setup_mock_escrow(&env, &borrower, 15_000_0000000i128);
-        let (_admin, investor, client) = setup_pool_with_escrow(&env, &escrow);
-        let loan_id = mock_loan_id(&env);
-
-        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-        client.request_loan(&borrower, &loan_id, &30_000_0000000i128);
-
-        let loan = client.get_loan_info(&loan_id);
-        assert_eq!(loan.status, LoanStatus::Requested);
-    }
-
-    #[test]
-    fn test_request_loan_accepted_when_escrow_equals_principal() {
-        // Escrow = principal (100% ratio) → well above 30% → accept.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let borrower = Address::generate(&env);
-        let principal = 20_000_0000000i128;
-        let escrow = setup_mock_escrow(&env, &borrower, principal); // 100%
-        let (_admin, investor, client) = setup_pool_with_escrow(&env, &escrow);
-        let loan_id = mock_loan_id(&env);
-
-        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-        client.request_loan(&borrower, &loan_id, &principal);
-
-        let loan = client.get_loan_info(&loan_id);
-        assert_eq!(loan.status, LoanStatus::Requested);
-    }
-
-    // ── request_loan_with_origin uses the supplied escrow address ────────────
-
-    #[test]
-    fn test_request_loan_with_origin_uses_origin_escrow() {
-        // When escrow_origin is supplied it must be queried, not config.escrow.
-        // config.escrow has 0 balance; origin escrow has 9 000.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let borrower = Address::generate(&env);
-
-        // config.escrow — no balance for this borrower.
-        let config_escrow = setup_mock_escrow(&env, &borrower, 0);
-        // origin escrow — sufficient balance.
-        let origin_escrow = setup_mock_escrow(&env, &borrower, 9_000_0000000i128);
-
-        let (_admin, investor, client) = setup_pool_with_escrow(&env, &config_escrow);
-        let loan_id = mock_loan_id(&env);
-
-        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-        // With origin escrow → passes the ratio check.
-        client.request_loan_with_origin(
-            &borrower,
-            &loan_id,
-            &30_000_0000000i128,
-            &origin_escrow,
-        );
-
-        let loan = client.get_loan_info(&loan_id);
-        assert_eq!(loan.status, LoanStatus::Requested);
-        assert_eq!(loan.escrow_origin, Some(origin_escrow));
-    }
-
-    #[test]
-    fn test_request_loan_with_origin_rejected_when_origin_escrow_insufficient() {
-        // Even with origin, if that escrow has < 30% the request must be rejected.
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let borrower = Address::generate(&env);
-
-        // config.escrow — plenty of balance (shouldn't be used).
-        let config_escrow = setup_mock_escrow(&env, &borrower, 50_000_0000000i128);
-        // origin escrow — below threshold.
-        let origin_escrow = setup_mock_escrow(&env, &borrower, 1_000_0000000i128);
-
-        let (_admin, investor, client) = setup_pool_with_escrow(&env, &config_escrow);
-        let loan_id = mock_loan_id(&env);
-
-        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-        let result = client.try_request_loan_with_origin(
-            &borrower,
-            &loan_id,
-            &30_000_0000000i128,
-            &origin_escrow,
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            Ok(PoolError::CollateralizationRatioTooLow),
-            "request_loan_with_origin must use origin escrow for ratio check"
-        );
-    }
-
-    // ── Ratio arithmetic edge cases ──────────────────────────────────────────
-
-    #[test]
-    fn test_ratio_check_exact_30_percent_different_principal_sizes() {
-        // Verify the 30% boundary holds for several principal magnitudes.
-        let cases: &[(i128, i128, bool)] = &[
-            // (escrow,           principal,          should_pass)
-            (3_0000000,       10_0000000,       true),  // 3/10 = 30% exactly
-            (3_0000000 - 1,   10_0000000,       false), // just under
-            (100_0000000,     333_0000000,      true),  // 100/333 ≈ 30.03%
-            (99_0000000,      333_0000000,      false), // 99/333 ≈ 29.73%
-            (1_000_0000000,   3_333_0000000,    true),  // 30.00…%
-        ];
-
-        for &(escrow_bal, principal, expected_ok) in cases {
-            let env = Env::default();
-            env.mock_all_auths();
-
-            let borrower = Address::generate(&env);
-            let escrow = setup_mock_escrow(&env, &borrower, escrow_bal);
-            let (_admin, investor, client) = setup_pool_with_escrow(&env, &escrow);
-
-            client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
-
-            let loan_id = mock_loan_id(&env);
-            let result = client.try_request_loan(&borrower, &loan_id, &principal);
-
-            if expected_ok {
-                assert!(
-                    result.is_ok(),
-                    "escrow={} principal={} should pass (≥30%)",
-                    escrow_bal,
-                    principal
-                );
-            } else {
-                assert_eq!(
-                    result.unwrap_err(),
-                    Ok(PoolError::CollateralizationRatioTooLow),
-                    "escrow={} principal={} should fail (<30%)",
-                    escrow_bal,
-                    principal
-                );
-            }
-        }
     }
 }

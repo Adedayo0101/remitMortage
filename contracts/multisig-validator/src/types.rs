@@ -60,6 +60,19 @@ pub struct Proposal {
     pub expiration_ledger: u32,
 }
 
+/// Admin-managed multisig configuration: the required signature threshold and
+/// the set of addresses permitted to sign. Unlike the per-account weighted
+/// [`MultisigConfig`], this models a simple `k-of-n` signer group (e.g. 2-of-3,
+/// 3-of-5) that the contract admin can reconfigure over time.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminMultisigConfig {
+    /// Addresses permitted to sign (the "n").
+    pub signers: Vec<Address>,
+    /// Number of distinct signatures required to authorize (the "k").
+    pub threshold: u32,
+}
+
 /// Storage keys.
 #[contracttype]
 #[derive(Clone)]
@@ -70,4 +83,8 @@ pub enum DataKey {
     TimelockConfig(Address),
     /// A timelocked action proposal, keyed by proposal ID (32-byte hash).
     ActionProposal(BytesN<32>),
+    /// The admin authorized to reconfigure the admin-managed signer set.
+    Admin,
+    /// The admin-managed `k-of-n` signer configuration.
+    AdminConfig,
 }

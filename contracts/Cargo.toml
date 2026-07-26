@@ -8,6 +8,7 @@ members = [
     "milestone",
     "multisig-validator",
     "verification-registry",
+    "yield-vault",
 ]
 
 [workspace.dependencies]

@@ -31,10 +31,14 @@ pub enum ValidatorError {
     TimelockNotConfigured = 12,
     /// The approval period has not yet been reached.
     NotYetApproved = 13,
-    /// The proposal's expiration ledger has passed; it can no longer be voted
-    /// on or executed and is eligible for pruning.
-    ProposalExpired = 14,
-    /// At least one proposal ID in a prune batch was not found in storage.
-    /// The remaining valid proposals in the batch are still pruned.
-    ProposalNotExpired = 15,
+    /// No admin has been initialized for the admin-managed signer set.
+    AdminNotSet = 14,
+    /// An admin has already been initialized.
+    AdminAlreadySet = 15,
+    /// The address is already a configured admin-managed signer.
+    SignerAlreadyExists = 16,
+    /// The address is not a configured admin-managed signer.
+    SignerNotFound = 17,
+    /// The admin-managed signer set has not been configured.
+    AdminConfigNotSet = 18,
 }

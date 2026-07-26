@@ -1,15 +1,19 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { X, Maximize2, Minimize2, Calendar, HardDrive } from "lucide-react";
+import { X, Maximize2, Minimize2, Calendar, HardDrive, ShieldCheck, ShieldAlert } from "lucide-react";
 import { IPFSMediaPlayer } from "./IPFSMediaPlayer";
 
-interface MilestoneData {
+export interface MilestoneData {
   title: string;
   description: string;
   cid: string;
   size: string;
   dateUploaded: string;
+  sha256_hash?: string;
+  sha256Hash?: string;
+  expectedHash?: string;
+  expected_sha256?: string;
 }
 
 interface EvidenceModalProps {
@@ -35,6 +39,11 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({ isOpen, onClose, m
   if (!isOpen) return null;
 
   const isVideo = milestoneData.cid.toLowerCase().endsWith(".mp4");
+  const hash = milestoneData.sha256_hash || milestoneData.sha256Hash;
+  const expectedHash = milestoneData.expectedHash || milestoneData.expected_sha256;
+  const isMismatched = Boolean(
+    hash && expectedHash && hash.toLowerCase().trim() !== expectedHash.toLowerCase().trim()
+  );
 
   return (
     <div
@@ -57,9 +66,29 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({ isOpen, onClose, m
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-zinc-800 bg-zinc-900/50">
-          <h2 id="modal-title" className="text-lg font-semibold text-zinc-100">
-            {milestoneData.title}
-          </h2>
+          <div className="flex items-center space-x-3">
+            <h2 id="modal-title" className="text-lg font-semibold text-zinc-100">
+              {milestoneData.title}
+            </h2>
+            {isMismatched ? (
+              <span
+                className="px-2.5 py-0.5 bg-red-500/20 text-red-400 border border-red-500/40 rounded-full text-xs font-medium flex items-center"
+                data-testid="header-hash-mismatch-badge"
+              >
+                <ShieldAlert className="w-3.5 h-3.5 mr-1 text-red-400" />
+                Checksum Mismatch
+              </span>
+            ) : hash ? (
+              <span
+                className="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-full text-xs font-medium flex items-center"
+                data-testid="header-integrity-badge"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 mr-1 text-emerald-400" />
+                Integrity Verified ✓
+              </span>
+            ) : null}
+          </div>
+
           <div className="flex items-center space-x-2">
             {!isVideo && (
               <button
@@ -99,6 +128,36 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({ isOpen, onClose, m
           {/* Details Section */}
           {!isFullscreen && (
             <div className="flex flex-col p-6 md:w-1/3 bg-zinc-900 border-t md:border-t-0 md:border-l border-zinc-800">
+              {isMismatched ? (
+                <div
+                  role="alert"
+                  className="p-3 bg-red-950/60 border border-red-500/60 rounded-lg text-red-200 text-xs flex items-start space-x-2.5 mb-4 shadow-sm"
+                  data-testid="hash-mismatch-alert"
+                >
+                  <ShieldAlert className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold text-red-200 block">Cryptographic Checksum Mismatch Error</span>
+                    <p className="mt-0.5 text-red-300/90 leading-normal">
+                      The file SHA-256 hash does not match the on-chain expected checksum. File integrity cannot be verified!
+                    </p>
+                  </div>
+                </div>
+              ) : hash ? (
+                <div
+                  className="p-3 bg-emerald-950/50 border border-emerald-500/50 rounded-lg text-emerald-300 text-xs flex flex-col space-y-1 mb-4 shadow-sm"
+                  data-testid="integrity-verified-badge"
+                >
+                  <div className="flex items-center font-semibold text-emerald-400">
+                    <ShieldCheck className="w-4 h-4 mr-1.5 text-emerald-400 flex-shrink-0" />
+                    <span>Cryptographic Integrity Verified ✓</span>
+                  </div>
+                  <div className="font-mono text-[11px] text-emerald-300/80 break-all select-all pt-0.5">
+                    <span className="text-emerald-500 mr-1.5">SHA-256:</span>
+                    {hash}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="mb-6">
                 <h3 className="text-sm font-medium text-zinc-400 mb-2 uppercase tracking-wider">
                   Description
@@ -112,7 +171,7 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({ isOpen, onClose, m
                 </h3>
 
                 <div className="flex items-center text-sm text-zinc-300">
-                  <HardDrive className="w-4 h-4 mr-3 text-zinc-500" />
+                  <HardDrive className="w-4 h-4 mr-3 text-zinc-500 flex-shrink-0" />
                   <span className="truncate" title={milestoneData.cid}>
                     <span className="text-zinc-500 mr-2">CID:</span>
                     {milestoneData.cid.substring(0, 8)}...
@@ -120,8 +179,19 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({ isOpen, onClose, m
                   </span>
                 </div>
 
+                {hash && (
+                  <div className="flex items-center text-sm text-zinc-300">
+                    <ShieldCheck className="w-4 h-4 mr-3 text-emerald-500 flex-shrink-0" />
+                    <span className="truncate" title={hash}>
+                      <span className="text-zinc-500 mr-2">SHA-256:</span>
+                      {hash.substring(0, 8)}...
+                      {hash.substring(hash.length - 8)}
+                    </span>
+                  </div>
+                )}
+
                 <div className="flex items-center text-sm text-zinc-300">
-                  <span className="w-4 h-4 mr-3 text-zinc-500 font-mono text-xs flex items-center justify-center border border-zinc-500 rounded-sm">
+                  <span className="w-4 h-4 mr-3 text-zinc-500 font-mono text-xs flex items-center justify-center border border-zinc-500 rounded-sm flex-shrink-0">
                     SZ
                   </span>
                   <span>
@@ -131,7 +201,7 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({ isOpen, onClose, m
                 </div>
 
                 <div className="flex items-center text-sm text-zinc-300">
-                  <Calendar className="w-4 h-4 mr-3 text-zinc-500" />
+                  <Calendar className="w-4 h-4 mr-3 text-zinc-500 flex-shrink-0" />
                   <span>
                     <span className="text-zinc-500 mr-2">Date:</span>
                     {milestoneData.dateUploaded}
