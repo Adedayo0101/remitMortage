@@ -38,6 +38,10 @@ const reportTo = JSON.stringify({
 });
 
 const nextConfig: NextConfig = {
+  // Standalone output bundles only the files needed to run the server —
+  // this is what makes the production Docker image small (<150 MB).
+  // The build emits .next/standalone/ (Node server) + .next/static/ + public/.
+  output: "standalone",
   turbopack: {
     root: process.cwd(),
   },
