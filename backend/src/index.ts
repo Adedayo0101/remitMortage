@@ -24,6 +24,7 @@ import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
+import { workspaceRouter } from "./routes/workspace.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { authMiddleware } from "./middleware/auth.js";
@@ -105,6 +106,7 @@ app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/did", sensitiveRateLimiter, didRouter);
 app.use("/api/audit-logs", auditRouter);
+app.use("/api/workspaces", workspaceRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", sensitiveRateLimiter, kycRouter);
