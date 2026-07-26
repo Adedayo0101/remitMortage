@@ -912,7 +912,9 @@ impl LendingPoolContract {
         loan_id: BytesN<32>,
         amount: i128,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        // NOTE: repayments are intentionally NOT gated by `check_not_paused`.
+        // An emergency pause freezes deposits and loan disbursements, but
+        // borrowers must always be able to keep paying down their loans.
         borrower.require_auth();
 
         if amount <= 0 {
@@ -1312,7 +1314,9 @@ impl LendingPoolContract {
     /// The fee is deducted from the withdrawal amount and transferred to the
     /// protocol treasury address. The net amount is transferred to the investor.
     pub fn withdraw(env: Env, investor: Address, amount: i128) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        // NOTE: withdrawals are intentionally NOT gated by `check_not_paused`.
+        // The emergency stop halts inflows and disbursements, but investors
+        // must retain access to their liquidity even while the pool is paused.
         investor.require_auth();
 
         if amount <= 0 {
@@ -3159,7 +3163,7 @@ mod test {
     }
 
     #[test]
-    fn test_withdraw_reverts_when_paused() {
+    fn test_withdraw_works_when_paused() {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -3168,8 +3172,9 @@ mod test {
         client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
         client.pause();
 
-        let result = client.try_withdraw(&investor, &10_000_0000000i128);
-        assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
+        // Withdrawals must remain available while paused so investors keep
+        // access to their liquidity during an emergency freeze.
+        client.withdraw(&investor, &10_000_0000000i128);
     }
 
     #[test]
@@ -3225,7 +3230,7 @@ mod test {
     }
 
     #[test]
-    fn test_repay_reverts_when_paused() {
+    fn test_repay_works_when_paused() {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -3244,8 +3249,9 @@ mod test {
 
         client.pause();
 
-        let result = client.try_repay(&borrower, &loan_id, &5_000_0000000i128);
-        assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
+        // Repayments must remain available while paused so borrowers can keep
+        // paying down their loans during an emergency freeze.
+        client.repay(&borrower, &loan_id, &5_000_0000000i128);
     }
 
     #[test]
