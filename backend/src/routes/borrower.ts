@@ -68,11 +68,14 @@ const config = loadConfig();
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) => {
-  const address = String(req.params.address);
+  const address = Array.isArray(req.params.address)
+    ? req.params.address[0]
+    : String(req.params.address);
   const goalId = typeof req.query.goal === "string" ? req.query.goal : DEFAULT_GOAL_ID;
   const loanId = typeof req.query.loanId === "string" ? req.query.loanId : undefined;
 
   try {
+
     // Run the independent on-chain reads concurrently. Each is best-effort so a
     // single missing record (e.g. no loan yet) does not blank the whole status.
     const [borrowerResult, configResult, liquidityResult, loanResult] =
@@ -106,9 +109,6 @@ borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) 
     const deposited = borrower?.deposited ?? "0";
     const target = borrower?.target_amount ?? escrowConfig?.savings_target ?? "0";
     const progress = computeProgress(deposited, target);
-    const address = Array.isArray(req.params.address)
-      ? req.params.address[0]
-      : req.params.address;
 
     const applicant = await getApplicant(address).catch((err) => {
       console.error("DB read error (non-fatal):", err);
@@ -128,7 +128,7 @@ borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) 
         released: borrower?.released ?? false,
         withdrawn: borrower?.withdrawn ?? false,
       },
-      loan: loan
+      loanSummary: loan
         ? {
             status: loan.status,
             principal: loan.principal,
@@ -155,6 +155,15 @@ borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) 
             spanMonths: latestVerification.spanMonths,
             reportHash: latestVerification.reportHash,
             analyzedAt: latestVerification.analyzedAt,
+          }
+        : null,
+      onChainLoan: loan
+        ? {
+            status: loan.status,
+            principal: loan.principal,
+            disbursed: loan.disbursed,
+            repaid: loan.repaid,
+            outstandingDebt: loan.outstanding_debt,
           }
         : null,
       loan: latestLoan

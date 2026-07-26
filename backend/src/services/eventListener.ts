@@ -6,6 +6,16 @@ import {
 } from "./balanceStore.js";
 import { logAudit } from "./audit.js";
 import { deleteCacheByPattern } from "./redis.js";
+import {
+  startRpcTimer,
+  recordIndexerPosition,
+  indexerEventsProcessedTotal,
+  indexerEventsSkippedTotal,
+  indexerRpcErrorsTotal,
+  indexerBackoffAttempt,
+  indexerBatchSize,
+} from "./metrics.js";
+import { dispatchEvent, type EventTopic } from "./webhook.js";
 
 /** Soroban testnet RPC endpoint. */
 export const SOROBAN_TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
@@ -238,16 +248,39 @@ export class SorobanEventListener {
     let attempt = 0;
     while (this.running) {
       try {
+        // ── RPC call with latency instrumentation ──────────────────────
+        const endRpcTimer = startRpcTimer();
         const batch = await this.fetcher(this.cursor);
+        endRpcTimer();
+
+        // ── Batch & position metrics ───────────────────────────────────
+        indexerBatchSize.set(batch.events.length);
+        if (batch.latestLedger > 0) {
+          const lastIndexed =
+            batch.events.length > 0
+              ? batch.events[batch.events.length - 1].ledger
+              : batch.latestLedger;
+          recordIndexerPosition(lastIndexed, batch.latestLedger);
+        }
+
         for (const event of batch.events) {
           this.handleEvent(event);
         }
         if (batch.cursor) this.cursor = batch.cursor;
-        attempt = 0; // healthy poll resets the backoff
+
+        // Healthy poll — reset backoff gauge and counter.
+        attempt = 0;
+        indexerBackoffAttempt.set(0);
+
         await this.sleep(this.pollIntervalMs);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const delay = computeBackoff(attempt, this.baseBackoffMs, this.maxBackoffMs);
+
+        // ── Error & backoff metrics ────────────────────────────────────
+        indexerRpcErrorsTotal.inc();
+        indexerBackoffAttempt.set(attempt + 1);
+
         this.logger.error(`[event-listener] RPC error: ${message}`);
         this.logger.warn(
           `[event-listener] reconnecting in ${delay}ms (attempt ${attempt + 1})`
@@ -267,6 +300,7 @@ export class SorobanEventListener {
       this.logger.warn(
         `[event-listener] skipping ${event.topic} event missing borrower/amount`
       );
+      indexerEventsSkippedTotal.inc({ topic: event.topic });
       return;
     }
 
@@ -288,6 +322,9 @@ export class SorobanEventListener {
         break;
     }
 
+    // ── Record successful event processing ────────────────────────────
+    indexerEventsProcessedTotal.inc({ topic: kind });
+
     this.logger.info(
       `[event-listener] ${kind} amount=${event.amount} borrower=${event.borrower} ledger=${event.ledger}`
     );
@@ -303,6 +340,18 @@ export class SorobanEventListener {
         contractId: event.contractId,
       },
     });
+
+    // ── Fan-out to webhook subscribers ────────────────────────────────
+    // dispatchEvent is fire-and-forget: it queues the delivery in the
+    // background and never blocks the poll loop.
+    if (kind !== "release") {
+      dispatchEvent(kind as EventTopic, {
+        contractId: event.contractId,
+        borrower: event.borrower,
+        amount: event.amount,
+        ledger: event.ledger,
+      });
+    }
 
     // Invalidate analytics cache since the underlying data changed
     deleteCacheByPattern("analytics:*").catch((err) =>

@@ -382,3 +382,199 @@ fn test_approve_action_without_timelock_fails() {
     let res = client.try_approve_action(&account, &pid, &keys);
     assert_eq!(res, Err(Ok(ValidatorError::TimelockNotConfigured)));
 }
+
+// ── Admin-managed k-of-n signer configuration ───────────────────────────────
+
+/// Register an admin and a 3-signer `2-of-3` admin-managed set.
+fn setup_admin(env: &Env) -> (Address, Vec<Address>, MultisigValidatorClient<'_>) {
+    let contract_id = env.register(MultisigValidator, ());
+    let client = MultisigValidatorClient::new(env, &contract_id);
+
+    let admin = Address::generate(env);
+    client.init_admin(&admin);
+
+    let signers: Vec<Address> = vec![
+        env,
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+    ];
+    client.configure_signers(&signers, &2u32);
+    (admin, signers, client)
+}
+
+#[test]
+fn test_admin_configure_and_read() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+
+    let config = client.get_signer_config();
+    assert_eq!(config.threshold, 2u32);
+    assert_eq!(config.signers.len(), 3u32);
+    assert_eq!(config.signers, signers);
+}
+
+#[test]
+fn test_init_admin_twice_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let res = client.try_init_admin(&Address::generate(&env));
+    assert_eq!(res, Err(Ok(ValidatorError::AdminAlreadySet)));
+}
+
+#[test]
+fn test_configure_signers_before_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MultisigValidator, ());
+    let client = MultisigValidatorClient::new(&env, &contract_id);
+    let signers: Vec<Address> = vec![&env, Address::generate(&env)];
+    let res = client.try_configure_signers(&signers, &1u32);
+    assert_eq!(res, Err(Ok(ValidatorError::AdminNotSet)));
+}
+
+#[test]
+fn test_configure_rejects_zero_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MultisigValidator, ());
+    let client = MultisigValidatorClient::new(&env, &contract_id);
+    client.init_admin(&Address::generate(&env));
+    let signers: Vec<Address> = vec![&env, Address::generate(&env), Address::generate(&env)];
+    let res = client.try_configure_signers(&signers, &0u32);
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_configure_rejects_threshold_over_signer_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MultisigValidator, ());
+    let client = MultisigValidatorClient::new(&env, &contract_id);
+    client.init_admin(&Address::generate(&env));
+    let signers: Vec<Address> = vec![&env, Address::generate(&env), Address::generate(&env)];
+    let res = client.try_configure_signers(&signers, &3u32);
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_configure_rejects_duplicate_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MultisigValidator, ());
+    let client = MultisigValidatorClient::new(&env, &contract_id);
+    client.init_admin(&Address::generate(&env));
+    let dup = Address::generate(&env);
+    let signers: Vec<Address> = vec![&env, dup.clone(), dup];
+    let res = client.try_configure_signers(&signers, &1u32);
+    assert_eq!(res, Err(Ok(ValidatorError::SignerAlreadyExists)));
+}
+
+#[test]
+fn test_set_threshold_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    client.set_threshold(&3u32);
+    assert_eq!(client.get_signer_config().threshold, 3u32);
+}
+
+#[test]
+fn test_set_threshold_rejects_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let res = client.try_set_threshold(&0u32);
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_set_threshold_rejects_over_signer_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let res = client.try_set_threshold(&4u32); // only 3 signers.
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_add_signer_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let new_signer = Address::generate(&env);
+    client.add_signer(&new_signer);
+
+    let config = client.get_signer_config();
+    assert_eq!(config.signers.len(), 4u32);
+    assert!(config.signers.contains(&new_signer));
+}
+
+#[test]
+fn test_add_duplicate_signer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    let res = client.try_add_signer(&signers.get_unchecked(0));
+    assert_eq!(res, Err(Ok(ValidatorError::SignerAlreadyExists)));
+}
+
+#[test]
+fn test_remove_signer_below_threshold_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    // 3 signers, threshold 2. Removing one -> 2 signers (ok).
+    client.remove_signer(&signers.get_unchecked(2));
+    // Now 2 signers, threshold 2. Removing another -> 1 < 2 (rejected).
+    let res = client.try_remove_signer(&signers.get_unchecked(1));
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_remove_unknown_signer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let res = client.try_remove_signer(&Address::generate(&env));
+    assert_eq!(res, Err(Ok(ValidatorError::SignerNotFound)));
+}
+
+#[test]
+fn test_verify_signatures_meets_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    let presented: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    assert_eq!(client.count_valid_signers(&presented), 2u32);
+    assert!(client.verify_signatures(&presented));
+    client.enforce_signatures(&presented); // does not panic
+}
+
+#[test]
+fn test_verify_signatures_below_threshold_reverts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    let presented: Vec<Address> = vec![&env, signers.get_unchecked(0)];
+    assert!(!client.verify_signatures(&presented));
+    let res = client.try_enforce_signatures(&presented);
+    assert_eq!(res, Err(Ok(ValidatorError::InsufficientWeight)));
+}
+
+#[test]
+fn test_count_valid_signers_ignores_duplicates_and_unknowns() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    let presented: Vec<Address> = vec![
+        &env,
+        signers.get_unchecked(0),
+        signers.get_unchecked(0),   // duplicate -> counted once
+        Address::generate(&env),    // unknown -> ignored
+    ];
+    assert_eq!(client.count_valid_signers(&presented), 1u32);
+}
