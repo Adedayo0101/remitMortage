@@ -1,0 +1,156 @@
+name: Security Checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main, development ]
+
+jobs:
+  # ── Rust Static Analysis ────────────────────────────────────────────────
+  # Fails the check on any formatting drift or clippy warning so PRs can't
+  # merge with un-formatted code or unaddressed lint/code-smell warnings.
+  rust-lint:
+    name: Rust Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts -> target
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+        working-directory: contracts
+
+      - name: Lint with Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: contracts
+
+  # ── Rust Dependency Vulnerability Audit ─────────────────────────────────
+  # Scans contracts/Cargo.lock against the RustSec advisory database.
+  # cargo-audit exits non-zero on any matching advisory, which fails this
+  # job and blocks the PR check.
+  rust-dependency-audit:
+    name: Rust Dependency Security Audit (cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts -> target
+
+      # Cache the compiled cargo-audit binary so it is not rebuilt from
+      # source on every run, mirroring the cargo-tarpaulin cache in ci.yml.
+      - name: Cache cargo-audit binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-bin
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo-audit
+        run: cargo audit
+        working-directory: contracts
+
+  # ── Container Security Scans with Trivy ─────────────────────────────────
+  # Scans Docker images for vulnerabilities before deployment.
+  # Blocks builds if High/Critical vulnerabilities are detected.
+  trivy-backend-scan:
+    name: Trivy Container Scan - Backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Backend Docker Image
+        run: docker build -t remitmortgage-backend:${{ github.sha }} ./backend
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: remitmortgage-backend:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-backend-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-backend-results.sarif'
+
+      - name: Generate Human-Readable Report
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: remitmortgage-backend:${{ github.sha }}
+          format: 'table'
+          output: 'trivy-backend-report.txt'
+
+      - name: Upload Vulnerability Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-backend-report
+          path: trivy-backend-report.txt
+
+  trivy-frontend-scan:
+    name: Trivy Container Scan - Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Frontend Docker Image
+        run: docker build -t remitmortgage-frontend:${{ github.sha }} ./frontend
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: remitmortgage-frontend:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-frontend-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-frontend-results.sarif'
+
+      - name: Generate Human-Readable Report
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: remitmortgage-frontend:${{ github.sha }}
+          format: 'table'
+          output: 'trivy-frontend-report.txt'
+
+      - name: Upload Vulnerability Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-frontend-report
+          path: trivy-frontend-report.txt

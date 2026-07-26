@@ -18,4 +18,6 @@ pub enum RegistryError {
     VerificationNotFound = 6,
     /// No pending admin proposal exists to accept.
     NoProposedAdmin = 7,
+    /// Score must be in the range 0–100 inclusive.
+    InvalidScore = 8,
 }

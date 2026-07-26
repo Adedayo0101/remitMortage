@@ -48,7 +48,10 @@ function roundUsdc(value: number): number {
 export function computeStats(payments: MatchedPayment[]): VerificationStats {
   const totalPayments = payments.length;
   const totalVolume = roundUsdc(
-    payments.reduce((sum, payment) => sum + (Number.isFinite(payment.amount) ? payment.amount : 0), 0),
+    payments.reduce(
+      (sum, payment) => sum + (Number.isFinite(payment.amount) ? payment.amount : 0),
+      0
+    )
   );
   const averagePayment = totalPayments > 0 ? roundUsdc(totalVolume / totalPayments) : 0;
 

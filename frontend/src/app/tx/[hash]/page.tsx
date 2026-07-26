@@ -4,10 +4,7 @@ import React, { Suspense, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useTransactionMonitor } from "../../../hooks/useTransactionMonitor";
-import {
-  parseTransactionType,
-  storeTxSuccessFeedback,
-} from "../../../lib/transaction-status";
+import { parseTransactionType, storeTxSuccessFeedback } from "../../../lib/transaction-status";
 import TransactionDetails from "../../../components/tx/TransactionDetails";
 import TransactionProgress from "../../../components/tx/TransactionProgress";
 import TransactionResult from "../../../components/tx/TransactionResult";
@@ -19,9 +16,9 @@ function TxStatusContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  const hash = typeof params.hash === "string" ? params.hash : "";
-  const txType = parseTransactionType(searchParams.get("type"));
-  const senderOverride = searchParams.get("from");
+  const hash = typeof params?.hash === "string" ? params.hash : "";
+  const txType = parseTransactionType(searchParams?.get("type") ?? null);
+  const senderOverride = searchParams?.get("from") ?? null;
 
   const monitor = useTransactionMonitor(hash);
 
@@ -90,9 +87,7 @@ function TxStatusContent() {
       ) : (
         <div className="mb-6 bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-8 text-center">
           <div className="inline-block w-8 h-8 border-2 border-[var(--accent-primary)] border-t-transparent rounded-full animate-spin mb-4" />
-          <p className="text-sm text-[var(--text-secondary)]">
-            Waiting for on-chain confirmation…
-          </p>
+          <p className="text-sm text-[var(--text-secondary)]">Waiting for on-chain confirmation…</p>
           <p className="text-xs text-[var(--text-muted)] mt-1">
             Polling Soroban RPC every 2 seconds (attempt {monitor.pollCount || 1})
           </p>

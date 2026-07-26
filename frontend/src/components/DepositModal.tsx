@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import React, { useEffect, useState } from "react";
 import { toast } from "react-hot-toast";
@@ -11,6 +11,8 @@ import {
   type TransactionModalPhase,
 } from "../lib/transaction-status";
 import TransactionModal from "./tx/TransactionModal";
+import { useXlmPrice } from "../hooks/useXlmPrice";
+import { useGasEstimate } from "../hooks/useGasEstimate";
 
 type Props = {
   isOpen: boolean;
@@ -20,8 +22,9 @@ type Props = {
 export default function DepositModal({ isOpen, onClose }: Props) {
   const { publicKey, usdcBalance } = useWallet();
   const [amount, setAmount] = useState("");
+  const [debouncedAmount, setDebouncedAmount] = useState("");
+  const [txXdr, setTxXdr] = useState<string | null>(null);
   const [estimating, setEstimating] = useState(false);
-  const [estimatedFee, setEstimatedFee] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [txPhase, setTxPhase] = useState<TransactionModalPhase>("idle");
   const [txHash, setTxHash] = useState<string | null>(null);
@@ -40,7 +43,8 @@ export default function DepositModal({ isOpen, onClose }: Props) {
 
     if (wasSuccessful) {
       setAmount("");
-      setEstimatedFee(null);
+      setDebouncedAmount("");
+      setTxXdr(null);
       onClose();
     }
   }
@@ -63,43 +67,52 @@ export default function DepositModal({ isOpen, onClose }: Props) {
       setTxError(txMonitor.pollError);
       setTxPhase("error");
     }
-  }, [
-    txHash,
-    txMonitor.contractError,
-    txMonitor.phase,
-    txMonitor.pollError,
-    txPhase,
-  ]);
+  }, [txHash, txMonitor.contractError, txMonitor.phase, txMonitor.pollError, txPhase]);
 
   if (!isOpen) return null;
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedAmount(amount), 500);
+    return () => clearTimeout(timer);
+  }, [amount]);
+
+  const xlmPrice = useXlmPrice();
+  const gasEstimate = useGasEstimate(txXdr, xlmPrice);
+
   const balanceNum = parseFloat(usdcBalance || "0");
-  const amountNum = parseFloat(amount) || 0;
+  const amountNum = parseFloat(debouncedAmount) || 0;
   const exceedsBalance = amountNum > balanceNum;
   const valid = amountNum > 0 && !exceedsBalance;
 
-  async function handleEstimate() {
-    if (!valid || !publicKey) return;
-    setEstimating(true);
-    try {
-      const txXdr = await buildDepositTx(publicKey, amount);
-      setEstimatedFee(`${((txXdr.length / 1024) * 0.00001).toFixed(7)} XLM (estimated)`);
-    } catch (e: any) {
-      toast.error(e?.message || "Estimation failed");
-    } finally {
-      setEstimating(false);
+  useEffect(() => {
+    if (!valid || !publicKey) {
+      setTxXdr(null);
+      return;
     }
-  }
+    let active = true;
+    setEstimating(true);
+    buildDepositTx(publicKey, debouncedAmount)
+      .then((xdr) => {
+        if (active) setTxXdr(xdr);
+      })
+      .catch((e) => {
+        if (active) setTxXdr(null);
+      })
+      .finally(() => {
+        if (active) setEstimating(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [debouncedAmount, publicKey, valid]);
 
   async function handleConfirm() {
-    if (!valid || !publicKey) return;
+    if (!valid || !publicKey || !txXdr) return;
     setSubmitting(true);
     setTxError(null);
     setTxHash(null);
-    setTxPhase("simulating");
+    setTxPhase("signing");
     try {
-      const txXdr = await buildDepositTx(publicKey, amount);
-      setTxPhase("signing");
       const hash = await signAndSubmit(txXdr);
       setTxHash(hash);
       setTxPhase("pending");
@@ -117,7 +130,10 @@ export default function DepositModal({ isOpen, onClose }: Props) {
       <div className="relative w-full max-w-md bg-[var(--bg-card)] border border-[var(--border-color)] shadow-2xl rounded-2xl overflow-hidden">
         <div className="flex items-center justify-between p-5 border-b border-[var(--border-color)]">
           <h2 className="text-lg font-bold text-[var(--text-primary)]">Deposit USDC</h2>
-          <button onClick={onClose} className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors">
+          <button
+            onClick={onClose}
+            className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -136,7 +152,6 @@ export default function DepositModal({ isOpen, onClose }: Props) {
                 value={amount}
                 onChange={(e) => {
                   setAmount(e.target.value);
-                  setEstimatedFee(null);
                 }}
                 className="w-full p-3 pr-20 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] text-[var(--text-primary)] text-lg font-mono outline-none focus:border-[var(--accent-primary)] transition-colors"
               />
@@ -156,29 +171,39 @@ export default function DepositModal({ isOpen, onClose }: Props) {
             </div>
           </div>
 
-          {estimatedFee && (
-            <div className="p-3 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-color)]">
-              <div className="flex items-center gap-2 text-sm">
+          {gasEstimate ? (
+            <div className="p-4 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-color)]">
+              <div className="flex items-center gap-2 mb-2 text-sm text-[var(--text-primary)] font-semibold">
                 <ArrowRight className="w-4 h-4 text-[var(--accent-primary)]" />
-                <span className="text-[var(--text-secondary)]">Estimated fee:</span>
-                <span className="text-[var(--text-primary)] font-mono">{estimatedFee}</span>
+                Transaction Fee Estimate
+              </div>
+              <div className="space-y-1 pl-6">
+                <div className="flex justify-between text-sm">
+                  <span className="text-[var(--text-secondary)]">Standard</span>
+                  <span className="text-[var(--text-primary)] font-mono">
+                    ~${gasEstimate.standardFeeUsd} <span className="text-[var(--text-muted)] text-xs">({gasEstimate.standardFeeXlm} XLM)</span>
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-[var(--text-secondary)]">High Congestion</span>
+                  <span className="text-[var(--text-primary)] font-mono">
+                    ~${gasEstimate.highFeeUsd} <span className="text-[var(--text-muted)] text-xs">({gasEstimate.highFeeXlm} XLM)</span>
+                  </span>
+                </div>
               </div>
             </div>
-          )}
+          ) : estimating ? (
+            <div className="flex items-center justify-center p-4 text-sm text-[var(--text-secondary)]">
+              <Loader2 className="w-4 h-4 mr-2 animate-spin text-[var(--accent-primary)]" />
+              Estimating network fee...
+            </div>
+          ) : null}
 
           <div className="flex gap-3">
             <button
-              onClick={handleEstimate}
-              disabled={!valid || estimating}
-              className="flex-1 btn-outline justify-center disabled:opacity-40"
-            >
-              {estimating ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              Estimate Fee
-            </button>
-            <button
               onClick={handleConfirm}
-              disabled={!valid || submitting}
-              className="flex-1 btn-primary justify-center disabled:opacity-40"
+              disabled={!valid || estimating || !txXdr || submitting}
+              className="w-full btn-primary justify-center disabled:opacity-40"
             >
               {submitting ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

@@ -94,6 +94,7 @@ describe("Notification Services and Dispatcher Tests", () => {
         ok: true,
         status: 200,
         json: async () => ({ success: true }),
+        text: async () => "mock response",
       } as any);
       global.fetch = mockFetch;
     });
@@ -106,8 +107,8 @@ describe("Notification Services and Dispatcher Tests", () => {
       const targetUrl = "https://partner.com/webhook-receiver";
       const payload = { event: "loan.milestone_approved", loanId: "123" };
 
-      const success = await sendWebhook(targetUrl, payload);
-      expect(success).toBe(true);
+      const result = await sendWebhook(targetUrl, payload);
+      expect(result.success).toBe(true);
       expect(mockFetch).toHaveBeenCalledTimes(1);
 
       const [calledUrl, options] = mockFetch.mock.calls[0];
@@ -227,7 +228,7 @@ describe("Notification Services and Dispatcher Tests", () => {
           data: expect.objectContaining({
             status: "Failed",
             attempts: 2,
-            lastError: "Service dispatch returned false",
+            lastError: "Connection Timeout",
           }),
         })
       );

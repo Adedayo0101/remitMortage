@@ -11,6 +11,7 @@ import {
   HorizonServerLike,
   OperationsPageLike,
 } from "../services/stellar";
+import * as redisService from "../services/redis";
 
 /** Build a payment operation record as Horizon would return it. */
 function payment(
@@ -96,6 +97,48 @@ describe("analyzeRemittanceHistory (pagination aggregation)", () => {
     const result = await analyzeRemittanceHistory(SENDER, RECIPIENT, { server });
 
     expect(result.totalPayments).toBe(250);
+    expect(result.eligible).toBe(true);
+    expect(result.selfDealing).toBe(false);
+  });
+
+  it("queries Horizon once and caches the result for subsequent calls", async () => {
+    jest.spyOn(redisService, "getCacheValue")
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        senderAddress: SENDER,
+        recipientAddress: RECIPIENT,
+        totalPayments: 8,
+        totalAmountUSDC: "800.00",
+        averageAmountUSDC: "100.00",
+        standardDeviation: 0,
+        firstPayment: null,
+        lastPayment: null,
+        spanMonths: 0,
+        selfDealing: false,
+        eligible: true,
+        reason: "cached",
+      });
+    const setSpy = jest.spyOn(redisService, "setCacheValue").mockResolvedValue();
+
+    const server = mockServer({ [SENDER]: monthlySpanPayments(8) });
+
+    const first = await analyzeRemittanceHistory(SENDER, RECIPIENT, { server });
+    const second = await analyzeRemittanceHistory(SENDER, RECIPIENT, { server });
+
+    expect(first.eligible).toBe(true);
+    expect(second.reason).toBe("cached");
+    expect(setSpy).toHaveBeenCalledWith(expect.any(String), expect.any(Object), 300);
+  });
+
+  it("falls back gracefully when Redis is offline", async () => {
+    jest.spyOn(redisService, "getCacheValue").mockResolvedValue(null);
+    jest.spyOn(redisService, "setCacheValue").mockImplementation(async () => {
+      throw new Error("offline");
+    });
+
+    const server = mockServer({ [SENDER]: monthlySpanPayments(8) });
+    const result = await analyzeRemittanceHistory(SENDER, RECIPIENT, { server });
+
     expect(result.eligible).toBe(true);
     expect(result.selfDealing).toBe(false);
   });

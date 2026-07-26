@@ -68,4 +68,6 @@ pub enum DataKey {
     Voted(BytesN<32>, Address),
     /// Total number of milestones proposed.
     MilestoneCount,
+    /// Reentrancy guard flag — true while a mutating function is executing.
+    Reentrant,
 }

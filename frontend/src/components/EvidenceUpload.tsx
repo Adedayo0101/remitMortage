@@ -16,13 +16,13 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [cid, setCid] = useState<string | null>(null);
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
     setCid(null);
-    
+
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
 
@@ -82,15 +82,17 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
   return (
     <div className="mt-4 p-4 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-md">
       <h4 className="text-md font-semibold mb-3">Upload Evidence</h4>
-      
+
       {!cid ? (
         <div className="space-y-4">
-          <label htmlFor={`evidence-upload-${milestoneId}`} className="sr-only">Upload Evidence</label>
+          <label htmlFor={`evidence-upload-${milestoneId}`} className="sr-only">
+            Upload Evidence
+          </label>
           <input
             id={`evidence-upload-${milestoneId}`}
-            type="file" 
+            type="file"
             ref={fileInputRef}
-            onChange={handleFileChange} 
+            onChange={handleFileChange}
             accept="image/jpeg, image/png, image/webp, video/mp4"
             className="block w-full text-sm text-[var(--text-secondary)]
               file:mr-4 file:py-2 file:px-4
@@ -100,24 +102,32 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
               hover:file:bg-[var(--accent-primary-light)]
               cursor-pointer"
           />
-          
+
           {error && <div className="text-[var(--error)] text-sm">{error}</div>}
 
           {previewUrl && file && (
             <div className="mt-4">
               <p className="text-sm text-[var(--text-muted)] mb-2">Preview:</p>
               {file.type.startsWith("video/") ? (
-                <video src={previewUrl} controls className="max-h-48 rounded-md w-full object-contain bg-black" />
+                <video
+                  src={previewUrl}
+                  controls
+                  className="max-h-48 rounded-md w-full object-contain bg-black"
+                />
               ) : (
-                <img src={previewUrl} alt="Preview" className="max-h-48 rounded-md w-full object-contain bg-black" />
+                <img
+                  src={previewUrl}
+                  alt="Preview"
+                  className="max-h-48 rounded-md w-full object-contain bg-black"
+                />
               )}
             </div>
           )}
 
-          <button 
+          <button
             onClick={handleUpload}
             disabled={!file || isUploading}
-            className={`w-full py-2 rounded-md font-semibold transition-colors ${!file || isUploading ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-[var(--success)] text-white hover:bg-emerald-400'}`}
+            className={`w-full py-2 rounded-md font-semibold transition-colors ${!file || isUploading ? "bg-gray-700 text-gray-400 cursor-not-allowed" : "bg-[var(--success)] text-white hover:bg-emerald-400"}`}
           >
             {isUploading ? "Uploading to IPFS..." : "Submit Evidence"}
           </button>
@@ -125,7 +135,15 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
       ) : (
         <div className="bg-[var(--success)]/10 border border-[var(--success)]/30 rounded-md p-4 flex flex-col items-center">
           <div className="w-10 h-10 rounded-full bg-[var(--success)]/20 text-[var(--success)] flex items-center justify-center mb-2">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="w-5 h-5"
+            >
               <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
               <path d="M22 4L12 14.01l-3-3" />
             </svg>
@@ -134,9 +152,9 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
           <div className="text-xs text-[var(--text-muted)] w-full overflow-hidden text-ellipsis whitespace-nowrap text-center mb-2">
             {`CID: ${cid}`}
           </div>
-          <a 
-            href={`https://ipfs.io/ipfs/${cid}`} 
-            target="_blank" 
+          <a
+            href={`https://ipfs.io/ipfs/${cid}`}
+            target="_blank"
             rel="noreferrer"
             className="text-xs text-[var(--accent-secondary)] hover:underline"
           >

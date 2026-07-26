@@ -19,25 +19,18 @@ import { upsertApplicant, createVerificationResult } from "../services/db.js";
 export const verificationRouter = Router();
 
 /**
- * Simple in-memory store keyed by reportId.
- * In production this should be replaced by a persistent database (PostgreSQL).
- */
-const reportStore = new Map<string, VerificationReport>();
-
-/**
  * @openapi
  * /api/verification/check:
  *   post:
  *     summary: Analyze remittance payment history
- *     tags: [Verification]
+ *     tags:
+ *       - Verification
  *     description: |
  *       Accepts a Stellar sender wallet and recipient address, queries Horizon for
  *       outgoing USDC payments, and returns a remittance eligibility summary.
  *       The response also includes a `reportId` and `reportHash` — the SHA-256
  *       hash of the report content — ready for on-chain anchoring in the
  *       verification registry contract.
- *     tags:
- *       - Verification
  *     requestBody:
  *       required: true
  *       content:
@@ -55,7 +48,9 @@ const reportStore = new Map<string, VerificationReport>();
 verificationRouter.post("/check", validateVerificationBody, async (req, res) => {
   try {
     const { senderAddress, recipientAddress } = req.body;
-    const analysis = await analyzeRemittanceHistory(senderAddress, recipientAddress);
+    const analysis = await analyzeRemittanceHistory(senderAddress, recipientAddress, {
+      invalidateCache: true,
+    });
 
     const reportId = crypto.randomUUID();
     const generatedAt = new Date().toISOString();
@@ -131,17 +126,26 @@ verificationRouter.post("/check", validateVerificationBody, async (req, res) => 
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-verificationRouter.get("/report/:reportId", (req, res) => {
+verificationRouter.get("/report/:reportId", async (req, res) => {
   try {
     const { reportId } = req.params;
-    const report = reportStore.get(reportId);
+    const record = await prisma.verificationResult.findUnique({
+      where: { id: reportId },
+    });
 
-    if (!report) {
+    if (!record) {
       return res.status(404).json({
         error: "report_not_found",
         message: `No report found for ID: ${reportId}`,
       });
     }
+
+    const report: VerificationReport = {
+      reportId: record.id,
+      generatedAt: record.generatedAt.toISOString(),
+      analysis: record.analysis as any,
+      reportHash: record.reportHash,
+    };
 
     const filename = `remitmortgage-verification-${reportId.slice(0, 8)}.pdf`;
 
@@ -163,10 +167,9 @@ verificationRouter.get("/report/:reportId", (req, res) => {
  * /api/verification/score:
  *   post:
  *     summary: Calculate borrower credit score
- *     tags: [Verification]
- *     description: Analyzes remittance history and calculates a 0-100 credit score with tier mapping.
  *     tags:
  *       - Verification
+ *     description: Analyzes remittance history and calculates a 0-100 credit score with tier mapping.
  *     requestBody:
  *       required: true
  *       content:

@@ -1,8 +1,14 @@
-"use client"
+"use client";
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { Horizon } from "@stellar/stellar-sdk";
+import {
+  createStatementMetadata,
+  downloadStatementCsv,
+  downloadStatementPdf,
+  type StatementRow,
+} from "@/lib/statementExport";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -23,7 +29,13 @@ type TxRecord = {
   to: string;
 };
 
-const CATEGORY_OPTIONS: TxCategory[] = ["All", "Deposits", "Withdrawals", "Repayments", "Disbursements"];
+const CATEGORY_OPTIONS: TxCategory[] = [
+  "All",
+  "Deposits",
+  "Withdrawals",
+  "Repayments",
+  "Disbursements",
+];
 
 const CATEGORY_STYLES: Record<string, string> = {
   Deposits: "text-emerald-400 bg-emerald-400/10",
@@ -44,32 +56,6 @@ function formatDate(iso: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function toCSV(rows: TxRecord[], publicKey: string): string {
-  const headers = ["Date", "Type", "Amount (USDC)", "Status", "Transaction Hash", "From", "To"];
-  const lines = rows.map((r) =>
-    [
-      `"${formatDate(r.date)}"`,
-      r.category.slice(0, -1),
-      r.amount,
-      r.status,
-      r.hash,
-      r.from,
-      r.to,
-    ].join(",")
-  );
-  return [headers.join(","), ...lines].join("\n");
-}
-
-function downloadCSV(content: string) {
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `remitmortgage-transactions-${Date.now()}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 function parsePaymentOp(op: any, publicKey: string): TxRecord | null {
@@ -140,11 +126,7 @@ export default function HistoryPage() {
     async (cursor?: string) => {
       if (!publicKey) return null;
       const server = new Horizon.Server(HORIZON_TESTNET);
-      let query = server
-        .payments()
-        .forAccount(publicKey)
-        .limit(PAGE_SIZE)
-        .order("desc");
+      let query = server.payments().forAccount(publicKey).limit(PAGE_SIZE).order("desc");
       if (cursor) query = (query as any).cursor(cursor);
       return query.call();
     },
@@ -195,7 +177,9 @@ export default function HistoryPage() {
     }
 
     load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [publicKey, fetchPage]);
 
   async function loadMore() {
@@ -235,39 +219,104 @@ export default function HistoryPage() {
     return true;
   });
 
-  function handleExport() {
+  function buildStatementRows(): StatementRow[] {
+    return filtered.map((row) => ({
+      date: formatDate(row.date),
+      type: row.category.slice(0, -1),
+      amount: `${row.amount} USDC`,
+      status: row.status,
+      reference: row.hash,
+      counterparty: `${shorten(row.from)} → ${shorten(row.to)}`,
+      notes: row.category,
+    }));
+  }
+
+  function buildStatementPayload() {
     if (!publicKey) return;
-    downloadCSV(toCSV(filtered, publicKey));
+    return {
+      title: "RemitMortgage Borrower Audit Statement",
+      subtitle: "Verified Horizon payment history for underwriting review.",
+      metadata: createStatementMetadata({
+        borrowerName: publicKey ? `Wallet ${shorten(publicKey)}` : "Unknown borrower",
+        borrowerAddress: publicKey,
+        walletType: "Freighter / Stellar",
+      }),
+      summary: [
+        { label: "Verified transactions", value: String(filtered.length) },
+        {
+          label: "Amount range",
+          value: `${amountMin.toLocaleString()} - ${amountMax.toLocaleString()} USDC`,
+        },
+        { label: "Category filter", value: category },
+      ],
+      rows: buildStatementRows(),
+    };
+  }
+
+  function handleExportCsv() {
+    const payload = buildStatementPayload();
+    if (!payload) return;
+    downloadStatementCsv(payload, `remitmortgage-audit-statement-${Date.now()}.csv`);
+  }
+
+  function handleExportPdf() {
+    const payload = buildStatementPayload();
+    if (!payload) return;
+    downloadStatementPdf(payload, `remitmortgage-audit-statement-${Date.now()}.pdf`);
   }
 
   return (
-    <div className="min-h-screen bg-[var(--bg-primary)]">
+    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
-      <main className="max-w-7xl mx-auto px-6 py-24">
+      <main className="max-w-7xl mx-auto px-6 pt-32 pb-20">
         {/* Header */}
-        <div className="flex items-start justify-between mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-bold mb-1">Transaction History</h1>
-            <p className="text-[var(--text-secondary)] text-sm">
-              USDC payment operations on Stellar Testnet
+            <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-3 border border-cyan-500/20">
+              Audit & Activity Explorer
+            </span>
+            <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white mb-1">
+              Transaction <span className="gradient-text">Audit Log</span>
+            </h1>
+            <p className="text-slate-400 text-sm">
+              Verified USDC payment operations and contract interactions on Stellar Testnet.
             </p>
           </div>
-          <button
-            onClick={handleExport}
-            disabled={filtered.length === 0}
-            className="btn-primary !py-2.5 !px-5 !text-sm disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Export CSV
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={handleExportCsv}
+              disabled={filtered.length === 0}
+              className="btn-cta disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Export CSV Log
+            </button>
+            <button
+              onClick={handleExportPdf}
+              disabled={filtered.length === 0}
+              className="btn-outline-blue disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Download PDF Statement
+            </button>
+          </div>
         </div>
 
         {/* Wallet not connected */}
         {walletChecked && !publicKey && (
           <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-10 text-center">
             <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-[var(--accent-primary)]/10 flex items-center justify-center">
-              <svg className="w-6 h-6 text-[var(--accent-primary-light)]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" />
+              <svg
+                className="w-6 h-6 text-[var(--accent-primary-light)]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3"
+                />
               </svg>
             </div>
             <h2 className="text-lg font-semibold mb-2">Connect your wallet</h2>

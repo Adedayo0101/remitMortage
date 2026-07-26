@@ -5,8 +5,7 @@ import dynamic from "next/dynamic";
 import { useWallet, WalletProvider } from "../../context/WalletContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
-
-// ── Types ──────────────────────────────────────────────────────────────────
+import ROIProjectionWidget from "../../components/ROIProjectionWidget";
 
 type Tranche = "Senior" | "Junior";
 
@@ -27,8 +26,6 @@ interface InvestorPosition {
   startLedger: number;
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
 function formatUSDC(raw: string | number): string {
   const n = typeof raw === "string" ? parseFloat(raw) : raw;
   if (isNaN(n)) return "0.00";
@@ -38,14 +35,6 @@ function formatUSDC(raw: string | number): string {
 function bpsToPercent(bps: number): string {
   return (bps / 100).toFixed(1) + "%";
 }
-
-function utilizationColor(rate: number): string {
-  if (rate < 0.6) return "#16a34a";
-  if (rate < 0.85) return "#d97706";
-  return "#dc2626";
-}
-
-// ── Sub-components ───────────────────────────────────────────────────────────
 
 function MetricCard({
   label,
@@ -59,39 +48,36 @@ function MetricCard({
   accent?: string;
 }) {
   return (
-    <div className="p-5 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]">
-      <p className="text-xs text-[var(--text-muted)] mb-1">{label}</p>
+    <div className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl flex flex-col justify-between">
+      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">{label}</p>
       <p
-        className="text-2xl font-bold"
+        className="text-2xl font-extrabold text-white font-mono"
         style={accent ? { color: accent } : undefined}
       >
         {value}
       </p>
-      {sub && <p className="text-xs text-[var(--text-secondary)] mt-1">{sub}</p>}
+      {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
     </div>
   );
 }
 
 function UtilizationGauge({ rate }: { rate: number }) {
   const pct = Math.min(100, Math.round(rate * 100));
-  const color = utilizationColor(rate);
   return (
     <div>
-      <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
-        <span>Utilization</span>
-        <span style={{ color }}>{pct}%</span>
+      <div className="flex justify-between text-xs text-slate-300 font-semibold mb-1">
+        <span>Pool Utilization</span>
+        <span className="text-cyan-400 font-mono">{pct}%</span>
       </div>
-      <div className="w-full bg-[var(--bg-primary)] rounded-full h-2">
+      <div className="w-full bg-slate-950 rounded-full h-2.5 border border-slate-800 overflow-hidden">
         <div
-          className="h-2 rounded-full transition-all"
-          style={{ width: `${pct}%`, backgroundColor: color }}
+          className="h-2.5 rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 transition-all duration-700"
+          style={{ width: `${pct}%` }}
         />
       </div>
     </div>
   );
 }
-
-// ── Main Page ────────────────────────────────────────────────────────────────
 
 export default function InvestPage() {
   return (
@@ -109,37 +95,30 @@ function InvestPageInner() {
   const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [metricsError, setMetricsError] = useState<string | null>(null);
 
-  // Deposit form state.
   const [depositAmount, setDepositAmount] = useState("");
   const [selectedTranche, setSelectedTranche] = useState<Tranche>("Senior");
   const [depositError, setDepositError] = useState<string | null>(null);
   const [depositing, setDepositing] = useState(false);
   const [depositSuccess, setDepositSuccess] = useState(false);
 
-  // Withdraw state.
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
 
-  // Load on-chain pool metrics from the backend.
-  // NOTE: Currently uses placeholder data until the Soroban query layer is wired.
   const loadMetrics = useCallback(async () => {
     setLoadingMetrics(true);
     setMetricsError(null);
     try {
-      // TODO: Replace with real backend endpoints once Soroban queries are integrated.
-      // Placeholder values that would come from GET /api/pool/metrics.
       const placeholder: PoolMetrics = {
         totalLiquidity: "1250000",
         seniorLiquidity: "875000",
         juniorLiquidity: "375000",
         activeLoans: 3,
         utilizationRate: 0.56,
-        estimatedApyBps: 620, // weighted average of tranche yields
+        estimatedApyBps: 620,
         defaultRate: 0.0,
       };
       setMetrics(placeholder);
 
-      // TODO: Replace with real backend endpoint GET /api/pool/investor/:address
       if (publicKey) {
         const investorPlaceholder: InvestorPosition = {
           deposited: "0",
@@ -160,7 +139,6 @@ function InvestPageInner() {
     loadMetrics();
   }, [loadMetrics]);
 
-  // ── Deposit handler ──────────────────────────────────────────────────
   async function handleDeposit(e: React.FormEvent) {
     e.preventDefault();
     setDepositError(null);
@@ -178,20 +156,14 @@ function InvestPageInner() {
     }
 
     const confirmed = confirm(
-      `Confirm deposit of ${formatUSDC(amount)} USDC into the ${selectedTranche} tranche?\n\n` +
-        (selectedTranche === "Senior"
-          ? "Senior: ~4% fixed APY — protected capital, lower risk."
-          : "Junior: Variable higher yield — absorbs first losses, higher risk.")
+      `Confirm deposit of ${formatUSDC(amount)} USDC into the ${selectedTranche} tranche?`
     );
     if (!confirmed) return;
 
     setDepositing(true);
     try {
-      // TODO: Build and submit actual Soroban transaction via Freighter:
-      //   lending_pool::deposit(publicKey, amount_stroops, Tranche::Senior|Junior)
       await new Promise((r) => setTimeout(r, 1000));
 
-      // Optimistically update position for demo.
       setPosition((prev: InvestorPosition | null) => ({
         deposited: String((parseFloat(prev?.deposited ?? "0") + amount).toFixed(2)),
         tranche: prev?.tranche ?? selectedTranche,
@@ -209,7 +181,6 @@ function InvestPageInner() {
     }
   }
 
-  // ── Withdraw handler ─────────────────────────────────────────────────
   async function handleWithdraw() {
     setWithdrawError(null);
 
@@ -218,12 +189,9 @@ function InvestPageInner() {
       return;
     }
 
-    // Guard against withdrawing when it would leave active loans uncovered.
     if (metrics) {
-      const afterWithdraw =
-        parseFloat(metrics.totalLiquidity) - parseFloat(position.deposited);
-      const activeCapital =
-        parseFloat(metrics.totalLiquidity) * metrics.utilizationRate;
+      const afterWithdraw = parseFloat(metrics.totalLiquidity) - parseFloat(position.deposited);
+      const activeCapital = parseFloat(metrics.totalLiquidity) * metrics.utilizationRate;
       if (afterWithdraw < activeCapital) {
         setWithdrawError(
           "Withdrawal blocked: insufficient remaining liquidity to cover active loans."
@@ -239,7 +207,6 @@ function InvestPageInner() {
 
     setWithdrawing(true);
     try {
-      // TODO: Call lending_pool::withdraw() via Freighter.
       await new Promise((r) => setTimeout(r, 800));
       setPosition({ deposited: "0", tranche: null, accruedYield: "0", startLedger: 0 });
     } catch (err: any) {
@@ -249,46 +216,41 @@ function InvestPageInner() {
     }
   }
 
-  // ── Senior vs Junior yield display ──────────────────────────────────
-  const seniorApyBps = 400; // fixed 4%
+  const seniorApyBps = 400;
   const juniorApyBps = metrics
     ? Math.max(0, Math.round(metrics.estimatedApyBps * 2 - seniorApyBps))
     : 0;
 
   return (
-    <div>
+    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
-      <main className="max-w-5xl mx-auto px-6 py-24">
+      <main className="max-w-6xl mx-auto px-6 pt-32">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold mb-2">Investor Portal</h1>
-          <p className="text-[var(--text-secondary)]">
-            Deposit capital into the RemitMortgage lending pool and earn yield
-            from borrower repayments. Choose your tranche to match your risk
-            appetite.
+          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-indigo-500/10 text-indigo-400 text-xs font-semibold uppercase tracking-wider mb-4 border border-indigo-500/20">
+            Lending Pool & Capital Tranches
+          </span>
+          <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white mb-2">
+            DeFi Investor <span className="gradient-text">Portal</span>
+          </h1>
+          <p className="text-slate-400 text-sm md:text-base max-w-2xl">
+            Fund the 70% lending pool and earn yield from verified borrower mortgage repayments.
+            Select Senior or Junior tranches based on your risk preference.
           </p>
         </div>
 
-        {/* ── Pool Overview ── */}
-        <section aria-labelledby="pool-overview-heading" className="mb-10">
-          <h2
-            id="pool-overview-heading"
-            className="text-lg font-semibold mb-4"
-          >
-            Pool Overview
-          </h2>
+        {/* Pool Overview */}
+        <section className="mb-10">
+          <h2 className="text-lg font-bold text-white mb-4">Pool Overview</h2>
 
           {loadingMetrics && (
-            <div className="p-6 bg-[var(--bg-card)] rounded-lg text-sm text-[var(--text-muted)]">
+            <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400">
               Loading pool metrics…
             </div>
           )}
 
           {metricsError && (
-            <div
-              role="alert"
-              className="p-4 bg-red-50 text-red-700 rounded-lg text-sm"
-            >
+            <div className="p-4 bg-red-500/10 text-red-300 border border-red-500/20 rounded-2xl text-sm">
               {metricsError}
             </div>
           )}
@@ -310,40 +272,39 @@ function InvestPageInner() {
                   label="Estimated Pool APY"
                   value={bpsToPercent(metrics.estimatedApyBps)}
                   sub="weighted avg"
-                  accent="#6366f1"
+                  accent="#38bdf8"
                 />
                 <MetricCard
                   label="Default Rate"
                   value={`${(metrics.defaultRate * 100).toFixed(1)}%`}
                   sub="historical"
-                  accent={metrics.defaultRate > 0.05 ? "#dc2626" : "#16a34a"}
+                  accent="#10b981"
                 />
               </div>
 
               {/* Health Indicators */}
-              <div className="p-5 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)] space-y-4">
-                <h3 className="text-sm font-semibold text-[var(--text-secondary)]">
-                  Pool Health Indicators
+              <div className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl space-y-5">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Pool Health & Liquidity Split
                 </h3>
                 <UtilizationGauge rate={metrics.utilizationRate} />
 
-                {/* Tranche split bar */}
                 <div>
-                  <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
+                  <div className="flex justify-between text-xs text-slate-300 font-semibold mb-1">
                     <span>
-                      Senior{" "}
-                      <span className="text-indigo-400">
+                      Senior Tranche:{" "}
+                      <span className="text-indigo-400 font-mono">
                         ${formatUSDC(metrics.seniorLiquidity)}
                       </span>
                     </span>
                     <span>
-                      Junior{" "}
-                      <span className="text-cyan-400">
+                      Junior Tranche:{" "}
+                      <span className="text-cyan-400 font-mono">
                         ${formatUSDC(metrics.juniorLiquidity)}
                       </span>
                     </span>
                   </div>
-                  <div className="flex h-2 rounded-full overflow-hidden">
+                  <div className="flex h-3 rounded-full overflow-hidden bg-slate-950 border border-slate-800">
                     {parseFloat(metrics.totalLiquidity) > 0 && (
                       <>
                         <div
@@ -353,7 +314,7 @@ function InvestPageInner() {
                           }}
                         />
                         <div
-                          className="bg-cyan-500"
+                          className="bg-cyan-400"
                           style={{
                             width: `${(parseFloat(metrics.juniorLiquidity) / parseFloat(metrics.totalLiquidity)) * 100}%`,
                           }}
@@ -362,66 +323,40 @@ function InvestPageInner() {
                     )}
                   </div>
                 </div>
-
-                {/* APY rows */}
-                <div className="grid grid-cols-2 gap-3 pt-1">
-                  <div className="text-xs">
-                    <span className="text-[var(--text-muted)]">
-                      Senior APY (fixed):{" "}
-                    </span>
-                    <span className="font-semibold text-indigo-400">
-                      {bpsToPercent(seniorApyBps)}
-                    </span>
-                  </div>
-                  <div className="text-xs">
-                    <span className="text-[var(--text-muted)]">
-                      Junior APY (est.):{" "}
-                    </span>
-                    <span className="font-semibold text-cyan-400">
-                      {bpsToPercent(juniorApyBps)}
-                    </span>
-                  </div>
-                </div>
               </div>
             </>
           )}
         </section>
 
         <div className="grid md:grid-cols-2 gap-6">
-          {/* ── Deposit Form ── */}
-          <section aria-labelledby="deposit-heading">
-            <div className="p-6 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]">
-              <h2 id="deposit-heading" className="text-lg font-semibold mb-4">
-                Deposit USDC
-              </h2>
+          {/* Deposit Form */}
+          <section>
+            <div className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl space-y-5">
+              <h2 className="text-lg font-bold text-white">Deposit USDC</h2>
 
               {!isConnected ? (
                 <div className="text-center py-6">
-                  <p className="text-sm text-[var(--text-secondary)] mb-4">
-                    Connect your Freighter wallet to deposit.
+                  <p className="text-xs text-slate-400 mb-4">
+                    Connect your Freighter wallet to supply liquidity.
                   </p>
-                  <button
-                    onClick={() => connect()}
-                    className="btn-primary !py-2.5 !px-5"
-                  >
+                  <button onClick={() => connect()} className="btn-cta py-2.5 px-5 !text-xs">
                     Connect Wallet
                   </button>
                 </div>
               ) : (
                 <form onSubmit={handleDeposit} className="space-y-4">
-                  {/* Tranche selector */}
-                  <fieldset>
-                    <legend className="text-sm font-medium text-[var(--text-secondary)] mb-2">
-                      Select Tranche
-                    </legend>
+                  <div>
+                    <label className="text-xs font-bold uppercase text-slate-400 block mb-2">
+                      Select Capital Tranche
+                    </label>
                     <div className="grid grid-cols-2 gap-3">
                       {(["Senior", "Junior"] as Tranche[]).map((t) => (
                         <label
                           key={t}
-                          className={`cursor-pointer rounded-lg border p-3 text-sm transition-all ${
+                          className={`cursor-pointer rounded-xl border p-4 text-xs transition-all ${
                             selectedTranche === t
-                              ? "border-indigo-500 bg-indigo-500/10 text-[var(--text-primary)]"
-                              : "border-[var(--border-color)] text-[var(--text-muted)] hover:border-indigo-400"
+                              ? "border-cyan-400 bg-cyan-500/10 text-white"
+                              : "border-slate-800 text-slate-400 hover:border-slate-700"
                           }`}
                         >
                           <input
@@ -432,34 +367,37 @@ function InvestPageInner() {
                             onChange={() => setSelectedTranche(t)}
                             className="sr-only"
                           />
-                          <div className="font-semibold mb-0.5">{t}</div>
-                          <div className="text-xs">
+                          <div className="font-bold text-sm text-white mb-1">{t} Tranche</div>
+                          <div className="text-[11px] leading-relaxed">
                             {t === "Senior" ? (
                               <>
-                                ~{bpsToPercent(seniorApyBps)} fixed APY
+                                <span className="text-indigo-400 font-bold font-mono">
+                                  ~{bpsToPercent(seniorApyBps)} Fixed APY
+                                </span>
                                 <br />
                                 Protected capital
                               </>
                             ) : (
                               <>
-                                ~{bpsToPercent(juniorApyBps)} est. APY
+                                <span className="text-cyan-400 font-bold font-mono">
+                                  ~{bpsToPercent(juniorApyBps)} Est. APY
+                                </span>
                                 <br />
-                                Absorbs first losses
+                                Absorbs first loss
                               </>
                             )}
                           </div>
                         </label>
                       ))}
                     </div>
-                  </fieldset>
+                  </div>
 
-                  {/* Amount input */}
                   <div>
                     <label
                       htmlFor="deposit-amount"
-                      className="block text-sm font-medium text-[var(--text-secondary)] mb-1"
+                      className="block text-xs font-bold uppercase text-slate-400 mb-1"
                     >
-                      Amount (USDC)
+                      Deposit Amount (USDC)
                     </label>
                     <input
                       id="deposit-amount"
@@ -469,206 +407,93 @@ function InvestPageInner() {
                       placeholder="e.g. 5000"
                       value={depositAmount}
                       onChange={(e) => setDepositAmount(e.target.value)}
-                      className="w-full p-2.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] text-sm"
-                      aria-describedby="deposit-error"
+                      className="input-field font-mono"
                     />
                   </div>
 
-                  {depositError && (
-                    <p
-                      id="deposit-error"
-                      role="alert"
-                      className="text-sm text-red-500"
-                    >
-                      {depositError}
-                    </p>
-                  )}
-
+                  {depositError && <p className="text-xs text-red-400">{depositError}</p>}
                   {depositSuccess && (
-                    <p
-                      role="status"
-                      className="text-sm text-green-500"
-                    >
-                      Deposit submitted successfully.
-                    </p>
+                    <p className="text-xs text-emerald-400">Deposit submitted successfully.</p>
                   )}
 
                   <button
                     type="submit"
                     disabled={depositing}
-                    className="btn-primary w-full"
-                    aria-busy={depositing}
+                    className="btn-cta w-full justify-center py-3"
                   >
-                    {depositing ? "Signing transaction…" : `Deposit into ${selectedTranche} Tranche`}
+                    {depositing
+                      ? "Signing Transaction..."
+                      : `Deposit into ${selectedTranche} Tranche`}
                   </button>
                 </form>
               )}
             </div>
           </section>
 
-          {/* ── My Position ── */}
-          <section aria-labelledby="position-heading">
-            <div className="p-6 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)] h-full flex flex-col">
-              <h2
-                id="position-heading"
-                className="text-lg font-semibold mb-4"
-              >
-                My Position
-              </h2>
+          {/* My Position */}
+          <section>
+            <div className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl h-full flex flex-col justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-white mb-4">My Position</h2>
 
-              {!isConnected ? (
-                <p className="text-sm text-[var(--text-muted)] flex-1">
-                  Connect your wallet to view your position.
-                </p>
-              ) : position ? (
-                <div className="flex-1 space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="bg-[var(--bg-primary)] rounded-lg p-3">
-                      <p className="text-xs text-[var(--text-muted)] mb-0.5">
-                        Deposited
-                      </p>
-                      <p className="text-lg font-bold">
-                        ${formatUSDC(position.deposited)}
-                      </p>
-                      <p className="text-xs text-[var(--text-secondary)]">
-                        USDC
-                      </p>
+                {!isConnected ? (
+                  <p className="text-xs text-slate-500">Connect wallet to view portfolio status.</p>
+                ) : position ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+                        <p className="text-[10px] text-slate-500 font-bold uppercase">Deposited</p>
+                        <p className="text-xl font-extrabold text-white font-mono mt-1">
+                          ${formatUSDC(position.deposited)}
+                        </p>
+                      </div>
+                      <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+                        <p className="text-[10px] text-slate-500 font-bold uppercase">
+                          Earned Yield
+                        </p>
+                        <p className="text-xl font-extrabold text-emerald-400 font-mono mt-1">
+                          ${formatUSDC(position.accruedYield)}
+                        </p>
+                      </div>
                     </div>
-                    <div className="bg-[var(--bg-primary)] rounded-lg p-3">
-                      <p className="text-xs text-[var(--text-muted)] mb-0.5">
-                        Earned Yield
-                      </p>
-                      <p className="text-lg font-bold text-green-400">
-                        ${formatUSDC(position.accruedYield)}
-                      </p>
-                      <p className="text-xs text-[var(--text-secondary)]">
-                        USDC
-                      </p>
-                    </div>
-                  </div>
 
-                  {position.tranche && (
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="text-[var(--text-muted)]">Tranche:</span>
-                      <span
-                        className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                          position.tranche === "Senior"
-                            ? "bg-indigo-500/20 text-indigo-400"
-                            : "bg-cyan-500/20 text-cyan-400"
-                        }`}
-                      >
-                        {position.tranche}
-                      </span>
-                      <span className="text-[var(--text-muted)] text-xs">
-                        {position.tranche === "Senior"
-                          ? `~${bpsToPercent(seniorApyBps)} APY`
-                          : `~${bpsToPercent(juniorApyBps)} APY`}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Yield tracker */}
-                  {metrics && parseFloat(position.deposited) > 0 && (
-                    <div className="bg-[var(--bg-primary)] rounded-lg p-3 text-xs space-y-1">
-                      <p className="font-medium text-[var(--text-secondary)]">
-                        Yield Estimate
-                      </p>
-                      <p className="text-[var(--text-muted)]">
-                        Annual (current APY):{" "}
-                        <strong className="text-[var(--text-primary)]">
-                          $
-                          {formatUSDC(
-                            (parseFloat(position.deposited) *
-                              (position.tranche === "Senior"
-                                ? seniorApyBps
-                                : juniorApyBps)) /
-                              10_000
-                          )}
-                        </strong>
-                      </p>
-                      <p className="text-[var(--text-muted)]">
-                        Pool utilization:{" "}
-                        <strong
-                          style={{ color: utilizationColor(metrics.utilizationRate) }}
-                        >
-                          {Math.round(metrics.utilizationRate * 100)}%
-                        </strong>
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Withdraw */}
-                  <div className="mt-auto pt-2">
-                    {withdrawError && (
-                      <p
-                        role="alert"
-                        className="text-sm text-red-500 mb-2"
-                      >
-                        {withdrawError}
-                      </p>
+                    {position.tranche && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-slate-400">Active Tranche:</span>
+                        <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                          {position.tranche}
+                        </span>
+                      </div>
                     )}
-                    <button
-                      onClick={handleWithdraw}
-                      disabled={
-                        withdrawing ||
-                        !position ||
-                        parseFloat(position.deposited) <= 0
-                      }
-                      className="w-full py-2.5 px-4 rounded-lg border border-[var(--border-color)] text-sm font-medium
-                        hover:border-red-400 hover:text-red-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      aria-busy={withdrawing}
-                    >
-                      {withdrawing ? "Processing…" : "Withdraw"}
-                    </button>
-                    <p className="text-xs text-[var(--text-muted)] mt-1 text-center">
-                      Withdrawal blocked if it would leave active loans uncovered.
-                    </p>
                   </div>
+                ) : (
+                  <p className="text-xs text-slate-500">Loading position…</p>
+                )}
+              </div>
+
+              {isConnected && position && (
+                <div className="pt-4 border-t border-slate-800 mt-6">
+                  {withdrawError && <p className="text-xs text-red-400 mb-2">{withdrawError}</p>}
+                  <button
+                    onClick={handleWithdraw}
+                    disabled={withdrawing || parseFloat(position.deposited) <= 0}
+                    className="btn-outline w-full justify-center text-xs py-2.5 disabled:opacity-40"
+                  >
+                    {withdrawing ? "Processing…" : "Withdraw Liquidity"}
+                  </button>
                 </div>
-              ) : (
-                <p className="text-sm text-[var(--text-muted)]">
-                  Loading position…
-                </p>
               )}
             </div>
           </section>
         </div>
 
-        {/* ── Tranche Info Cards ── */}
-        <section aria-labelledby="tranche-info-heading" className="mt-8">
-          <h2
-            id="tranche-info-heading"
-            className="text-lg font-semibold mb-4"
-          >
-            Tranche Structure
-          </h2>
-          <div className="grid md:grid-cols-2 gap-4">
-            <div className="p-5 rounded-lg border border-indigo-500/30 bg-indigo-500/5">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="w-3 h-3 rounded-full bg-indigo-500" />
-                <h3 className="font-semibold text-indigo-400">Senior Tranche</h3>
-              </div>
-              <ul className="text-sm text-[var(--text-secondary)] space-y-1.5">
-                <li>→ Fixed {bpsToPercent(seniorApyBps)} annual yield</li>
-                <li>→ Protected: junior absorbs losses first</li>
-                <li>→ Lower risk, predictable income</li>
-                <li>→ Ideal for risk-averse capital allocators</li>
-              </ul>
-            </div>
-            <div className="p-5 rounded-lg border border-cyan-500/30 bg-cyan-500/5">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="w-3 h-3 rounded-full bg-cyan-500" />
-                <h3 className="font-semibold text-cyan-400">Junior Tranche</h3>
-              </div>
-              <ul className="text-sm text-[var(--text-secondary)] space-y-1.5">
-                <li>→ Variable yield — receives remaining interest</li>
-                <li>→ First-loss position: absorbs defaults before senior</li>
-                <li>→ Higher potential APY with higher risk</li>
-                <li>→ Suited for yield-seeking participants</li>
-              </ul>
-            </div>
-          </div>
-        </section>
+        {isConnected && publicKey && position && parseFloat(position.deposited) > 0 && (
+          <ROIProjectionWidget
+            wallet={publicKey}
+            depositedAmount={parseFloat(position.deposited)}
+            apyBps={position.tranche === "Senior" ? seniorApyBps : juniorApyBps}
+          />
+        )}
       </main>
     </div>
   );

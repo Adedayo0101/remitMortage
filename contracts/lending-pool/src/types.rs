@@ -32,6 +32,8 @@ pub struct PoolConfig {
     pub admin: Address,
     /// USDC token contract address.
     pub token: Address,
+    /// Escrow contract address for the savings target.
+    pub escrow: Address,
     /// Annual interest rate in basis points (e.g. 800 = 8%).
     pub interest_rate_bps: u32,
     /// Fixed yield rate allocated to senior tranche in basis points (e.g. 400 = 4%).
@@ -199,8 +201,9 @@ pub enum DataKey {
     PendingAdmin,
     /// Total withdrawal fees collected and routed to treasury.
     TotalWithdrawalFees,
-    /// Address of the VerificationRegistry contract used to gate loan requests.
-    /// Absent until `set_verification_registry` is called by the admin.
+    /// Address of the VerificationRegistry contract used to resolve borrower
+    /// interest rates during loan requests. Absent until `set_verification_registry`
+    /// is called by the admin.
     VerificationRegistry,
     /// Global daily borrow limit.
     DailyBorrowLimit,

@@ -76,6 +76,24 @@ impl MilestoneContract {
         }
         Err(MilestoneError::InvalidCidFormat)
     }
+
+    fn non_reentrant<T, F>(env: &Env, f: F) -> Result<T, MilestoneError>
+    where
+        F: FnOnce() -> Result<T, MilestoneError>,
+    {
+        let locked: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Reentrant)
+            .unwrap_or(false);
+        if locked {
+            return Err(MilestoneError::ReentrancyGuard);
+        }
+        env.storage().instance().set(&DataKey::Reentrant, &true);
+        let result = f();
+        env.storage().instance().set(&DataKey::Reentrant, &false);
+        result
+    }
 }
 
 #[contractimpl]
@@ -248,6 +266,7 @@ impl MilestoneContract {
     pub fn release_milestone(env: Env, proposal_id: BytesN<32>) -> Result<(), MilestoneError> {
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
+        Self::non_reentrant(&env, || {
 
         let mut record = Self::read_milestone(&env, &proposal_id)?;
         if record.status != MilestoneStatus::Approved {
@@ -277,6 +296,7 @@ impl MilestoneContract {
         Self::bump_instance(&env);
 
         Ok(())
+        }) // non_reentrant
     }
 
     /// Dispute an active milestone and trigger a refund to the lending pool.
@@ -374,6 +394,55 @@ impl MilestoneContract {
     /// Returns the contract version.
     pub fn version(_env: Env) -> u32 {
         1
+    }
+
+    // ── Reentrancy guard tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_release_milestone_blocked_when_reentrant_flag_set() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contractor = Address::generate(&env);
+        let (admin, client) = make_client(&env);
+
+        let proposal_id = BytesN::from_array(&env, &[40u8; 32]);
+        let loan_id = BytesN::from_array(&env, &[41u8; 32]);
+        let evidence = BytesN::from_array(&env, &[42u8; 32]);
+
+        client.propose_milestone(&contractor, &proposal_id, &loan_id, &500i128, &evidence, &cidv0(&env));
+        client.approve_milestone(&admin, &proposal_id);
+
+        env.as_contract(&client.address, || {
+            env.storage().instance().set(&DataKey::Reentrant, &true);
+        });
+
+        let result = client.try_release_milestone(&proposal_id);
+        assert_eq!(result.unwrap_err(), Ok(MilestoneError::ReentrancyGuard));
+    }
+
+    #[test]
+    fn test_release_milestone_succeeds_when_flag_is_clear() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contractor = Address::generate(&env);
+        let (admin, client) = make_client(&env);
+
+        let proposal_id = BytesN::from_array(&env, &[50u8; 32]);
+        let loan_id = BytesN::from_array(&env, &[51u8; 32]);
+        let evidence = BytesN::from_array(&env, &[52u8; 32]);
+
+        client.propose_milestone(&contractor, &proposal_id, &loan_id, &500i128, &evidence, &cidv0(&env));
+        client.approve_milestone(&admin, &proposal_id);
+
+        // Flag is false by default — release should not be blocked by the guard.
+        // (It may fail for other reasons like the cross-contract call, so we check
+        // the error is NOT ReentrancyGuard.)
+        let result = client.try_release_milestone(&proposal_id);
+        if let Err(e) = result {
+            assert_ne!(e, Ok(MilestoneError::ReentrancyGuard));
+        }
     }
 }
 

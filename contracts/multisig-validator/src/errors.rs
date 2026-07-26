@@ -21,4 +21,14 @@ pub enum ValidatorError {
     InsufficientWeight = 7,
     /// The signer set is empty.
     NoSigners = 8,
+    /// No proposal exists for the given ID.
+    ProposalNotFound = 9,
+    /// The proposal has already been executed.
+    ProposalAlreadyExecuted = 10,
+    /// The timelock delay has not yet elapsed.
+    TimelockNotElapsed = 11,
+    /// No timelock has been configured for this account.
+    TimelockNotConfigured = 12,
+    /// The approval period has not yet been reached.
+    NotYetApproved = 13,
 }

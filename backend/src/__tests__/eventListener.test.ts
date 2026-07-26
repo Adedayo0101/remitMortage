@@ -10,6 +10,13 @@ import {
 } from "../services/eventListener";
 import { InMemoryBalanceRepository } from "../services/balanceStore";
 
+// eventListener.ts pulls in services/audit.js -> services/db.js (real Prisma
+// client) purely for its default `logAudit` export. Every test here injects
+// its own `auditLogger`, so stub the DB layer to keep these tests DB-free.
+jest.mock("../services/db.js", () => ({
+  prisma: { auditLog: { create: jest.fn() } },
+}));
+
 const BORROWER = Keypair.random().publicKey();
 
 function event(
@@ -172,6 +179,74 @@ describe("SorobanEventListener — event capture & sync", () => {
 
     expect(repository.list()).toHaveLength(0);
     expect(logger.lines.some((l) => l.includes("missing borrower/amount"))).toBe(true);
+  });
+});
+
+// ── Listener: audit trail ─────────────────────────────────────────────────────
+
+describe("SorobanEventListener — audit trail", () => {
+  it("records an audit entry for every recognized financial event, skipping unrelated ones", async () => {
+    const repository = new InMemoryBalanceRepository();
+    const logger = makeLogger();
+    const auditLogger = jest.fn().mockResolvedValue(undefined);
+
+    const events = [
+      event("deposit", BORROWER, "1000", 10),
+      event("withdraw", BORROWER, "200", 12),
+      event("disburse", BORROWER, "7000", 13),
+      event("repay", BORROWER, "1000", 14),
+      event("release", BORROWER, "0", 15),
+      event("transfer", BORROWER, "999", 16), // unrelated -> not audited
+    ];
+
+    const listener = new SorobanEventListener({
+      repository,
+      logger,
+      auditLogger,
+      sleep: async () => {},
+      fetcher: async (): Promise<EventBatch> => {
+        listener.stop();
+        return batch(events);
+      },
+    });
+
+    listener.start();
+    await listener.waitForStop();
+
+    expect(auditLogger).toHaveBeenCalledTimes(5);
+    expect(auditLogger).toHaveBeenCalledWith({
+      action: "onchain.deposit",
+      actorAddress: BORROWER,
+      metadata: { amount: "1000", ledger: 10, contractId: "C_ESCROW" },
+    });
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "onchain.release" })
+    );
+    expect(auditLogger).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "onchain.transfer" })
+    );
+  });
+
+  it("does not record an audit entry for a recognized event missing borrower/amount", async () => {
+    const repository = new InMemoryBalanceRepository();
+    const logger = makeLogger();
+    const auditLogger = jest.fn().mockResolvedValue(undefined);
+
+    const listener = new SorobanEventListener({
+      repository,
+      logger,
+      auditLogger,
+      sleep: async () => {},
+      fetcher: async (): Promise<EventBatch> => {
+        listener.stop();
+        return batch([event("deposit", null, "1000")]);
+      },
+    });
+
+    listener.start();
+    await listener.waitForStop();
+
+    expect(auditLogger).not.toHaveBeenCalled();
   });
 });
 

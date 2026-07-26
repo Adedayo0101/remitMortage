@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 export const dynamic = "force-dynamic";
 
@@ -374,15 +374,21 @@ function RepayInner() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div>
+    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
       {isRepaid && <Confetti />}
 
-      <main className="max-w-5xl mx-auto px-6 py-24">
-        <h1 className="text-3xl font-bold mb-2">Loan Repayment</h1>
-        <p className="text-[var(--text-secondary)] mb-8">
-          Manage your loan payments, view your schedule, and track repayment history.
+      <main className="max-w-5xl mx-auto px-6 pt-32 pb-20">
+        <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-4 border border-cyan-500/20">
+          USDC Settlement Rails
+        </span>
+        <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white mb-2">
+          Loan <span className="gradient-text">Repayment Portal</span>
+        </h1>
+        <p className="text-slate-400 text-sm md:text-base mb-8">
+          Manage your loan payments, view repayment schedule, and track on-chain transaction
+          history.
         </p>
 
         {/* ── Tx Success Banner ── */}
@@ -427,7 +433,10 @@ function RepayInner() {
         )}
 
         {error && !loading && (
-          <div role="alert" className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
+          <div
+            role="alert"
+            className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400"
+          >
             {error}
           </div>
         )}
@@ -435,7 +444,7 @@ function RepayInner() {
         {/* ── Completion Banner ── */}
         {isRepaid && !loading && !error && (
           <div className="mb-8 p-8 rounded-xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 text-center animate-fade-in-up">
-            <div className="text-5xl mb-4">{'\u{1F389}'}</div>
+            <div className="text-5xl mb-4">{"\u{1F389}"}</div>
             <h2 className="text-2xl font-bold gradient-text mb-2">Loan Fully Repaid</h2>
             <p className="text-[var(--text-secondary)] max-w-md mx-auto">
               Congratulations! You have successfully repaid your entire loan. Your financial freedom
@@ -449,7 +458,9 @@ function RepayInner() {
           <>
             {/* ── Loan Summary Card ── */}
             <section aria-labelledby="summary-heading" className="mb-8 animate-fade-in-up">
-              <h2 id="summary-heading" className="sr-only">Loan Summary</h2>
+              <h2 id="summary-heading" className="sr-only">
+                Loan Summary
+              </h2>
               <div className="p-6 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]">
                 <div className="flex flex-col md:flex-row items-start md:items-center gap-6">
                   {/* Circular progress */}
@@ -559,8 +570,18 @@ function RepayInner() {
                               }`}
                             >
                               {isCompleted ? (
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth={2.5}
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="m4.5 12.75 6 6 9-13.5"
+                                  />
                                 </svg>
                               ) : (
                                 i + 1
@@ -597,9 +618,7 @@ function RepayInner() {
                                 Due Now
                               </span>
                             )}
-                            {isCompleted && (
-                              <span className="text-xs text-emerald-400">Paid</span>
-                            )}
+                            {isCompleted && <span className="text-xs text-emerald-400">Paid</span>}
                           </div>
                         </div>
                       );
@@ -615,7 +634,10 @@ function RepayInner() {
 
             {/* ── Make Payment ── */}
             {!isRepaid && (
-              <section aria-labelledby="payment-heading" className="mb-8 animate-fade-in-up-delay-2">
+              <section
+                aria-labelledby="payment-heading"
+                className="mb-8 animate-fade-in-up-delay-2"
+              >
                 <h2 id="payment-heading" className="text-lg font-semibold mb-4">
                   Make a Payment
                 </h2>
@@ -626,10 +648,7 @@ function RepayInner() {
                       <p className="text-sm text-[var(--text-secondary)] mb-4">
                         Connect your Freighter wallet to make a payment.
                       </p>
-                      <button
-                        onClick={() => connect()}
-                        className="btn-primary !py-2.5 !px-5"
-                      >
+                      <button onClick={() => connect()} className="btn-primary !py-2.5 !px-5">
                         Connect Wallet
                       </button>
                     </div>
@@ -687,7 +706,9 @@ function RepayInner() {
                         className="btn-primary w-full"
                         aria-busy={paying}
                       >
-                        {paying ? "Signing transaction\u2026" : `Repay ${formatUSDC(payAmount || 0)} USDC`}
+                        {paying
+                          ? "Signing transaction\u2026"
+                          : `Repay ${formatUSDC(payAmount || 0)} USDC`}
                       </button>
                     </form>
                   )}
@@ -741,7 +762,8 @@ function RepayInner() {
                                 </td>
                                 <td className="px-5 py-4 text-right font-medium tabular-nums">
                                   <span className="text-emerald-400">
-                                    {'\u2212'}{tx.amount} USDC
+                                    {"\u2212"}
+                                    {tx.amount} USDC
                                   </span>
                                 </td>
                                 <td className="px-5 py-4">
@@ -761,7 +783,8 @@ function RepayInner() {
                         </table>
                       </div>
                       <div className="px-5 py-3 border-t border-[var(--border-color)] text-xs text-[var(--text-muted)]">
-                        Showing {records.length} repayment transaction{records.length !== 1 ? "s" : ""}
+                        Showing {records.length} repayment transaction
+                        {records.length !== 1 ? "s" : ""}
                       </div>
                     </div>
                   )}
@@ -774,11 +797,11 @@ function RepayInner() {
         {/* ── No loan state ── */}
         {!loading && !error && loan && loan.status === "none" && (
           <div className="p-10 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)] text-center">
-            <div className="text-4xl mb-4">{'\u{1F3E0}'}</div>
+            <div className="text-4xl mb-4">{"\u{1F3E0}"}</div>
             <h2 className="text-lg font-semibold mb-2">No Active Loan</h2>
             <p className="text-sm text-[var(--text-secondary)] max-w-md mx-auto">
-              You do not have an active loan to repay. Complete the onboarding process and apply
-              for a loan through the dashboard.
+              You do not have an active loan to repay. Complete the onboarding process and apply for
+              a loan through the dashboard.
             </p>
             <a href="/dashboard" className="btn-primary inline-flex mt-6 !py-2.5 !px-5">
               Go to Dashboard

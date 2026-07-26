@@ -14,3 +14,20 @@ pub fn advance_ledger_time(env: &Env, seconds: u64) {
         li.timestamp += seconds;
     });
 }
+
+use soroban_sdk::{contract, contractimpl, Address};
+
+#[contract]
+pub struct MockYieldVault;
+
+#[contractimpl]
+impl MockYieldVault {
+    pub fn deposit(_env: Env, _from: Address, amount: i128) -> i128 {
+        amount
+    }
+
+    pub fn withdraw(_env: Env, _from: Address, shares: i128) -> i128 {
+        // simulate 10% yield
+        shares + (shares / 10)
+    }
+}

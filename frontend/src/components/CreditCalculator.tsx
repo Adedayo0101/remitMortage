@@ -3,7 +3,8 @@
 import React, { useState, useMemo } from "react";
 
 // Types
-type FrequencyOption = "Weekly" | "Bi-weekly" | "Monthly" | "Bi-monthly" | "Quarterly" | "Irregular";
+type FrequencyOption =
+  "Weekly" | "Bi-weekly" | "Monthly" | "Bi-monthly" | "Quarterly" | "Irregular";
 type MortgageTermOption = 15 | 20 | 30;
 
 export default function CreditCalculator() {
@@ -17,122 +18,153 @@ export default function CreditCalculator() {
 
   // ─── Safe Input Parsing & Clamping ─────────────────────────────────────────
   const safeRemittance = useMemo(() => Math.max(0, monthlyRemittance || 0), [monthlyRemittance]);
-  const safeConsistency = useMemo(() => Math.min(100, Math.max(0, consistency || 0)), [consistency]);
+  const safeConsistency = useMemo(
+    () => Math.min(100, Math.max(0, consistency || 0)),
+    [consistency]
+  );
   const safeHistory = useMemo(() => Math.max(0, sendingHistory || 0), [sendingHistory]);
   const safePurchasePrice = useMemo(() => Math.max(0, purchasePrice || 0), [purchasePrice]);
 
   // ─── Credit Score & Tier Calculations ──────────────────────────────────────
-  const { score, consistencyScore, frequencyScore, durationScore, volumeScore, tier } = useMemo(() => {
-    // 1. Consistency Score (Max 40)
-    const cScore = Math.round(40 * (safeConsistency / 100));
+  const { score, consistencyScore, frequencyScore, durationScore, volumeScore, tier } =
+    useMemo(() => {
+      // 1. Consistency Score (Max 40)
+      const cScore = Math.round(40 * (safeConsistency / 100));
 
-    // 2. Frequency Score (Max 25)
-    let fScore = 0;
-    if (frequency === "Weekly" || frequency === "Bi-weekly" || frequency === "Monthly") {
-      fScore = 25;
-    } else if (frequency === "Bi-monthly") {
-      fScore = 15;
-    } else if (frequency === "Quarterly") {
-      fScore = 5;
-    }
+      // 2. Frequency Score (Max 25)
+      let fScore = 0;
+      if (frequency === "Weekly" || frequency === "Bi-weekly" || frequency === "Monthly") {
+        fScore = 25;
+      } else if (frequency === "Bi-monthly") {
+        fScore = 15;
+      } else if (frequency === "Quarterly") {
+        fScore = 5;
+      }
 
-    // 3. Duration Score (Max 20)
-    let dScore = 0;
-    if (safeHistory >= 12) {
-      dScore = 20;
-    } else if (safeHistory >= 6) {
-      dScore = 10;
-    } else if (safeHistory >= 3) {
-      dScore = 5;
-    }
+      // 3. Duration Score (Max 20)
+      let dScore = 0;
+      if (safeHistory >= 12) {
+        dScore = 20;
+      } else if (safeHistory >= 6) {
+        dScore = 10;
+      } else if (safeHistory >= 3) {
+        dScore = 5;
+      }
 
-    // 4. Volume Score (Max 15)
-    const totalVolume = safeRemittance * safeHistory;
-    let vScore = 0;
-    if (totalVolume >= 5000) {
-      vScore = 15;
-    } else if (totalVolume >= 2000) {
-      vScore = 10;
-    } else if (totalVolume >= 500) {
-      vScore = 5;
-    }
+      // 4. Volume Score (Max 15)
+      const totalVolume = safeRemittance * safeHistory;
+      let vScore = 0;
+      if (totalVolume >= 5000) {
+        vScore = 15;
+      } else if (totalVolume >= 2000) {
+        vScore = 10;
+      } else if (totalVolume >= 500) {
+        vScore = 5;
+      }
 
-    const totalScore = Math.min(100, cScore + fScore + dScore + vScore);
+      const totalScore = Math.min(100, cScore + fScore + dScore + vScore);
 
-    let classification = "Insufficient";
-    if (totalScore >= 80) {
-      classification = "Excellent";
-    } else if (totalScore >= 60) {
-      classification = "Good";
-    } else if (totalScore >= 40) {
-      classification = "Fair";
-    }
+      let classification = "Insufficient";
+      if (totalScore >= 80) {
+        classification = "Excellent";
+      } else if (totalScore >= 60) {
+        classification = "Good";
+      } else if (totalScore >= 40) {
+        classification = "Fair";
+      }
 
-    return {
-      score: totalScore,
-      consistencyScore: cScore,
-      frequencyScore: fScore,
-      durationScore: dScore,
-      volumeScore: vScore,
-      tier: classification,
-    };
-  }, [safeConsistency, frequency, safeHistory, safeRemittance]);
+      return {
+        score: totalScore,
+        consistencyScore: cScore,
+        frequencyScore: fScore,
+        durationScore: dScore,
+        volumeScore: vScore,
+        tier: classification,
+      };
+    }, [safeConsistency, frequency, safeHistory, safeRemittance]);
 
   // ─── Mortgage Parameters by Tier ──────────────────────────────────────────
   const tierConfig = useMemo(() => {
     switch (tier) {
       case "Excellent":
-        return { rate: 3.5, downPaymentPct: 10, maxLoan: 600000, color: "var(--success)" };
+        return {
+          rate: 3.5,
+          downPaymentPct: 10,
+          maxLoan: 600000,
+          color: "#10b981",
+          bg: "bg-emerald-500/10",
+          border: "border-emerald-500/30",
+        };
       case "Good":
-        return { rate: 4.8, downPaymentPct: 20, maxLoan: 400000, color: "var(--accent-secondary)" };
+        return {
+          rate: 4.8,
+          downPaymentPct: 20,
+          maxLoan: 400000,
+          color: "#06b6d4",
+          bg: "bg-cyan-500/10",
+          border: "border-cyan-500/30",
+        };
       case "Fair":
-        return { rate: 6.2, downPaymentPct: 30, maxLoan: 250000, color: "var(--warning)" };
+        return {
+          rate: 6.2,
+          downPaymentPct: 30,
+          maxLoan: 250000,
+          color: "#f59e0b",
+          bg: "bg-amber-500/10",
+          border: "border-amber-500/30",
+        };
       case "Insufficient":
       default:
-        return { rate: 8.5, downPaymentPct: 50, maxLoan: 750000, color: "var(--error)" }; // Wait, default for Insufficient: higher down payment, low loan principal (e.g. 75,000)
+        return {
+          rate: 8.5,
+          downPaymentPct: 50,
+          maxLoan: 75000,
+          color: "#ef4444",
+          bg: "bg-red-500/10",
+          border: "border-red-500/30",
+        };
     }
   }, [tier]);
 
   // ─── Amortization Calculations ─────────────────────────────────────────────
-  const { downPaymentRequired, maxLoanPrincipal, actualLoanAmount, monthlyPayment, isCapped } = useMemo(() => {
-    const downPaymentPct = tierConfig.downPaymentPct;
-    const initialDownPayment = (safePurchasePrice * downPaymentPct) / 100;
-    const initialLoan = safePurchasePrice - initialDownPayment;
+  const { downPaymentRequired, maxLoanPrincipal, actualLoanAmount, monthlyPayment, isCapped } =
+    useMemo(() => {
+      const downPaymentPct = tierConfig.downPaymentPct;
+      const initialDownPayment = (safePurchasePrice * downPaymentPct) / 100;
+      const initialLoan = safePurchasePrice - initialDownPayment;
 
-    // Check if the loan exceeds the maximum allowed principal for this tier
-    const isLoanCapped = initialLoan > tierConfig.maxLoan;
-    const actualLoan = isLoanCapped ? tierConfig.maxLoan : initialLoan;
-    const actualDownPayment = safePurchasePrice - actualLoan;
+      // Check if the loan exceeds the maximum allowed principal for this tier
+      const isLoanCapped = initialLoan > tierConfig.maxLoan;
+      const actualLoan = isLoanCapped ? tierConfig.maxLoan : initialLoan;
+      const actualDownPayment = safePurchasePrice - actualLoan;
 
-    // Amortization calculation
-    const r = tierConfig.rate / 12 / 100; // monthly rate
-    const n = mortgageTerm * 12; // total payments
-    let payment = 0;
+      // Amortization calculation
+      const r = tierConfig.rate / 12 / 100; // monthly rate
+      const n = mortgageTerm * 12; // total payments
+      let payment = 0;
 
-    if (actualLoan > 0) {
-      if (r > 0) {
-        payment = (actualLoan * (r * Math.pow(1 + r, n))) / (Math.pow(1 + r, n) - 1);
-      } else {
-        payment = actualLoan / n;
+      if (actualLoan > 0) {
+        if (r > 0) {
+          payment = (actualLoan * (r * Math.pow(1 + r, n))) / (Math.pow(1 + r, n) - 1);
+        } else {
+          payment = actualLoan / n;
+        }
       }
-    }
 
-    return {
-      downPaymentRequired: actualDownPayment,
-      maxLoanPrincipal: tierConfig.maxLoan,
-      actualLoanAmount: actualLoan,
-      monthlyPayment: Math.round(payment * 100) / 100,
-      isCapped: isLoanCapped,
-    };
-  }, [safePurchasePrice, tierConfig, mortgageTerm]);
+      return {
+        downPaymentRequired: actualDownPayment,
+        maxLoanPrincipal: tierConfig.maxLoan,
+        actualLoanAmount: actualLoan,
+        monthlyPayment: Math.round(payment * 100) / 100,
+        isCapped: isLoanCapped,
+      };
+    }, [safePurchasePrice, tierConfig, mortgageTerm]);
 
   // ─── SVG Chart Data (Rate vs. History for fixed consistency/volume) ────────
-  // Evaluates interest rates at history values 1 to 36 months
   const chartPoints = useMemo(() => {
     const points = [];
     const steps = [3, 6, 12, 18, 24, 30, 36];
     for (const h of steps) {
-      // Re-evaluate score/tier for each history step to see what interest rate they get
       const cScore = Math.round(40 * (safeConsistency / 100));
       let fScore = 0;
       if (frequency === "Weekly" || frequency === "Bi-weekly" || frequency === "Monthly") {
@@ -175,7 +207,7 @@ export default function CreditCalculator() {
 
   // SVG dimensions & mapping
   const width = 500;
-  const height = 200;
+  const height = 180;
   const padding = 35;
 
   const svgCoordinates = useMemo(() => {
@@ -193,7 +225,6 @@ export default function CreditCalculator() {
       .map((p, idx) => `${idx === 0 ? "M" : "L"} ${getX(p.months)} ${getY(p.rate)}`)
       .join(" ");
 
-    // Get current user point coordinates
     const currentX = getX(Math.min(36, Math.max(3, safeHistory)));
     const currentY = getY(tierConfig.rate);
 
@@ -201,142 +232,177 @@ export default function CreditCalculator() {
   }, [chartPoints, safeHistory, tierConfig]);
 
   return (
-    <div className="glass-card p-6 md:p-8 animate-fade-in-up w-full">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold gradient-text">Mortgage Eligibility Calculator</h2>
-        <p className="text-[var(--text-secondary)] text-sm">
-          Simulate how your remittance history affects your credit score, mortgage interest rates, and loan limits.
-        </p>
-      </div>
+    <div className="p-6 md:p-8 animate-fade-in-up w-full bg-[#0D1536] border border-white/10 rounded-2xl relative overflow-hidden shadow-xl">
+      {/* Decorative inner glow */}
+      <div className="absolute top-0 right-0 w-[30%] h-[30%] bg-blue-500/10 rounded-full blur-[90px] pointer-events-none" />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* ─── LEFT: Inputs ─── */}
-        <div className="space-y-5">
-          <h3 className="text-lg font-semibold border-b border-[var(--border-color)] pb-2">
-            Remittance & Loan Inputs
-          </h3>
-
-          {/* Monthly Remittance */}
+        <div className="space-y-6">
           <div>
-            <div className="flex justify-between items-center mb-1">
-              <label className="text-sm font-medium text-[var(--text-secondary)]">Monthly Remittance</label>
-              <span className="text-sm font-semibold text-[var(--accent-primary-light)]">
-                ${safeRemittance.toLocaleString()} USDC
-              </span>
-            </div>
-            <input
-              type="range"
-              min="50"
-              max="5000"
-              step="50"
-              className="w-full h-1 bg-[var(--bg-secondary)] rounded-lg appearance-none cursor-pointer accent-[var(--accent-primary)]"
-              value={monthlyRemittance}
-              onChange={(e) => setMonthlyRemittance(Number(e.target.value))}
-            />
+            <h3 className="text-lg font-bold text-slate-100 mb-1">Mortgage Calculator</h3>
+            <p className="text-xs text-slate-400">
+              Configure your remittance performance parameters and desired purchase metrics.
+            </p>
           </div>
 
-          {/* Consistency Percentage */}
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <label className="text-sm font-medium text-[var(--text-secondary)]">Consistency Score</label>
-              <span className="text-sm font-semibold text-[var(--accent-primary-light)]">
-                {safeConsistency}% On-Time
-              </span>
+          <div className="space-y-5">
+            {/* Monthly Remittance */}
+            <div className="bg-slate-950/40 p-4 rounded-xl border border-slate-800/40">
+              <div className="flex justify-between items-center mb-2">
+                <label className="text-sm font-semibold text-slate-300">Monthly Remittance</label>
+                <span className="text-sm font-bold text-indigo-400 font-mono">
+                  ${safeRemittance.toLocaleString()} USDC
+                </span>
+              </div>
+              <input
+                type="range"
+                min="50"
+                max="5000"
+                step="50"
+                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                value={monthlyRemittance}
+                onChange={(e) => setMonthlyRemittance(Number(e.target.value))}
+              />
+              <div className="flex justify-between text-[10px] text-slate-500 mt-1.5 font-mono">
+                <span>$50</span>
+                <span>$2,500</span>
+                <span>$5,000</span>
+              </div>
             </div>
-            <input
-              type="range"
-              min="10"
-              max="100"
-              step="1"
-              className="w-full h-1 bg-[var(--bg-secondary)] rounded-lg appearance-none cursor-pointer accent-[var(--accent-primary)]"
-              value={consistency}
-              onChange={(e) => setConsistency(Number(e.target.value))}
-            />
-          </div>
 
-          {/* Sending History (Months) */}
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <label className="text-sm font-medium text-[var(--text-secondary)]">Sending History</label>
-              <span className="text-sm font-semibold text-[var(--accent-primary-light)]">
-                {safeHistory} Months
-              </span>
+            {/* Consistency Percentage */}
+            <div className="bg-slate-950/40 p-4 rounded-xl border border-slate-800/40">
+              <div className="flex justify-between items-center mb-2">
+                <label className="text-sm font-semibold text-slate-300">
+                  Remittance Consistency
+                </label>
+                <span className="text-sm font-bold text-cyan-400 font-mono">
+                  {safeConsistency}% On-Time
+                </span>
+              </div>
+              <input
+                type="range"
+                min="10"
+                max="100"
+                step="1"
+                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                value={consistency}
+                onChange={(e) => setConsistency(Number(e.target.value))}
+              />
+              <div className="flex justify-between text-[10px] text-slate-500 mt-1.5 font-mono">
+                <span>10% Irregular</span>
+                <span>50% Moderate</span>
+                <span>100% Strict</span>
+              </div>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="36"
-              step="1"
-              className="w-full h-1 bg-[var(--bg-secondary)] rounded-lg appearance-none cursor-pointer accent-[var(--accent-primary)]"
-              value={sendingHistory}
-              onChange={(e) => setSendingHistory(Number(e.target.value))}
-            />
-          </div>
 
-          {/* Remittance Frequency */}
-          <div>
-            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-2">
-              Remittance Frequency
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {(["Weekly", "Bi-weekly", "Monthly", "Bi-monthly", "Quarterly", "Irregular"] as FrequencyOption[]).map(
-                (opt) => (
+            {/* Sending History (Months) */}
+            <div className="bg-slate-950/40 p-4 rounded-xl border border-slate-800/40">
+              <div className="flex justify-between items-center mb-2">
+                <label className="text-sm font-semibold text-slate-300">
+                  Payment History Duration
+                </label>
+                <span className="text-sm font-bold text-emerald-400 font-mono">
+                  {safeHistory} Months
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="36"
+                step="1"
+                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                value={sendingHistory}
+                onChange={(e) => setSendingHistory(Number(e.target.value))}
+              />
+              <div className="flex justify-between text-[10px] text-slate-500 mt-1.5 font-mono">
+                <span>0m</span>
+                <span>12m (1 Yr)</span>
+                <span>24m (2 Yrs)</span>
+                <span>36m (3 Yrs)</span>
+              </div>
+            </div>
+
+            {/* Remittance Frequency */}
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                Frequency Pattern
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    "Weekly",
+                    "Bi-weekly",
+                    "Monthly",
+                    "Bi-monthly",
+                    "Quarterly",
+                    "Irregular",
+                  ] as FrequencyOption[]
+                ).map((opt) => (
                   <button
                     key={opt}
                     type="button"
                     onClick={() => setFrequency(opt)}
-                    className={`py-2 px-1 text-xs font-semibold rounded-md border transition-all ${
+                    className={`py-2 px-1 text-xs font-semibold rounded-lg border transition-all duration-200 ${
                       frequency === opt
-                        ? "bg-[var(--accent-primary)] border-[var(--accent-primary)] text-white shadow-md shadow-indigo-500/20"
-                        : "bg-[var(--bg-secondary)] border-[var(--border-color)] text-[var(--text-secondary)] hover:text-white"
+                        ? "bg-indigo-600/20 border-indigo-500/50 text-indigo-300 shadow-md"
+                        : "bg-[#060a13]/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
                     }`}
                   >
                     {opt}
                   </button>
-                )
-              )}
+                ))}
+              </div>
             </div>
-          </div>
 
-          {/* Target Home Price */}
-          <div className="border-t border-[var(--border-color)] pt-4">
-            <div className="flex justify-between items-center mb-1">
-              <label className="text-sm font-medium text-[var(--text-secondary)]">Target Purchase Price</label>
-              <span className="text-sm font-semibold text-[var(--accent-primary-light)]">
-                ${safePurchasePrice.toLocaleString()} USDC
-              </span>
+            {/* Target Home Price */}
+            <div className="border-t border-slate-800/80 pt-4">
+              <div className="flex justify-between items-center mb-2">
+                <label className="text-sm font-semibold text-slate-300">
+                  Target Purchase Price
+                </label>
+                <span className="text-sm font-bold text-indigo-400 font-mono">
+                  ${safePurchasePrice.toLocaleString()} USDC
+                </span>
+              </div>
+              <input
+                type="range"
+                min="20000"
+                max="800000"
+                step="10000"
+                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                value={purchasePrice}
+                onChange={(e) => setPurchasePrice(Number(e.target.value))}
+              />
+              <div className="flex justify-between text-[10px] text-slate-500 mt-1.5 font-mono">
+                <span>$20,000</span>
+                <span>$400,000</span>
+                <span>$800,000</span>
+              </div>
             </div>
-            <input
-              type="range"
-              min="50000"
-              max="800000"
-              step="10000"
-              className="w-full h-1 bg-[var(--bg-secondary)] rounded-lg appearance-none cursor-pointer accent-[var(--accent-primary)]"
-              value={purchasePrice}
-              onChange={(e) => setPurchasePrice(Number(e.target.value))}
-            />
-          </div>
 
-          {/* Mortgage Term */}
-          <div>
-            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-2">
-              Mortgage Term
-            </label>
-            <div className="flex gap-2">
-              {([15, 20, 30] as MortgageTermOption[]).map((term) => (
-                <button
-                  key={term}
-                  type="button"
-                  onClick={() => setMortgageTerm(term)}
-                  className={`flex-1 py-2 text-sm font-semibold rounded-md border transition-all ${
-                    mortgageTerm === term
-                      ? "bg-[var(--accent-primary)] border-[var(--accent-primary)] text-white shadow-md shadow-indigo-500/20"
-                      : "bg-[var(--bg-secondary)] border-[var(--border-color)] text-[var(--text-secondary)] hover:text-white"
-                  }`}
-                >
-                  {term} Years
-                </button>
-              ))}
+            {/* Mortgage Term */}
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                Repayment Term Length
+              </label>
+              <div className="flex gap-2">
+                {([15, 20, 30] as MortgageTermOption[]).map((term) => (
+                  <button
+                    key={term}
+                    type="button"
+                    onClick={() => setMortgageTerm(term)}
+                    className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-all duration-200 ${
+                      mortgageTerm === term
+                        ? "bg-indigo-600/20 border-indigo-500/50 text-indigo-300 shadow-md"
+                        : "bg-[#060a13]/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                    }`}
+                  >
+                    {term} Years
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -344,120 +410,126 @@ export default function CreditCalculator() {
         {/* ─── RIGHT: Outputs & Visuals ─── */}
         <div className="space-y-6">
           {/* Projected Score & Tier badge */}
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-5 flex flex-col md:flex-row items-center gap-6">
+          <div className="bg-[#060a13]/80 border border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row items-center gap-6 relative">
             {/* Radial score gauge */}
-            <div className="relative w-28 h-28 flex items-center justify-center">
+            <div className="relative w-24 h-24 flex items-center justify-center shrink-0">
               <svg className="w-full h-full transform -rotate-90">
                 <circle
-                  cx="56"
-                  cy="56"
-                  r="48"
-                  className="stroke-[var(--bg-primary)] fill-transparent"
-                  strokeWidth="8"
+                  cx="48"
+                  cy="48"
+                  r="40"
+                  className="stroke-slate-900 fill-transparent"
+                  strokeWidth="6"
                 />
                 <circle
-                  cx="56"
-                  cy="56"
-                  r="48"
-                  strokeDasharray={301.6}
-                  strokeDashoffset={301.6 - (301.6 * score) / 100}
-                  className="stroke-[var(--accent-primary)] fill-transparent transition-all duration-500 ease-out"
-                  strokeWidth="8"
+                  cx="48"
+                  cy="48"
+                  r="40"
+                  strokeDasharray={251.2}
+                  strokeDashoffset={251.2 - (251.2 * score) / 100}
+                  stroke={tierConfig.color}
+                  fill="transparent"
+                  className="transition-all duration-500 ease-out"
+                  strokeWidth="6"
                   strokeLinecap="round"
                 />
               </svg>
               <div className="absolute text-center">
-                <div className="text-3xl font-extrabold text-white">{score}</div>
-                <div className="text-[10px] text-[var(--text-muted)] tracking-wider uppercase font-bold">
+                <div className="text-2xl font-extrabold text-slate-100">{score}</div>
+                <div className="text-[8px] text-slate-400 tracking-wider uppercase font-bold">
                   Score
                 </div>
               </div>
             </div>
 
             {/* Score Details */}
-            <div className="flex-1 text-center md:text-left">
-              <div className="mb-2">
-                <span className="text-xs text-[var(--text-muted)] font-bold tracking-widest uppercase">
-                  Projected Credit Tier
-                </span>
-                <div className="flex items-center justify-center md:justify-start gap-2 mt-1">
-                  <h4 className="text-2xl font-extrabold text-white">{tier}</h4>
-                  <span
-                    className="inline-block w-3.5 h-3.5 rounded-full animate-pulse"
-                    style={{ backgroundColor: tierConfig.color }}
-                  />
-                </div>
+            <div className="flex-1 text-center sm:text-left">
+              <span className="text-[10px] text-slate-500 font-bold tracking-wider uppercase">
+                Stellar Credit Rating
+              </span>
+              <div className="flex items-center justify-center sm:justify-start gap-2 mt-0.5 mb-2">
+                <h4 className="text-xl font-bold text-slate-100">{tier} Tier</h4>
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full animate-pulse"
+                  style={{ backgroundColor: tierConfig.color }}
+                />
               </div>
 
               {/* Dynamic Tier helper text */}
-              <p className="text-xs text-[var(--text-secondary)]">
-                {tier === "Excellent" && "🎉 Unlocks maximum borrowing power & our lowest interest rates!"}
-                {tier === "Good" && "👍 Strong credit rating. Eligible for standard prime mortgage terms."}
-                {tier === "Fair" && "⚠️ Moderate credit tier. Requires a larger down payment configuration."}
-                {tier === "Insufficient" && "❌ Below minimum threshold. Increase consistency and history to qualify."}
+              <p className="text-xs text-slate-400 leading-relaxed">
+                {tier === "Excellent" &&
+                  "🎉 Unlocks prime down-payments and our lowest rate (3.50% APR)."}
+                {tier === "Good" &&
+                  "👍 Satisfies standard mortgage criteria. Premium interest parameters apply."}
+                {tier === "Fair" &&
+                  "⚠️ Requires slightly higher savings ratio. Higher APR applied."}
+                {tier === "Insufficient" &&
+                  "❌ Requires longer remittance history or higher consistent volumes."}
               </p>
             </div>
           </div>
 
-          {/* Detailed Score Breakdown */}
-          <div className="space-y-3 bg-[var(--bg-glass)] border border-[var(--border-color)] rounded-xl p-4">
-            <h4 className="text-xs font-bold text-[var(--text-muted)] tracking-widest uppercase mb-1">
-              Score Breakdown Formula
+          {/* Detailed Score Formula */}
+          <div className="space-y-3 bg-[#060a13]/40 border border-slate-800 rounded-xl p-4">
+            <h4 className="text-[10px] font-bold text-slate-500 tracking-widest uppercase">
+              Score Attribution Weights
             </h4>
 
-            {/* Consistency */}
-            <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-[var(--text-secondary)]">Consistency (40% Weight)</span>
-                <span className="font-semibold">{consistencyScore} / 40</span>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+              {/* Consistency */}
+              <div>
+                <div className="flex justify-between text-[11px] text-slate-400 mb-1 font-semibold">
+                  <span>Consistency (40%)</span>
+                  <span>{consistencyScore}/40</span>
+                </div>
+                <div className="w-full bg-slate-900 h-1 rounded-full overflow-hidden">
+                  <div
+                    className="bg-indigo-500 h-full rounded-full"
+                    style={{ width: `${(consistencyScore / 40) * 100}%` }}
+                  />
+                </div>
               </div>
-              <div className="w-full bg-[var(--bg-primary)] h-1.5 rounded-full overflow-hidden">
-                <div
-                  className="bg-indigo-500 h-full rounded-full transition-all duration-300"
-                  style={{ width: `${(consistencyScore / 40) * 100}%` }}
-                />
-              </div>
-            </div>
 
-            {/* Frequency */}
-            <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-[var(--text-secondary)]">Frequency (25% Weight)</span>
-                <span className="font-semibold">{frequencyScore} / 25</span>
+              {/* Frequency */}
+              <div>
+                <div className="flex justify-between text-[11px] text-slate-400 mb-1 font-semibold">
+                  <span>Frequency (25%)</span>
+                  <span>{frequencyScore}/25</span>
+                </div>
+                <div className="w-full bg-slate-900 h-1 rounded-full overflow-hidden">
+                  <div
+                    className="bg-cyan-500 h-full rounded-full"
+                    style={{ width: `${(frequencyScore / 25) * 100}%` }}
+                  />
+                </div>
               </div>
-              <div className="w-full bg-[var(--bg-primary)] h-1.5 rounded-full overflow-hidden">
-                <div
-                  className="bg-cyan-500 h-full rounded-full transition-all duration-300"
-                  style={{ width: `${(frequencyScore / 25) * 100}%` }}
-                />
-              </div>
-            </div>
 
-            {/* Duration */}
-            <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-[var(--text-secondary)]">Duration (20% Weight)</span>
-                <span className="font-semibold">{durationScore} / 20</span>
+              {/* Duration */}
+              <div>
+                <div className="flex justify-between text-[11px] text-slate-400 mb-1 font-semibold">
+                  <span>Duration (20%)</span>
+                  <span>{durationScore}/20</span>
+                </div>
+                <div className="w-full bg-slate-900 h-1 rounded-full overflow-hidden">
+                  <div
+                    className="bg-emerald-500 h-full rounded-full"
+                    style={{ width: `${(durationScore / 20) * 100}%` }}
+                  />
+                </div>
               </div>
-              <div className="w-full bg-[var(--bg-primary)] h-1.5 rounded-full overflow-hidden">
-                <div
-                  className="bg-purple-500 h-full rounded-full transition-all duration-300"
-                  style={{ width: `${(durationScore / 20) * 100}%` }}
-                />
-              </div>
-            </div>
 
-            {/* Volume */}
-            <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-[var(--text-secondary)]">Volume (15% Weight)</span>
-                <span className="font-semibold">{volumeScore} / 15</span>
-              </div>
-              <div className="w-full bg-[var(--bg-primary)] h-1.5 rounded-full overflow-hidden">
-                <div
-                  className="bg-teal-500 h-full rounded-full transition-all duration-300"
-                  style={{ width: `${(volumeScore / 15) * 100}%` }}
-                />
+              {/* Volume */}
+              <div>
+                <div className="flex justify-between text-[11px] text-slate-400 mb-1 font-semibold">
+                  <span>Volume (15%)</span>
+                  <span>{volumeScore}/15</span>
+                </div>
+                <div className="w-full bg-slate-900 h-1 rounded-full overflow-hidden">
+                  <div
+                    className="bg-amber-500 h-full rounded-full"
+                    style={{ width: `${(volumeScore / 15) * 100}%` }}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -465,62 +537,76 @@ export default function CreditCalculator() {
           {/* ─── Financial Outputs Grid ─── */}
           <div className="grid grid-cols-2 gap-4">
             {/* Interest Rate */}
-            <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-4 text-center">
-              <span className="block text-xs text-[var(--text-muted)] font-bold tracking-wider uppercase mb-1">
-                Interest Rate
+            <div className="bg-[#060a13]/80 border border-slate-800/80 rounded-xl p-4 text-center">
+              <span className="block text-[10px] text-slate-500 font-bold tracking-wider uppercase mb-1">
+                Interest Rate (APR)
               </span>
-              <span className="text-3xl font-extrabold text-white">{tierConfig.rate.toFixed(2)}%</span>
+              <span className="text-2xl font-bold text-slate-100">
+                {tierConfig.rate.toFixed(2)}%
+              </span>
             </div>
 
             {/* Monthly Amortization */}
-            <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-4 text-center ring-1 ring-[var(--accent-primary)]/30">
-              <span className="block text-xs text-[var(--text-muted)] font-bold tracking-wider uppercase mb-1">
-                Projected Monthly Payment
+            <div className="bg-[#060a13]/80 border border-indigo-500/20 rounded-xl p-4 text-center ring-1 ring-indigo-500/10">
+              <span className="block text-[10px] text-slate-500 font-bold tracking-wider uppercase mb-1">
+                Projected Monthly Payout
               </span>
-              <span className="text-2xl font-extrabold text-white">
-                ${monthlyPayment.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              <span className="text-2xl font-bold text-indigo-400">
+                $
+                {monthlyPayment.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}
               </span>
-              <span className="block text-[10px] text-[var(--text-muted)]">USDC / Month</span>
             </div>
 
             {/* Down Payment */}
-            <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-4 text-center">
-              <span className="block text-xs text-[var(--text-muted)] font-bold tracking-wider uppercase mb-1">
-                Down Payment Required
+            <div className="bg-[#060a13]/80 border border-slate-800/80 rounded-xl p-4 text-center">
+              <span className="block text-[10px] text-slate-500 font-bold tracking-wider uppercase mb-1">
+                Escrow Target (Down Payment)
               </span>
-              <span className="text-xl font-extrabold text-white">${downPaymentRequired.toLocaleString()}</span>
-              <span className="block text-xs text-[var(--text-muted)]">({tierConfig.downPaymentPct}% standard)</span>
+              <span className="text-xl font-bold text-slate-100">
+                ${downPaymentRequired.toLocaleString()}
+              </span>
+              <span className="block text-[9px] text-slate-400 mt-0.5">
+                ({tierConfig.downPaymentPct}% Ratio Required)
+              </span>
             </div>
 
             {/* Max Loan Limit */}
-            <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-4 text-center">
-              <span className="block text-xs text-[var(--text-muted)] font-bold tracking-wider uppercase mb-1">
-                Max Loan Principal
+            <div className="bg-[#060a13]/80 border border-slate-800/80 rounded-xl p-4 text-center">
+              <span className="block text-[10px] text-slate-500 font-bold tracking-wider uppercase mb-1">
+                Max Loan Capacity
               </span>
-              <span className="text-xl font-extrabold text-white">${maxLoanPrincipal.toLocaleString()}</span>
-              <span className="block text-xs text-[var(--text-muted)]">for {tier} tier</span>
+              <span className="text-xl font-bold text-slate-100">
+                ${maxLoanPrincipal.toLocaleString()}
+              </span>
+              <span className="block text-[9px] text-slate-400 mt-0.5">for {tier} rating</span>
             </div>
           </div>
 
           {/* Capped Loan warning */}
           {isCapped && (
-            <div className="bg-red-500/10 border border-red-500/20 text-red-300 p-3 rounded-lg text-xs flex items-start gap-2">
-              <span>⚠️</span>
-              <div>
-                <strong>Loan Capped:</strong> The target loan amount exceeds the max loan principal of $
-                {maxLoanPrincipal.toLocaleString()} allowed for your credit tier. Your required down payment has been
-                increased to ${downPaymentRequired.toLocaleString()} to cover the remaining purchase cost.
-              </div>
+            <div className="bg-red-950/20 border border-red-800/30 text-red-300 p-3.5 rounded-xl text-xs leading-normal">
+              ⚠️ <strong>Maximum Loan Cap Exceeded:</strong> The desired loan principal exceeds the
+              limit of ${maxLoanPrincipal.toLocaleString()} allowed for your tier. Your savings
+              escrow target has been increased to ${downPaymentRequired.toLocaleString()} to cover
+              the purchase difference.
             </div>
           )}
 
           {/* ─── Interest Rate Curve SVG Chart ─── */}
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-4">
-            <h4 className="text-xs font-bold text-[var(--text-muted)] tracking-wider uppercase mb-3 text-center">
-              Interest Rate Curve vs. History (Months)
+          <div className="bg-[#060a13]/80 border border-slate-800/80 rounded-xl p-4">
+            <h4 className="text-[10px] font-bold text-slate-500 tracking-wider uppercase mb-3 text-center">
+              Rate Sensitivity Profile vs. History Duration
             </h4>
             <div className="relative flex justify-center">
-              <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">
+              <svg
+                width="100%"
+                height={height}
+                viewBox={`0 0 ${width} ${height}`}
+                className="overflow-visible"
+              >
                 {/* Horizontal Grid lines */}
                 {[3.5, 4.8, 6.2, 8.5].map((rate) => {
                   const y = svgCoordinates.getY(rate);
@@ -531,16 +617,16 @@ export default function CreditCalculator() {
                         y1={y}
                         x2={width - padding}
                         y2={y}
-                        stroke="rgba(99,102,241,0.06)"
+                        stroke="rgba(99, 102, 241, 0.05)"
                         strokeDasharray="4 4"
                       />
                       <text
-                        x={padding - 5}
+                        x={padding - 8}
                         y={y + 3}
-                        fill="var(--text-muted)"
-                        fontSize="9"
+                        fill="#64748b"
+                        fontSize="8"
                         textAnchor="end"
-                        className="font-mono"
+                        className="font-mono font-bold"
                       >
                         {rate.toFixed(1)}%
                       </text>
@@ -556,10 +642,10 @@ export default function CreditCalculator() {
                       <text
                         x={x}
                         y={height - padding + 15}
-                        fill="var(--text-muted)"
-                        fontSize="9"
+                        fill="#64748b"
+                        fontSize="8"
                         textAnchor="middle"
-                        className="font-mono"
+                        className="font-mono font-bold"
                       >
                         {m}m
                       </text>
@@ -572,7 +658,7 @@ export default function CreditCalculator() {
                   d={svgCoordinates.path}
                   fill="none"
                   stroke="url(#chart-gradient)"
-                  strokeWidth="3"
+                  strokeWidth="2.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   className="transition-all duration-500 ease-out"
@@ -582,9 +668,9 @@ export default function CreditCalculator() {
                 <path
                   d={svgCoordinates.path}
                   fill="none"
-                  stroke="var(--accent-primary)"
-                  strokeWidth="6"
-                  strokeOpacity="0.15"
+                  stroke="rgb(99, 102, 241)"
+                  strokeWidth="5"
+                  strokeOpacity="0.1"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   className="transition-all duration-500 ease-out"
@@ -594,37 +680,39 @@ export default function CreditCalculator() {
                 <circle
                   cx={svgCoordinates.currentX}
                   cy={svgCoordinates.currentY}
-                  r="7"
-                  fill="var(--accent-primary-light)"
-                  stroke="var(--bg-primary)"
-                  strokeWidth="2"
-                  className="transition-all duration-300 ease-out shadow-lg shadow-indigo-500/50"
+                  r="6"
+                  fill="#818cf8"
+                  stroke="#0b0f19"
+                  strokeWidth="2.5"
+                  className="transition-all duration-300 ease-out"
                 />
                 <circle
                   cx={svgCoordinates.currentX}
                   cy={svgCoordinates.currentY}
-                  r="12"
+                  r="10"
                   fill="none"
-                  stroke="var(--accent-primary-light)"
+                  stroke="#818cf8"
                   strokeWidth="1.5"
-                  strokeOpacity="0.4"
+                  strokeOpacity="0.3"
                   className="animate-ping"
-                  style={{ transformOrigin: `${svgCoordinates.currentX}px ${svgCoordinates.currentY}px` }}
+                  style={{
+                    transformOrigin: `${svgCoordinates.currentX}px ${svgCoordinates.currentY}px`,
+                  }}
                 />
 
                 {/* Gradients */}
                 <defs>
                   <linearGradient id="chart-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="var(--error)" />
-                    <stop offset="40%" stopColor="var(--warning)" />
-                    <stop offset="80%" stopColor="var(--accent-secondary)" />
-                    <stop offset="100%" stopColor="var(--success)" />
+                    <stop offset="0%" stopColor="#ef4444" />
+                    <stop offset="40%" stopColor="#f59e0b" />
+                    <stop offset="80%" stopColor="#06b6d4" />
+                    <stop offset="100%" stopColor="#10b981" />
                   </linearGradient>
                 </defs>
               </svg>
             </div>
-            <p className="text-[10px] text-center text-[var(--text-muted)] mt-2">
-              Hover dot / move history slider to see rate changes on the curve.
+            <p className="text-[9px] text-center text-slate-500 mt-3 font-medium">
+              Adjust the slider on the left to see the rates and details update in real-time.
             </p>
           </div>
         </div>

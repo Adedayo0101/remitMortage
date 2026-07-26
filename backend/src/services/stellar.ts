@@ -1,5 +1,10 @@
 import { Horizon, StrKey } from "@stellar/stellar-sdk";
 import { loadConfig, type StellarNetwork } from "../config.js";
+import {
+  deleteCacheByPattern,
+  getCacheValue,
+  setCacheValue,
+} from "./redis.js";
 
 /** Horizon caps a single operations page at 200 records. */
 export const PAGE_LIMIT = 200;
@@ -25,6 +30,11 @@ export function createHorizonServer(
 
 const _config = loadConfig();
 const defaultServer = createHorizonServer(_config.horizonUrl, _config.stellarNetwork);
+const REMITTANCE_CACHE_TTL = _config.remittanceCacheTtl;
+
+function buildRemittanceCacheKey(senderAddress: string, recipientAddress: string): string {
+  return `remittance:analysis:${senderAddress}:${recipientAddress}`;
+}
 
 /**
  * Minimal structural view of the Horizon objects this service depends on,
@@ -86,6 +96,10 @@ export interface AnalyzeOptions {
    * is treated as self-dealing.
    */
   borrowerWallets?: string[];
+  /**
+   * When true, bypass the Redis cache and refresh the Horizon results.
+   */
+  invalidateCache?: boolean;
 }
 
 /** Thrown when an address is not a valid Stellar public (G...) key. */
@@ -230,6 +244,17 @@ export async function analyzeRemittanceHistory(
     recipientAddress,
   };
 
+  const hasBorrowerWallets = Array.isArray(options.borrowerWallets) && options.borrowerWallets.length > 0;
+  const cacheKey = buildRemittanceCacheKey(senderAddress, recipientAddress);
+  const shouldUseCache = !options.invalidateCache && !hasBorrowerWallets;
+
+  if (shouldUseCache) {
+    const cachedResult = await getCacheValue<RemittanceAnalysis>(cacheKey);
+    if (cachedResult) {
+      return cachedResult;
+    }
+  }
+
   let senderOps: HorizonOperation[];
   let recipientOps: HorizonOperation[];
   try {
@@ -270,8 +295,10 @@ export async function analyzeRemittanceHistory(
 
   const stats = summarizePayments(payments);
 
+  let result: RemittanceAnalysis;
+
   if (selfDealing) {
-    return {
+    result = {
       ...base,
       ...stats,
       selfDealing: true,
@@ -279,28 +306,36 @@ export async function analyzeRemittanceHistory(
       reason:
         "Self-dealing detected: recipient routes funds back to the sender (circular transfer)",
     };
-  }
-
-  if (payments.length === 0) {
-    return {
+  } else if (payments.length === 0) {
+    result = {
       ...base,
       ...stats,
       selfDealing: false,
       eligible: false,
       reason: "No USDC payments found to recipient",
     };
+  } else {
+    // Eligibility: at least 6 payments over at least 3 months.
+    const eligible = stats.totalPayments >= 6 && stats.spanMonths >= 3;
+
+    result = {
+      ...base,
+      ...stats,
+      selfDealing: false,
+      eligible,
+      reason: eligible
+        ? "Meets minimum remittance consistency requirements"
+        : `Insufficient history: ${stats.totalPayments} payments over ${stats.spanMonths} months (need ≥6 payments over ≥3 months)`,
+    };
   }
 
-  // Eligibility: at least 6 payments over at least 3 months.
-  const eligible = stats.totalPayments >= 6 && stats.spanMonths >= 3;
+  if (!hasBorrowerWallets) {
+    try {
+      await setCacheValue(cacheKey, result, REMITTANCE_CACHE_TTL);
+    } catch (error) {
+      console.warn("Unable to cache remittance analysis result", error);
+    }
+  }
 
-  return {
-    ...base,
-    ...stats,
-    selfDealing: false,
-    eligible,
-    reason: eligible
-      ? "Meets minimum remittance consistency requirements"
-      : `Insufficient history: ${stats.totalPayments} payments over ${stats.spanMonths} months (need ≥6 payments over ≥3 months)`,
-  };
+  return result;
 }

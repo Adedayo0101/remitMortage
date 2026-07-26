@@ -12,23 +12,32 @@ enum NotificationStatus {
   Failed
 }
 
+enum LoanStatus {
+  Pending
+  Approved
+  Rejected
+  Disbursing
+  Repaying
+  Completed
+}
+
 model Notification {
-  id        String             @id @default(uuid())
-  recipient String
-  type      String             // "EMAIL" or "WEBHOOK"
-  content   String             // HTML for emails or JSON payload for webhooks
-  status    NotificationStatus @default(Pending)
-  createdAt DateTime           @default(now())
-  updatedAt DateTime           @updatedAt
-  attempts  Int                @default(0)
-  lastError String?
+  id          String             @id @default(uuid())
+  recipient   String
+  type        String // "EMAIL" or "WEBHOOK"
+  content     String // HTML for emails or JSON payload for webhooks
+  status      NotificationStatus @default(Pending)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  attempts    Int                @default(0)
+  lastError   String?
   nextRetryAt DateTime?
 }
 
 model UnpinnedCid {
   id           String   @id @default(uuid())
   cid          String
-  proposalId     String?
+  proposalId   String?
   success      Boolean
   pinataStatus Int?
   error        String?
@@ -41,13 +50,7 @@ enum VerificationStatus {
   INELIGIBLE
 }
 
-enum LoanStatus {
-  PENDING
-  APPROVED
-  ACTIVE
-  REPAID
-  DEFAULTED
-}
+
 
 enum WorkspaceRole {
   OWNER
@@ -113,6 +116,7 @@ model Applicant {
   updatedAt          DateTime           @updatedAt
   verificationResults VerificationResult[]
   loanApplications    LoanApplication[]
+  borrowerCredentials BorrowerCredential[]
 }
 
 model VerificationResult {
@@ -134,7 +138,7 @@ model LoanApplication {
   escrowContractId   String?
   loanId             String?
   principal          Float
-  status             LoanStatus @default(PENDING)
+  status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 
   // New fields for repayment tracking
@@ -154,4 +158,34 @@ model AuditLog {
 
   @@index([action])
   @@index([actorAddress])
+}
+
+model BorrowerCredential {
+  id             String   @id @default(uuid())
+  applicantId    String
+  applicant      Applicant @relation(fields: [applicantId], references: [id])
+  did            String   @unique
+  didHash        String   @unique
+  verificationMethod     String
+  challenge      String?
+  issuer         String?
+  verifiedAt     DateTime @default(now())
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  isRevoked      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([applicantId])
+  @@index([did])
+}
+
+model WebhookDLQ {
+  id              String   @id @default(uuid())
+  url             String
+  payload         Json
+  statusCode      Int?
+  responsePayload String?
+  error           String?
+  createdAt       DateTime @default(now())
 }
