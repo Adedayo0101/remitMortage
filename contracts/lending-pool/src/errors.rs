@@ -57,4 +57,7 @@ pub enum PoolError {
     RefinanceNotEligible = 23,
     /// Loan is not yet overdue, so it cannot be marked as defaulted.
     LoanNotOverdue = 24,
+    /// Borrower's verified escrow deposit covers less than the required minimum
+    /// collateralization ratio (30% of the requested principal).
+    CollateralizationRatioTooLow = 25,
 }
