@@ -44,7 +44,9 @@ const CONTRACTS_CONFIG: ContractMetadata[] = [
   {
     name: "Escrow",
     label: "Escrow Contract",
-    defaultId: process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID || "CA3D5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V",
+    defaultId:
+      process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID ||
+      "CA3D5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V",
     methods: [
       {
         name: "get_escrow_config",
@@ -99,7 +101,9 @@ const CONTRACTS_CONFIG: ContractMetadata[] = [
   {
     name: "Lending Pool",
     label: "Lending Pool Contract",
-    defaultId: process.env.NEXT_PUBLIC_LENDING_POOL_CONTRACT_ID || "CB3D5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V",
+    defaultId:
+      process.env.NEXT_PUBLIC_LENDING_POOL_CONTRACT_ID ||
+      "CB3D5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V",
     methods: [
       {
         name: "get_pool_config",
@@ -154,7 +158,9 @@ const CONTRACTS_CONFIG: ContractMetadata[] = [
   {
     name: "Milestones",
     label: "Milestones Contract",
-    defaultId: process.env.NEXT_PUBLIC_MILESTONE_CONTRACT_ID || "CC3D5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V",
+    defaultId:
+      process.env.NEXT_PUBLIC_MILESTONE_CONTRACT_ID ||
+      "CC3D5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V",
     methods: [
       {
         name: "get_milestone",
@@ -173,7 +179,9 @@ const CONTRACTS_CONFIG: ContractMetadata[] = [
   {
     name: "Registry",
     label: "Registry Contract",
-    defaultId: process.env.NEXT_PUBLIC_VERIFICATION_REGISTRY_CONTRACT_ID || "CD3D5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V",
+    defaultId:
+      process.env.NEXT_PUBLIC_VERIFICATION_REGISTRY_CONTRACT_ID ||
+      "CD3D5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V5C3J5V2V",
     methods: [
       {
         name: "is_verified",
@@ -202,7 +210,9 @@ export default function DeveloperPlayground() {
 
   const [selectedContract, setSelectedContract] = useState<ContractMetadata>(CONTRACTS_CONFIG[0]);
   const [contractId, setContractId] = useState<string>(CONTRACTS_CONFIG[0].defaultId);
-  const [selectedMethod, setSelectedMethod] = useState<MethodMetadata>(CONTRACTS_CONFIG[0].methods[0]);
+  const [selectedMethod, setSelectedMethod] = useState<MethodMetadata>(
+    CONTRACTS_CONFIG[0].methods[0]
+  );
   const [argsValues, setArgsValues] = useState<Record<string, string>>({});
   const [sourceAddress, setSourceAddress] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
@@ -304,7 +314,9 @@ export default function DeveloperPlayground() {
           case "bytes32":
             const hex = rawVal.replace(/^0x/, "");
             if (hex.length !== 64) {
-              throw new Error(`Argument '${arg.name}' must be a 32-byte hex string (64 characters).`);
+              throw new Error(
+                `Argument '${arg.name}' must be a 32-byte hex string (64 characters).`
+              );
             }
             return nativeToScVal(Buffer.from(hex, "hex"), { type: "bytes" });
           case "string":
@@ -355,16 +367,17 @@ export default function DeveloperPlayground() {
           status: "SUCCESS",
           method: selectedMethod.name,
           result: decodedResult,
-          events: simulation.events?.map((ev: any) => {
-            try {
-              return {
-                topics: ev.event.topic.map((t: any) => scValToNative(t)),
-                value: scValToNative(ev.event.value)
-              };
-            } catch {
-              return ev;
-            }
-          }) || [],
+          events:
+            simulation.events?.map((ev: any) => {
+              try {
+                return {
+                  topics: ev.event.topic.map((t: any) => scValToNative(t)),
+                  value: scValToNative(ev.event.value),
+                };
+              } catch {
+                return ev;
+              }
+            }) || [],
           cost: {
             cpuInsns: (simulation.result as any)?.cpuInstructions,
             memBytes: (simulation.result as any)?.memoryBytes,
@@ -395,7 +408,9 @@ export default function DeveloperPlayground() {
               Developer <span className="gradient-text">Playground</span>
             </h1>
             <p className="text-[var(--text-secondary)] mt-1.5 max-w-2xl text-sm">
-              Interact directly with deployed Soroban contracts via local transaction simulations. Read contract storage, simulate state checks, and preview output without signing on-chain transactions.
+              Interact directly with deployed Soroban contracts via local transaction simulations.
+              Read contract storage, simulate state checks, and preview output without signing
+              on-chain transactions.
             </p>
           </div>
           {isConnected && publicKey && (
@@ -411,7 +426,10 @@ export default function DeveloperPlayground() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           {/* Form Side */}
           <div className="lg:col-span-5 space-y-6">
-            <form onSubmit={executeSimulation} className="p-6 bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl shadow-lg space-y-5">
+            <form
+              onSubmit={executeSimulation}
+              className="p-6 bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl shadow-lg space-y-5"
+            >
               <h2 className="text-lg font-bold border-b border-[var(--border-color)] pb-3">
                 Configure Call
               </h2>
@@ -523,9 +541,24 @@ export default function DeveloperPlayground() {
               >
                 {loading ? (
                   <span className="flex items-center gap-2">
-                    <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    <svg
+                      className="animate-spin h-4 w-4 text-white"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
                     </svg>
                     Simulating...
                   </span>
@@ -562,9 +595,24 @@ export default function DeveloperPlayground() {
               <div className="flex-1 p-5 font-mono text-xs overflow-auto select-text leading-relaxed bg-[#0a0f1d] text-slate-300">
                 {loading && (
                   <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] gap-3 animate-pulse">
-                    <svg className="animate-spin h-6 w-6 text-[var(--accent-primary-light)]" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    <svg
+                      className="animate-spin h-6 w-6 text-[var(--accent-primary-light)]"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
                     </svg>
                     <span>Simulating contract call, evaluating WASM bytecode...</span>
                   </div>
@@ -572,10 +620,23 @@ export default function DeveloperPlayground() {
 
                 {!loading && !output && !errorMsg && (
                   <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] text-center max-w-sm mx-auto">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-10 h-10 mb-3 text-[var(--text-muted)] opacity-60">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5" />
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      className="w-10 h-10 mb-3 text-[var(--text-muted)] opacity-60"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"
+                      />
                     </svg>
-                    <p>Select a contract, supply arguments, and click <strong>Execute Simulation</strong> to inspect returned WASM outputs.</p>
+                    <p>
+                      Select a contract, supply arguments, and click{" "}
+                      <strong>Execute Simulation</strong> to inspect returned WASM outputs.
+                    </p>
                   </div>
                 )}
 
@@ -596,7 +657,9 @@ export default function DeveloperPlayground() {
                         SUCCESS (Simulation Returned)
                       </span>
                       <button
-                        onClick={() => navigator.clipboard.writeText(JSON.stringify(output, null, 2))}
+                        onClick={() =>
+                          navigator.clipboard.writeText(JSON.stringify(output, null, 2))
+                        }
                         className="text-[10px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
                       >
                         Copy Output

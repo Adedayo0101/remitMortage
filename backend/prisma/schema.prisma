@@ -50,12 +50,59 @@ enum VerificationStatus {
   INELIGIBLE
 }
 
-enum LoanStatus {
+
+
+enum WorkspaceRole {
+  OWNER
+  BUILDER
+  VIEWER
+}
+
+enum WorkspaceInvitationStatus {
   PENDING
-  APPROVED
-  ACTIVE
-  REPAID
-  DEFAULTED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+model Workspace {
+  id           String                   @id @default(uuid())
+  name         String
+  slug         String                   @unique
+  createdBy    String
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  members      WorkspaceMember[]
+  invitations  WorkspaceInvitation[]
+}
+
+model WorkspaceMember {
+  id            String        @id @default(uuid())
+  workspaceId   String
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  walletAddress String
+  role          WorkspaceRole @default(VIEWER)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([workspaceId, walletAddress])
+  @@index([walletAddress])
+}
+
+model WorkspaceInvitation {
+  id              String                     @id @default(uuid())
+  workspaceId     String
+  workspace       Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  inviteeAddress  String
+  invitedBy       String
+  role            WorkspaceRole              @default(VIEWER)
+  status          WorkspaceInvitationStatus  @default(PENDING)
+  expiresAt       DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  @@index([inviteeAddress])
+  @@index([status])
 }
 
 model Applicant {
@@ -69,6 +116,7 @@ model Applicant {
   updatedAt          DateTime           @updatedAt
   verificationResults VerificationResult[]
   loanApplications    LoanApplication[]
+  borrowerCredentials BorrowerCredential[]
 }
 
 model VerificationResult {
@@ -90,7 +138,7 @@ model LoanApplication {
   escrowContractId   String?
   loanId             String?
   principal          Float
-  status             LoanStatus @default(PENDING)
+  status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 
   // New fields for repayment tracking
@@ -110,4 +158,34 @@ model AuditLog {
 
   @@index([action])
   @@index([actorAddress])
+}
+
+model BorrowerCredential {
+  id             String   @id @default(uuid())
+  applicantId    String
+  applicant      Applicant @relation(fields: [applicantId], references: [id])
+  did            String   @unique
+  didHash        String   @unique
+  verificationMethod     String
+  challenge      String?
+  issuer         String?
+  verifiedAt     DateTime @default(now())
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  isRevoked      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([applicantId])
+  @@index([did])
+}
+
+model WebhookDLQ {
+  id              String   @id @default(uuid())
+  url             String
+  payload         Json
+  statusCode      Int?
+  responsePayload String?
+  error           String?
+  createdAt       DateTime @default(now())
 }

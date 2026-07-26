@@ -48,8 +48,7 @@ const STATUS_BADGE: Record<
   },
   approved: {
     label: "Approved",
-    className:
-      "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
+    className: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
   },
   expired: {
     label: "Expired",
@@ -84,9 +83,7 @@ export function MultisigApprovalCard({
       {/* Header row */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-lg font-bold text-zinc-100 leading-tight">
-            {milestoneTitle}
-          </h3>
+          <h3 className="text-lg font-bold text-zinc-100 leading-tight">{milestoneTitle}</h3>
           <p className="text-sm text-zinc-400 mt-0.5">{contractor}</p>
         </div>
         <span
@@ -99,9 +96,7 @@ export function MultisigApprovalCard({
       {/* Amount + evidence link */}
       <div className="flex flex-wrap items-center gap-4 text-sm">
         <div className="flex flex-col">
-          <span className="text-zinc-500 text-xs uppercase tracking-wider">
-            Disbursement
-          </span>
+          <span className="text-zinc-500 text-xs uppercase tracking-wider">Disbursement</span>
           <span className="text-zinc-100 font-semibold">{amount}</span>
         </div>
 
@@ -155,9 +150,7 @@ export function MultisigApprovalCard({
                 )}
                 <span
                   className={`font-mono text-xs truncate ${
-                    signer.status === "approved"
-                      ? "text-emerald-300"
-                      : "text-zinc-400"
+                    signer.status === "approved" ? "text-emerald-300" : "text-zinc-400"
                   }`}
                 >
                   {signer.label ?? shortAddress(signer.address)}

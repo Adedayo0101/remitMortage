@@ -4,6 +4,8 @@ import {
   balanceRepository,
   BorrowerBalanceRepository,
 } from "./balanceStore.js";
+import { logAudit } from "./audit.js";
+import { deleteCacheByPattern } from "./redis.js";
 
 /** Soroban testnet RPC endpoint. */
 export const SOROBAN_TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
@@ -60,6 +62,8 @@ export interface EventListenerOptions {
   logger?: Logger;
   /** Injectable delay (defaults to setTimeout); overridden in tests. */
   sleep?: (ms: number) => Promise<void>;
+  /** Injectable audit sink (defaults to {@link logAudit}); overridden in tests. */
+  auditLogger?: typeof logAudit;
 }
 
 /**
@@ -185,6 +189,7 @@ export class SorobanEventListener {
   private readonly repository: BorrowerBalanceRepository;
   private readonly logger: Logger;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly auditLogger: typeof logAudit;
   private readonly pollIntervalMs: number;
   private readonly baseBackoffMs: number;
   private readonly maxBackoffMs: number;
@@ -201,6 +206,7 @@ export class SorobanEventListener {
     this.repository = options.repository ?? balanceRepository;
     this.logger = options.logger ?? console;
     this.sleep = options.sleep ?? defaultSleep;
+    this.auditLogger = options.auditLogger ?? logAudit;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.baseBackoffMs = options.baseBackoffMs ?? DEFAULT_BASE_BACKOFF_MS;
     this.maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
@@ -284,6 +290,23 @@ export class SorobanEventListener {
 
     this.logger.info(
       `[event-listener] ${kind} amount=${event.amount} borrower=${event.borrower} ledger=${event.ledger}`
+    );
+
+    // Every on-chain fund movement gets a persistent audit trail entry,
+    // independent of the in-memory balance sync above.
+    void this.auditLogger({
+      action: `onchain.${kind}`,
+      actorAddress: event.borrower,
+      metadata: {
+        amount: event.amount,
+        ledger: event.ledger,
+        contractId: event.contractId,
+      },
+    });
+
+    // Invalidate analytics cache since the underlying data changed
+    deleteCacheByPattern("analytics:*").catch((err) =>
+      this.logger.warn(`[event-listener] Failed to invalidate cache: ${err}`)
     );
   }
 }

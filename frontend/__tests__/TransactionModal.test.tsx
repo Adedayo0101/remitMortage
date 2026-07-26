@@ -8,9 +8,7 @@ describe("formatTransactionErrorMessage", () => {
     expect(formatTransactionErrorMessage("Simulation failed: insufficient balance")).toBe(
       "insufficient balance"
     );
-    expect(formatTransactionErrorMessage("Submission failed: txBadSeq")).toBe(
-      "txBadSeq"
-    );
+    expect(formatTransactionErrorMessage("Submission failed: txBadSeq")).toBe("txBadSeq");
   });
 
   it("rephrases Soroban host function failures", () => {
@@ -81,8 +79,6 @@ describe("TransactionModal", () => {
       />
     );
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "The contract rejected the transaction"
-    );
+    expect(screen.getByRole("alert")).toHaveTextContent("The contract rejected the transaction");
   });
 });

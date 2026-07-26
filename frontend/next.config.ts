@@ -1,8 +1,10 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? "https://remitmortgage.com";
 const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL ?? "https://horizon-testnet.stellar.org";
-const STELLAR_RPC_URL = process.env.NEXT_PUBLIC_STELLAR_RPC_URL ?? "https://soroban-testnet.stellar.org";
+const STELLAR_RPC_URL =
+  process.env.NEXT_PUBLIC_STELLAR_RPC_URL ?? "https://soroban-testnet.stellar.org";
 
 const IPFS_GATEWAYS = [
   "https://ipfs.io",
@@ -38,10 +40,6 @@ const reportTo = JSON.stringify({
 });
 
 const nextConfig: NextConfig = {
-  // Standalone output bundles only the files needed to run the server —
-  // this is what makes the production Docker image small (<150 MB).
-  // The build emits .next/standalone/ (Node server) + .next/static/ + public/.
-  output: "standalone",
   turbopack: {
     root: process.cwd(),
   },
@@ -64,4 +62,11 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  silent: !process.env.CI,
+  widenClientFileUpload: true,
+  hideSourceMaps: true,
+  disableLogger: true,
+});

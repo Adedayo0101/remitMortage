@@ -1,13 +1,6 @@
 "use client";
 
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 
 export type ToastVariant = "success" | "info" | "warning" | "error";
 
@@ -21,6 +14,11 @@ export interface ToastNotification {
   duration: number;
 }
 
+export interface NotificationRecord extends ToastNotification {
+  read: boolean;
+  createdAt: number;
+}
+
 /** Input accepted by {@link NotificationContextType.notify}. */
 export type ToastInput = Omit<ToastNotification, "id" | "duration"> & {
   id?: string;
@@ -29,57 +27,132 @@ export type ToastInput = Omit<ToastNotification, "id" | "duration"> & {
 
 type NotificationContextType = {
   notifications: ToastNotification[];
+  notificationHistory: NotificationRecord[];
+  unreadCount: number;
+  isPanelOpen: boolean;
   notify: (input: ToastInput) => string;
   dismiss: (id: string) => void;
+  openPanel: () => void;
+  closePanel: () => void;
+  togglePanel: () => void;
+  markAllRead: () => void;
+  clearHistory: () => void;
 };
 
-const NotificationContext = createContext<NotificationContextType | undefined>(
-  undefined
-);
+const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
 
 const DEFAULT_DURATION_MS = 5000;
 /** Maximum number of toasts shown at once; older ones drop off the stack. */
 const MAX_VISIBLE = 3;
+const MAX_HISTORY = 20;
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<ToastNotification[]>([]);
+  const [notificationHistory, setNotificationHistory] = useState<NotificationRecord[]>([]);
+  const [isPanelOpen, setPanelOpen] = useState(false);
   const counter = useRef(0);
 
   const dismiss = useCallback((id: string) => {
     setNotifications((current) => current.filter((n) => n.id !== id));
   }, []);
 
-  const notify = useCallback((input: ToastInput) => {
-    counter.current += 1;
-    const id = input.id ?? `toast-${counter.current}`;
-    const toast: ToastNotification = {
-      id,
-      variant: input.variant,
-      title: input.title,
-      message: input.message,
-      duration: input.duration ?? DEFAULT_DURATION_MS,
-    };
-
-    setNotifications((current) => {
-      // Replace an existing toast with the same explicit id, otherwise append.
-      const withoutDup = current.filter((n) => n.id !== id);
-      // Keep only the most recent MAX_VISIBLE toasts on screen.
-      return [...withoutDup, toast].slice(-MAX_VISIBLE);
-    });
-
-    return id;
+  const markAllRead = useCallback(() => {
+    setNotificationHistory((current) => current.map((item) => ({ ...item, read: true })));
   }, []);
 
-  const value = useMemo(
-    () => ({ notifications, notify, dismiss }),
-    [notifications, notify, dismiss]
+  const clearHistory = useCallback(() => {
+    setNotificationHistory([]);
+  }, []);
+
+  const openPanel = useCallback(() => {
+    setPanelOpen(true);
+    markAllRead();
+  }, [markAllRead]);
+
+  const closePanel = useCallback(() => {
+    setPanelOpen(false);
+  }, []);
+
+  const togglePanel = useCallback(() => {
+    setPanelOpen((current) => {
+      const next = !current;
+      if (next) {
+        markAllRead();
+      }
+      return next;
+    });
+  }, [markAllRead]);
+
+  const notify = useCallback(
+    (input: ToastInput) => {
+      counter.current += 1;
+      const id = input.id ?? `toast-${counter.current}`;
+      const toast: ToastNotification = {
+        id,
+        variant: input.variant,
+        title: input.title,
+        message: input.message,
+        duration: input.duration ?? DEFAULT_DURATION_MS,
+      };
+
+      setNotifications((current) => {
+        // Replace an existing toast with the same explicit id, otherwise append.
+        const withoutDup = current.filter((n) => n.id !== id);
+        // Keep only the most recent MAX_VISIBLE toasts on screen.
+        return [...withoutDup, toast].slice(-MAX_VISIBLE);
+      });
+
+      setNotificationHistory((current) =>
+        [
+          ...current,
+          {
+            ...toast,
+            createdAt: Date.now(),
+            read: isPanelOpen,
+          },
+        ].slice(-MAX_HISTORY)
+      );
+
+      return id;
+    },
+    [isPanelOpen]
   );
 
-  return (
-    <NotificationContext.Provider value={value}>
-      {children}
-    </NotificationContext.Provider>
+  const unreadCount = useMemo(
+    () => notificationHistory.filter((item) => !item.read).length,
+    [notificationHistory]
   );
+
+  const value = useMemo(
+    () => ({
+      notifications,
+      notificationHistory,
+      unreadCount,
+      isPanelOpen,
+      notify,
+      dismiss,
+      openPanel,
+      closePanel,
+      togglePanel,
+      markAllRead,
+      clearHistory,
+    }),
+    [
+      notifications,
+      notificationHistory,
+      unreadCount,
+      isPanelOpen,
+      notify,
+      dismiss,
+      openPanel,
+      closePanel,
+      togglePanel,
+      markAllRead,
+      clearHistory,
+    ]
+  );
+
+  return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;
 }
 
 export function useNotifications() {

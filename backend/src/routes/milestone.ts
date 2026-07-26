@@ -10,6 +10,7 @@ import {
   updateProposal,
 } from "../services/milestoneProposalStore.js";
 import { verifyUploadAuthorization } from "../services/contractorAuth.js";
+import { logAudit } from "../services/audit.js";
 
 export const milestoneRouter = Router();
 
@@ -230,6 +231,13 @@ milestoneRouter.post("/proposals", async (req, res) => {
   }
 
   const proposal = createProposal(String(milestoneId), String(evidenceCid));
+
+  await logAudit({
+    action: "milestone.proposal_created",
+    ipAddress: req.ip,
+    metadata: { proposalId: proposal.id, milestoneId, evidenceCid },
+  });
+
   return res.status(201).json(proposal);
 });
 
@@ -260,6 +268,12 @@ milestoneRouter.post("/proposals/:id/reject", async (req, res) => {
   const updated = updateProposal(id, {
     status: "Rejected",
     reason: reason ?? "Rejected by governance multisig",
+  });
+
+  await logAudit({
+    action: "milestone.proposal_rejected",
+    ipAddress: req.ip,
+    metadata: { proposalId: id, reason: reason ?? "Rejected by governance multisig" },
   });
 
   if (proposal.evidenceCid) {

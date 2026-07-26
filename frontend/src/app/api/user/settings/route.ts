@@ -38,11 +38,17 @@ export async function POST(request: NextRequest) {
     const webhookUrl = body.notifications?.webhookUrl?.trim() ?? "";
 
     if (!email || !EMAIL_PATTERN.test(email)) {
-      return NextResponse.json({ error: "A valid linked email address is required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "A valid linked email address is required." },
+        { status: 400 }
+      );
     }
 
     if (webhookUrl && !isValidWebhookUrl(webhookUrl)) {
-      return NextResponse.json({ error: "Webhook URL must be a valid HTTP or HTTPS URL." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Webhook URL must be a valid HTTP or HTTPS URL." },
+        { status: 400 }
+      );
     }
 
     const savedSettings = {

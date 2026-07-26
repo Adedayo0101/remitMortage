@@ -15,6 +15,7 @@ export interface Config {
   networkPassphrase: string;
   horizonUrl: string;
   sorobanRpcUrl: string;
+  sorobanRpcUrls: string[];
   escrowContractId: string;
   lendingPoolContractId: string;
   usdcTokenId: string;
@@ -30,6 +31,35 @@ export interface Config {
   adminApiKey: string;
   redisUrl: string | null;
   remittanceCacheTtl: number;
+  /** KMS-managed Key Encryption Keys, keyed by rotation version (e.g. "v1", "v2"). */
+  kmsKeyVersions: Record<string, string>;
+  /** The key version used to wrap newly-generated data keys. Existing files keep unwrapping with the version they were sealed under. */
+  kmsActiveKeyVersion: string;
+  /** Signing secret for temporary IAM-style KYC document decryption tokens. */
+  kycOperatorSecret: string;
+  /** Lifetime (seconds) of a temporary KYC decryption access token. */
+  kycAccessTokenTtlSeconds: number;
+  /** Maximum base fee for Stellar transactions (in stroops). */
+  maxStellarBaseFee: number;
+  /** Maximum base fee for EVM transactions (in wei). */
+  maxEvmBaseFee: number;
+  /** Maximum base fee for Solana transactions (in lamports). */
+  maxSolanaBaseFee: number;
+}
+
+/** Parses KMS_KEY_VERSIONS (a JSON map of version -> 64-hex-char key) with a dev-safe fallback. */
+function parseKmsKeyVersions(raw: string | undefined): Record<string, string> {
+  const devDefault = { v1: "0".repeat(64) };
+  if (!raw) return devDefault;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+  } catch {
+    // fall through to the dev default below
+  }
+  return devDefault;
 }
 
 export function loadConfig(): Config {
@@ -45,6 +75,9 @@ export function loadConfig(): Config {
       process.env.HORIZON_URL || "https://horizon-testnet.stellar.org",
     sorobanRpcUrl:
       process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org",
+    sorobanRpcUrls: process.env.SOROBAN_RPC_URLS
+      ? process.env.SOROBAN_RPC_URLS.split(",").map((url) => url.trim())
+      : [process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org"],
     escrowContractId: process.env.ESCROW_CONTRACT_ID || "",
     lendingPoolContractId: process.env.LENDING_POOL_CONTRACT_ID || "",
     usdcTokenId: process.env.USDC_TOKEN_ID || "",
@@ -62,5 +95,12 @@ export function loadConfig(): Config {
     adminApiKey: process.env.ADMIN_API_KEY || "default_admin_api_key",
     redisUrl: process.env.REDIS_URL || null,
     remittanceCacheTtl: parseInt(process.env.REMITTANCE_CACHE_TTL || "300", 10),
+    kmsKeyVersions: parseKmsKeyVersions(process.env.KMS_KEY_VERSIONS),
+    kmsActiveKeyVersion: process.env.KMS_ACTIVE_KEY_VERSION || "v1",
+    kycOperatorSecret: process.env.KYC_OPERATOR_SECRET || "default_kyc_operator_secret",
+    kycAccessTokenTtlSeconds: parseInt(process.env.KYC_ACCESS_TOKEN_TTL || "300", 10),
+    maxStellarBaseFee: parseInt(process.env.MAX_STELLAR_BASE_FEE || "100000", 10),
+    maxEvmBaseFee: parseInt(process.env.MAX_EVM_BASE_FEE || "100000000000", 10),
+    maxSolanaBaseFee: parseInt(process.env.MAX_SOLANA_BASE_FEE || "10000", 10),
   };
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { ToastContainer } from "./Toast";
+import NotificationDrawer from "./NotificationDrawer";
 import { useContractEvents } from "../hooks/useContractEvents";
 
 /**
@@ -9,7 +10,12 @@ import { useContractEvents } from "../hooks/useContractEvents";
  */
 export function NotificationLayer() {
   useContractEvents();
-  return <ToastContainer />;
+  return (
+    <>
+      <ToastContainer />
+      <NotificationDrawer />
+    </>
+  );
 }
 
 export default NotificationLayer;

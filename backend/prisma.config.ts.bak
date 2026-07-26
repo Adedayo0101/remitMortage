@@ -1,5 +1,4 @@
-import { loadEnvFile } from "process";
-loadEnvFile();
+import "dotenv/config";
 
 export default {
   earlyAccess: true,

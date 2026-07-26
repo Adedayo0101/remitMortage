@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useWallet, WalletProvider } from "../../context/WalletContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
+import ROIProjectionWidget from "../../components/ROIProjectionWidget";
 
 type Tranche = "Senior" | "Junior";
 
@@ -189,10 +190,8 @@ function InvestPageInner() {
     }
 
     if (metrics) {
-      const afterWithdraw =
-        parseFloat(metrics.totalLiquidity) - parseFloat(position.deposited);
-      const activeCapital =
-        parseFloat(metrics.totalLiquidity) * metrics.utilizationRate;
+      const afterWithdraw = parseFloat(metrics.totalLiquidity) - parseFloat(position.deposited);
+      const activeCapital = parseFloat(metrics.totalLiquidity) * metrics.utilizationRate;
       if (afterWithdraw < activeCapital) {
         setWithdrawError(
           "Withdrawal blocked: insufficient remaining liquidity to cover active loans."
@@ -235,7 +234,8 @@ function InvestPageInner() {
             DeFi Investor <span className="gradient-text">Portal</span>
           </h1>
           <p className="text-slate-400 text-sm md:text-base max-w-2xl">
-            Fund the 70% lending pool and earn yield from verified borrower mortgage repayments. Select Senior or Junior tranches based on your risk preference.
+            Fund the 70% lending pool and earn yield from verified borrower mortgage repayments.
+            Select Senior or Junior tranches based on your risk preference.
           </p>
         </div>
 
@@ -292,10 +292,16 @@ function InvestPageInner() {
                 <div>
                   <div className="flex justify-between text-xs text-slate-300 font-semibold mb-1">
                     <span>
-                      Senior Tranche: <span className="text-indigo-400 font-mono">${formatUSDC(metrics.seniorLiquidity)}</span>
+                      Senior Tranche:{" "}
+                      <span className="text-indigo-400 font-mono">
+                        ${formatUSDC(metrics.seniorLiquidity)}
+                      </span>
                     </span>
                     <span>
-                      Junior Tranche: <span className="text-cyan-400 font-mono">${formatUSDC(metrics.juniorLiquidity)}</span>
+                      Junior Tranche:{" "}
+                      <span className="text-cyan-400 font-mono">
+                        ${formatUSDC(metrics.juniorLiquidity)}
+                      </span>
                     </span>
                   </div>
                   <div className="flex h-3 rounded-full overflow-hidden bg-slate-950 border border-slate-800">
@@ -340,7 +346,9 @@ function InvestPageInner() {
               ) : (
                 <form onSubmit={handleDeposit} className="space-y-4">
                   <div>
-                    <label className="text-xs font-bold uppercase text-slate-400 block mb-2">Select Capital Tranche</label>
+                    <label className="text-xs font-bold uppercase text-slate-400 block mb-2">
+                      Select Capital Tranche
+                    </label>
                     <div className="grid grid-cols-2 gap-3">
                       {(["Senior", "Junior"] as Tranche[]).map((t) => (
                         <label
@@ -363,13 +371,19 @@ function InvestPageInner() {
                           <div className="text-[11px] leading-relaxed">
                             {t === "Senior" ? (
                               <>
-                                <span className="text-indigo-400 font-bold font-mono">~{bpsToPercent(seniorApyBps)} Fixed APY</span>
-                                <br />Protected capital
+                                <span className="text-indigo-400 font-bold font-mono">
+                                  ~{bpsToPercent(seniorApyBps)} Fixed APY
+                                </span>
+                                <br />
+                                Protected capital
                               </>
                             ) : (
                               <>
-                                <span className="text-cyan-400 font-bold font-mono">~{bpsToPercent(juniorApyBps)} Est. APY</span>
-                                <br />Absorbs first loss
+                                <span className="text-cyan-400 font-bold font-mono">
+                                  ~{bpsToPercent(juniorApyBps)} Est. APY
+                                </span>
+                                <br />
+                                Absorbs first loss
                               </>
                             )}
                           </div>
@@ -379,7 +393,10 @@ function InvestPageInner() {
                   </div>
 
                   <div>
-                    <label htmlFor="deposit-amount" className="block text-xs font-bold uppercase text-slate-400 mb-1">
+                    <label
+                      htmlFor="deposit-amount"
+                      className="block text-xs font-bold uppercase text-slate-400 mb-1"
+                    >
                       Deposit Amount (USDC)
                     </label>
                     <input
@@ -395,10 +412,18 @@ function InvestPageInner() {
                   </div>
 
                   {depositError && <p className="text-xs text-red-400">{depositError}</p>}
-                  {depositSuccess && <p className="text-xs text-emerald-400">Deposit submitted successfully.</p>}
+                  {depositSuccess && (
+                    <p className="text-xs text-emerald-400">Deposit submitted successfully.</p>
+                  )}
 
-                  <button type="submit" disabled={depositing} className="btn-cta w-full justify-center py-3">
-                    {depositing ? "Signing Transaction..." : `Deposit into ${selectedTranche} Tranche`}
+                  <button
+                    type="submit"
+                    disabled={depositing}
+                    className="btn-cta w-full justify-center py-3"
+                  >
+                    {depositing
+                      ? "Signing Transaction..."
+                      : `Deposit into ${selectedTranche} Tranche`}
                   </button>
                 </form>
               )}
@@ -418,11 +443,17 @@ function InvestPageInner() {
                     <div className="grid grid-cols-2 gap-3">
                       <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
                         <p className="text-[10px] text-slate-500 font-bold uppercase">Deposited</p>
-                        <p className="text-xl font-extrabold text-white font-mono mt-1">${formatUSDC(position.deposited)}</p>
+                        <p className="text-xl font-extrabold text-white font-mono mt-1">
+                          ${formatUSDC(position.deposited)}
+                        </p>
                       </div>
                       <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
-                        <p className="text-[10px] text-slate-500 font-bold uppercase">Earned Yield</p>
-                        <p className="text-xl font-extrabold text-emerald-400 font-mono mt-1">${formatUSDC(position.accruedYield)}</p>
+                        <p className="text-[10px] text-slate-500 font-bold uppercase">
+                          Earned Yield
+                        </p>
+                        <p className="text-xl font-extrabold text-emerald-400 font-mono mt-1">
+                          ${formatUSDC(position.accruedYield)}
+                        </p>
                       </div>
                     </div>
 
@@ -455,6 +486,14 @@ function InvestPageInner() {
             </div>
           </section>
         </div>
+
+        {isConnected && publicKey && position && parseFloat(position.deposited) > 0 && (
+          <ROIProjectionWidget
+            wallet={publicKey}
+            depositedAmount={parseFloat(position.deposited)}
+            apyBps={position.tranche === "Senior" ? seniorApyBps : juniorApyBps}
+          />
+        )}
       </main>
     </div>
   );

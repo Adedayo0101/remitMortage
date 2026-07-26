@@ -11,7 +11,11 @@ interface TransactionProgressProps {
 export default function TransactionProgress({ phase, isPolling }: TransactionProgressProps) {
   const currentStep = phaseToStepIndex(phase);
   const isFailed = phase === "failed";
-  const finalLabel = isFailed ? "Failed" : phase === "confirmed" ? "Confirmed" : TX_PROGRESS_STEPS[3];
+  const finalLabel = isFailed
+    ? "Failed"
+    : phase === "confirmed"
+      ? "Confirmed"
+      : TX_PROGRESS_STEPS[3];
 
   return (
     <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-6 mb-6">
@@ -50,7 +54,12 @@ export default function TransactionProgress({ phase, isPolling }: TransactionPro
                 >
                   {isCompleted ? (
                     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2.5}
+                        d="M5 13l4 4L19 7"
+                      />
                     </svg>
                   ) : (
                     <span className="font-bold text-sm">{stepNumber}</span>

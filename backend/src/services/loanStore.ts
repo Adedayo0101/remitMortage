@@ -90,12 +90,17 @@ export async function getPendingApplications() {
   return records.map(mapLoanApplication);
 }
 
-export function listApplications() {
-  return Array.from(store.values());
+export async function listApplications() {
+  const records = await prisma.loanApplication.findMany({
+    include: { applicant: true },
+  });
+  return records.map(mapLoanApplication);
 }
 
-export function updateApplication(id: string, patch: Partial<LoanApplication>) {
-  const existing = store.get(id);
+export async function updateApplication(id: string, patch: Partial<LoanApplication>) {
+  const existing = await prisma.loanApplication.findUnique({
+    where: { id },
+  });
   if (!existing) return null;
 
   if (patch.borrowerAddress) {
