@@ -1,148 +1,3 @@
-datasource db {
-  provider = "postgresql"
-}
-
-generator client {
-  provider = "prisma-client-js"
-}
-
-enum NotificationStatus {
-  Pending
-  Sent
-  Failed
-}
-
-enum LoanStatus {
-  Pending
-  Approved
-  Rejected
-  Disbursing
-  Repaying
-  Completed
-}
-
-model Notification {
-  id          String             @id @default(uuid())
-  recipient   String
-  type        String // "EMAIL" or "WEBHOOK"
-  content     String // HTML for emails or JSON payload for webhooks
-  status      NotificationStatus @default(Pending)
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
-  attempts    Int                @default(0)
-  lastError   String?
-  nextRetryAt DateTime?
-}
-
-model UnpinnedCid {
-  id           String   @id @default(uuid())
-  cid          String
-  proposalId   String?
-  success      Boolean
-  pinataStatus Int?
-  error        String?
-  createdAt    DateTime @default(now())
-}
-
-enum VerificationStatus {
-  PENDING
-  ELIGIBLE
-  INELIGIBLE
-}
-
-model Applicant {
-  id                      String                   @id @default(uuid())
-  stellarAddress          String                   @unique
-  verificationStatus      VerificationStatus       @default(PENDING)
-  creditScore             Int?
-  taxId                   String?
-  monthlyIncome           String?
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-  verificationResults     VerificationResult[]
-  loanApplications        LoanApplication[]
-  notificationPreference  NotificationPreference?
-  borrowerCredentials     BorrowerCredential[]
-}
-
-model NotificationPreference {
-  id                  String    @id @default(uuid())
-  applicantId         String    @unique
-  applicant           Applicant @relation(fields: [applicantId], references: [id])
-  email               String?
-  phone               String?
-  emailAlerts         Boolean   @default(true)
-  smsAlerts           Boolean   @default(false)
-  escrowApproaching   Boolean   @default(true)
-  escrowReached       Boolean   @default(true)
-  paymentMissed       Boolean   @default(true)
-  loanMilestones      Boolean   @default(true)
-  webhookUrl          String?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
-}
-
-model VerificationResult {
-  id             String    @id @default(uuid())
-  applicantId    String
-  applicant      Applicant @relation(fields: [applicantId], references: [id])
-  reportHash     String
-  totalPayments  Int
-  totalVolume    Float
-  spanMonths     Float
-  eligible       Boolean
-  analyzedAt     DateTime  @default(now())
-}
-
-model LoanApplication {
-  id                 String     @id @default(uuid())
-  applicantId        String
-  applicant          Applicant  @relation(fields: [applicantId], references: [id])
-  escrowContractId   String?
-  loanId             String?
-  principal          Float
-  status             LoanStatus @default(Pending)
-  createdAt          DateTime   @default(now())
-
-  // New fields for repayment tracking
-  dueDate            DateTime?
-  missedPayments     Int        @default(0)
-  lateFeeBalance     Float      @default(0)
-  gracePeriodEndsAt  DateTime?
-}
-
-model AuditLog {
-  id           String   @id @default(uuid())
-  action       String
-  actorAddress String?
-  ipAddress    String?
-  metadata     Json?
-  createdAt    DateTime @default(now())
-
-  @@index([action])
-  @@index([actorAddress])
-}
-
-model BorrowerCredential {
-  id                 String    @id @default(uuid())
-  applicantId        String
-  applicant          Applicant @relation(fields: [applicantId], references: [id])
-  did                String    @unique
-  didHash            String    @unique
-  verificationMethod String
-  challenge          String?
-  issuer             String?
-  verifiedAt         DateTime  @default(now())
-  expiresAt          DateTime?
-  revokedAt          DateTime?
-  isRevoked          Boolean   @default(false)
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-
-  @@index([applicantId])
-  @@index([did])
-}
-
 model WebhookDLQ {
   id              String   @id @default(uuid())
   url             String
@@ -151,4 +6,82 @@ model WebhookDLQ {
   responsePayload String?
   error           String?
   createdAt       DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Webhook subscription model
+// ---------------------------------------------------------------------------
+
+/// The event topics a subscriber can opt into.
+enum WebhookEventTopic {
+  deposit
+  withdraw
+  release
+  disburse
+  repay
+  /// Catch-all — subscriber receives every event kind.
+  all
+}
+
+/// Lifecycle state of a subscription.
+enum WebhookSubscriptionStatus {
+  active
+  paused
+  revoked
+}
+
+/// A partner/third-party webhook endpoint registration.
+/// Each subscription carries its own HMAC secret so secrets can be rotated
+/// per subscriber without affecting any other subscription.
+model WebhookSubscription {
+  id          String                    @id @default(uuid())
+  /// Human-readable label for the subscriber (e.g. "Acme Underwriter").
+  label       String
+  /// The HTTPS endpoint that will receive POST requests.
+  url         String
+  /// Per-subscription HMAC-SHA256 secret (stored encrypted at rest).
+  secret      String
+  /// Comma-separated list of event topics this subscription listens for,
+  /// or a single "all" entry to receive everything.
+  topics      WebhookEventTopic[]
+  status      WebhookSubscriptionStatus @default(active)
+  /// Optional owning wallet address — used to scope management API access.
+  ownerAddress String?
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+
+  deliveries  WebhookDelivery[]
+
+  @@index([status])
+  @@index([ownerAddress])
+}
+
+/// Immutable delivery attempt record — one row per HTTP attempt.
+/// Successful deliveries and every retry attempt are all persisted so the
+/// full dispatch history is always available for debugging.
+model WebhookDelivery {
+  id             String              @id @default(uuid())
+  subscriptionId String
+  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  /// The event topic that triggered this delivery.
+  topic          String
+  /// Full JSON payload that was (or will be) sent.
+  payload        Json
+  /// HTTP status code returned by the target (null if the request never completed).
+  statusCode     Int?
+  /// Truncated response body from the target (max 2 KB stored).
+  responseBody   String?
+  /// Error message if the fetch itself threw (network error, timeout, etc.).
+  error          String?
+  /// Whether this attempt resulted in a 2xx response.
+  success        Boolean             @default(false)
+  /// Zero-based attempt index (0 = first try, 1 = first retry, …).
+  attempt        Int                 @default(0)
+  /// When the next retry should be attempted (null once terminal).
+  nextRetryAt    DateTime?
+  createdAt      DateTime            @default(now())
+
+  @@index([subscriptionId])
+  @@index([success])
+  @@index([nextRetryAt])
 }

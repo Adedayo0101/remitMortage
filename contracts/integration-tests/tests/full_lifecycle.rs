@@ -53,6 +53,11 @@ fn deploy_protocol<'a>(env: &Env) -> Protocol<'a> {
     let token_id = env.register_stellar_asset_contract_v2(token_admin);
     let token = token_id.address();
 
+    // Lending pool: 8% annual interest, 4% fixed senior yield.
+    let pool_id = env.register(LendingPoolContract, ());
+    let pool = LendingPoolContractClient::new(env, &pool_id);
+    pool.initialize(&admin, &token, &800u32, &400u32, &treasury);
+
     // Escrow: 30,000 USDC savings target, no lockup so release is purely
     // target-gated.
     let escrow_id = env.register(EscrowContract, ());
@@ -60,6 +65,7 @@ fn deploy_protocol<'a>(env: &Env) -> Protocol<'a> {
     escrow.initialize(&EscrowConfig {
         admin: admin.clone(),
         token: token.clone(),
+        lending_pool: pool_id.clone(),
         savings_target: 30_000 * USDC,
         max_duration_ledgers: 10_000_000,
         early_withdrawal_penalty_bps: 500,
@@ -70,12 +76,8 @@ fn deploy_protocol<'a>(env: &Env) -> Protocol<'a> {
         penalty_bps_tier4: 200,
         grace_period_ledgers: 120_960,
         default_penalty_bps: 1_000,
+        yield_vault: None,
     });
-
-    // Lending pool: 8% annual interest, 4% fixed senior yield.
-    let pool_id = env.register(LendingPoolContract, ());
-    let pool = LendingPoolContractClient::new(env, &pool_id);
-    pool.initialize(&admin, &token, &800u32, &400u32, &treasury);
 
     Protocol {
         token,
@@ -245,4 +247,56 @@ fn over_repayment_fails() {
         .set_sequence_number(env.ledger().sequence() + COMPOUND_PERIOD);
     let result = p.pool.try_repay(&borrower, &loan_id, &(50_000 * USDC));
     assert_eq!(result.unwrap_err(), Ok(PoolError::OverPayment));
+}
+
+#[test]
+fn unauthenticated_escrow_deposit_reverts() {
+    let env = Env::default();
+    // Do NOT mock_all_auths to test strict require_auth enforcement.
+
+    let p = deploy_protocol(&env);
+    let borrower = Address::generate(&env);
+    let goal = Symbol::new(&env, "home_2026");
+
+    let result = p.escrow.try_deposit(&borrower, &goal, &(10_000 * USDC));
+    assert!(result.is_err());
+}
+
+#[test]
+fn unauthenticated_escrow_withdraw_reverts() {
+    let env = Env::default();
+    // Do NOT mock_all_auths to test strict require_auth enforcement.
+
+    let p = deploy_protocol(&env);
+    let borrower = Address::generate(&env);
+    let goal = Symbol::new(&env, "home_2026");
+
+    let result = p.escrow.try_withdraw(&borrower, &goal);
+    assert!(result.is_err());
+}
+
+#[test]
+fn unauthenticated_lending_pool_request_loan_reverts() {
+    let env = Env::default();
+    // Do NOT mock_all_auths to test strict require_auth enforcement.
+
+    let p = deploy_protocol(&env);
+    let borrower = Address::generate(&env);
+    let loan_id = BytesN::from_array(&env, &[9u8; 32]);
+
+    let result = p.pool.try_request_loan(&borrower, &loan_id, &(70_000 * USDC));
+    assert!(result.is_err());
+}
+
+#[test]
+fn unauthenticated_lending_pool_repay_reverts() {
+    let env = Env::default();
+    // Do NOT mock_all_auths to test strict require_auth enforcement.
+
+    let p = deploy_protocol(&env);
+    let borrower = Address::generate(&env);
+    let loan_id = BytesN::from_array(&env, &[9u8; 32]);
+
+    let result = p.pool.try_repay(&borrower, &loan_id, &(10_000 * USDC));
+    assert!(result.is_err());
 }

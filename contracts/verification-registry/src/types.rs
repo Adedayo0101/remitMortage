@@ -1,5 +1,16 @@
 use soroban_sdk::{contracttype, Address, BytesN};
 
+/// Borrower risk tiers updated from repayment history.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+#[repr(u32)]
+pub enum RiskTier {
+    Excellent = 0,
+    Good = 1,
+    Fair = 2,
+    Poor = 3,
+}
+
 /// On-chain anchor for a borrower eligibility verification report.
 ///
 /// The sensitive financial dataset itself is kept off-chain; only the
@@ -36,6 +47,22 @@ pub struct RateConfig {
     pub rate_fallback_bps: u32,
 }
 
+/// Dynamic borrower risk profile derived from repayment callbacks.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RiskRecord {
+    /// Current score, 0-100.
+    pub score: u32,
+    /// Current tier derived from the score.
+    pub tier: RiskTier,
+    /// Consecutive late repayments.
+    pub consecutive_late: u32,
+    /// Total on-time repayments.
+    pub on_time_payments: u32,
+    /// Total late repayments.
+    pub late_payments: u32,
+}
+
 /// Storage keys for the verification registry contract.
 #[contracttype]
 #[derive(Clone)]
@@ -48,4 +75,8 @@ pub enum DataKey {
     Verification(Address),
     /// Dynamic interest rate configuration.
     RateConfig,
+    /// Lending pool address allowed to push repayment callbacks.
+    LendingPool,
+    /// Dynamic borrower risk profile keyed by borrower address.
+    Risk(Address),
 }
