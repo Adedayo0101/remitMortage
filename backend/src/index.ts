@@ -25,8 +25,10 @@ import { kycRouter } from "./routes/kyc.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
 import { workspaceRouter } from "./routes/workspace.js";
+import { metricsRouter } from "./routes/metrics.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
@@ -43,6 +45,8 @@ const PORT = config.port;
 void initializeRedis();
 
 // ── Middleware ───────────────────────────────────────────────────────────
+// HTTP metrics must be first so the timer starts at the earliest possible point.
+app.use(httpMetricsMiddleware);
 app.use(requestLogger);
 app.use(helmet());
 app.use(cors({
@@ -75,6 +79,9 @@ const verificationLimiter = rateLimit({
 });
 
 // ── Routes ──────────────────────────────────────────────────────────────
+// /metrics is unauthenticated at the Express level — the route itself
+// enforces bearer-token auth via metricsAuthMiddleware when METRICS_TOKEN is set.
+app.use("/metrics", metricsRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
 app.use("/api/borrower", authMiddleware, borrowerRouter);
