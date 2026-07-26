@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import { runRepaymentAudit } from "./repaymentAudit.js";
 
-let schedulerTask: cron.ScheduledTask | null = null;
+let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
