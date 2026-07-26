@@ -58,74 +58,6 @@ pub struct InvestorRecord {
     pub accrued_yield: i128,
     /// Total losses absorbed by this investor (only non-zero for junior tranche).
     pub absorbed_loss: i128,
-    /// LP shares minted to the investor.
-    pub lp_shares: i128,
-    /// LP shares currently locked for staking.
-    pub staked_shares: i128,
-    /// Accrued staking rewards ready to claim.
-    pub staking_rewards: i128,
-    /// Ledger when staking rewards were last updated.
-    pub last_stake_ledger: u32,
-}
-
-/// Referral relationship between two participants.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct ReferralRecord {
-    /// Direct referrer address.
-    pub referrer: Address,
-}
-
-/// On-chain staking position for LP share holders.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct StakingRecord {
-    /// Number of shares currently staked.
-    pub staked_shares: i128,
-    /// Ledger sequence when rewards were last accrued.
-    pub last_accrual_ledger: u32,
-    /// Accumulated reward amount not yet claimed.
-    pub accrued_rewards: i128,
-}
-
-/// Oracle configuration for loan LTV checks.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct OracleConfig {
-    /// Oracle contract queried for the live asset price.
-    pub oracle: Address,
-    /// Maximum age of the oracle answer in ledgers.
-    pub max_age_ledgers: u32,
-    /// Static fallback price used when the oracle is not configured.
-    pub fallback_price: i128,
-    /// Maximum loan-to-value ratio in basis points.
-    pub max_ltv_bps: u32,
-}
-
-/// Borrower risk profile tracked by the verification registry.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-#[repr(u32)]
-pub enum RiskTier {
-    Excellent = 0,
-    Good = 1,
-    Fair = 2,
-    Poor = 3,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct RiskRecord {
-    /// Current borrower score, 0-100.
-    pub score: u32,
-    /// Current tier derived from the score.
-    pub tier: RiskTier,
-    /// Count of consecutive late repayments.
-    pub consecutive_late: u32,
-    /// Total on-time repayments recorded.
-    pub on_time_payments: u32,
-    /// Total late repayments recorded.
-    pub late_payments: u32,
 }
 
 /// Per-tranche aggregate metrics stored in instance storage.
@@ -227,6 +159,24 @@ pub struct PoolHealth {
     pub loss_ratio_bps: u32,
 }
 
+/// Snapshot of the halving state, returned by `get_halving_info`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HalvingInfo {
+    /// Number of ledgers between each halving epoch (e.g. 5_000_000).
+    pub halving_interval: u32,
+    /// Ledger sequence at which the most recent halving occurred (or the
+    /// pool initialisation ledger for the very first epoch).
+    pub last_halving_ledger: u32,
+    /// Current epoch index (0 = genesis, 1 = after first halving, …).
+    pub epoch: u32,
+    /// Current reward multiplier in basis points
+    /// (10_000 = 100 %, 5_000 = 50 %, 2_500 = 25 %, …).
+    pub reward_multiplier_bps: u32,
+    /// Ledger sequence at which the *next* halving will fire.
+    pub next_halving_ledger: u32,
+}
+
 /// Storage keys for the lending pool contract.
 #[contracttype]
 #[derive(Clone)]
@@ -269,28 +219,6 @@ pub enum DataKey {
     PendingAdmin,
     /// Total withdrawal fees collected and routed to treasury.
     TotalWithdrawalFees,
-    /// Total LP shares minted by the pool.
-    ShareSupply,
-    /// LP share balance for an investor.
-    ShareBalance(Address),
-    /// Staked LP share balance for an investor.
-    StakedShares(Address),
-    /// Accrued staking rewards for an investor.
-    StakingRewards(Address),
-    /// Last ledger at which staking rewards were accrued for an investor.
-    StakingLedger(Address),
-    /// Direct referrer for a participant.
-    Referrer(Address),
-    /// Oracle configuration used for LTV checks.
-    OracleConfig,
-    /// Oracle price freshness threshold.
-    OracleMaxAgeLedgers,
-    /// Oracle fallback static price.
-    OracleFallbackPrice,
-    /// Oracle maximum loan-to-value ratio.
-    OracleMaxLtvBps,
-    /// Simple reentrancy lock.
-    ReentrancyLock,
     /// Address of the VerificationRegistry contract used to resolve borrower
     /// interest rates during loan requests. Absent until `set_verification_registry`
     /// is called by the admin.
@@ -302,4 +230,13 @@ pub enum DataKey {
     /// Whitelist flag for a contractor address. Present and `true` means the
     /// address is a vetted recipient eligible to receive disbursements.
     Whitelist(Address),
+    // ── Reward Halving ──────────────────────────────────────────────────
+    /// Number of ledgers between each halving epoch. Set once during
+    /// `initialize` and never mutated (immutable schedule parameter).
+    HalvingInterval,
+    /// Ledger sequence at which the most recent epoch transition occurred.
+    /// Seeded to the pool's initialisation ledger; updated on each halving.
+    LastHalvingLedger,
+    /// Zero-based epoch counter. Incremented on every halving event.
+    HalvingEpoch,
 }

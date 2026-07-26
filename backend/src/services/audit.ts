@@ -18,7 +18,7 @@ export async function logAudit(params: {
           metadata: params.metadata ?? {},
         },
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.error("Audit log persistence failed:", err);
       });
   } catch (error) {
