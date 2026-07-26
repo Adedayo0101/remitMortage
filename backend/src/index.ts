@@ -14,6 +14,7 @@ import { loanRouter } from "./routes/loan.js";
 import { milestoneRouter } from "./routes/milestone.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
+import { workspaceRouter } from "./routes/workspace.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { startEventListener } from "./services/eventListener.js";
@@ -66,6 +67,7 @@ app.use("/api/loan", loanRouter);
 app.use("/api/milestone", milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/audit-logs", auditRouter);
+app.use("/api/workspaces", workspaceRouter);
 app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Global error handler (must be after routes)

@@ -49,6 +49,59 @@ enum LoanStatus {
   DEFAULTED
 }
 
+enum WorkspaceRole {
+  OWNER
+  BUILDER
+  VIEWER
+}
+
+enum WorkspaceInvitationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+model Workspace {
+  id           String                   @id @default(uuid())
+  name         String
+  slug         String                   @unique
+  createdBy    String
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  members      WorkspaceMember[]
+  invitations  WorkspaceInvitation[]
+}
+
+model WorkspaceMember {
+  id            String        @id @default(uuid())
+  workspaceId   String
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  walletAddress String
+  role          WorkspaceRole @default(VIEWER)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([workspaceId, walletAddress])
+  @@index([walletAddress])
+}
+
+model WorkspaceInvitation {
+  id              String                     @id @default(uuid())
+  workspaceId     String
+  workspace       Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  inviteeAddress  String
+  invitedBy       String
+  role            WorkspaceRole              @default(VIEWER)
+  status          WorkspaceInvitationStatus  @default(PENDING)
+  expiresAt       DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  @@index([inviteeAddress])
+  @@index([status])
+}
+
 model Applicant {
   id                 String             @id @default(uuid())
   stellarAddress     String             @unique
