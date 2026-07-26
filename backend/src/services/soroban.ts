@@ -300,6 +300,52 @@ export async function getInvestorInfo(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Reward halving queries
+// ---------------------------------------------------------------------------
+
+export interface HalvingInfo {
+  /** Number of ledgers between each epoch (immutable after init). */
+  halving_interval: number;
+  /** Ledger at which the most recent epoch began. */
+  last_halving_ledger: number;
+  /** Current epoch index (0 = genesis, 1 = after first halving, …). */
+  epoch: number;
+  /** Current reward multiplier in basis points (10 000 = 100 %, 5 000 = 50 %, …). */
+  reward_multiplier_bps: number;
+  /** Ledger at which the next halving will fire. */
+  next_halving_ledger: number;
+}
+
+/**
+ * Returns a snapshot of the current halving epoch state for a lending-pool
+ * contract.  This is a read-only simulation — it never advances the epoch.
+ * Cache TTL is short (10 s) because the epoch can advance at any time once
+ * the interval elapses.
+ */
+export async function getHalvingInfo(contractId: string): Promise<HalvingInfo> {
+  return withCache(`pool:halving:${contractId}`, async () => {
+    const raw = (await simulateRead(
+      contractId,
+      "get_halving_info"
+    )) as Record<string, unknown>;
+    return normalizeBigInts(raw) as HalvingInfo;
+  });
+}
+
+/**
+ * Returns just the current reward multiplier in basis points (10 000 = 100 %).
+ * Lighter than `getHalvingInfo` when only the scalar is needed.
+ */
+export async function getRewardMultiplierBps(
+  contractId: string
+): Promise<number> {
+  return withCache(`pool:multiplier:${contractId}`, async () => {
+    const value = await simulateRead(contractId, "get_reward_multiplier_bps");
+    return Number(value);
+  });
+}
+
 /**
  * Recursively converts BigInt values (returned by scValToNative for i128/u64)
  * into strings so the result is JSON-serializable without precision loss.
