@@ -4,10 +4,7 @@ import { useEffect, useRef } from "react";
 import { rpc, scValToNative } from "@stellar/stellar-sdk";
 import { getRpcServer } from "../lib/soroban-rpc";
 import { useWallet } from "../context/WalletContext";
-import {
-  useNotifications,
-  type ToastInput,
-} from "../context/NotificationContext";
+import { useNotifications, type ToastInput } from "../context/NotificationContext";
 
 /** Polling cadence for Soroban getEvents, per the feature spec. */
 export const EVENT_POLL_INTERVAL_MS = 10_000;
@@ -161,22 +158,27 @@ function normalizeStreamPayload(payload: unknown): StreamEventPayload[] {
   return [];
 }
 
-function emitStreamEvent(record: StreamEventPayload, wallet: string, notify: (toast: ToastInput) => string) {
+function emitStreamEvent(
+  record: StreamEventPayload,
+  wallet: string,
+  notify: (toast: ToastInput) => string
+) {
   const source =
     record.source === "pool" || record.source === "escrow"
       ? record.source
-      : record.contractId === lendingPoolContractId() || record.contract_id === lendingPoolContractId()
-      ? "pool"
-      : record.contractId === escrowContractId() || record.contract_id === escrowContractId()
-      ? "escrow"
-      : null;
+      : record.contractId === lendingPoolContractId() ||
+          record.contract_id === lendingPoolContractId()
+        ? "pool"
+        : record.contractId === escrowContractId() || record.contract_id === escrowContractId()
+          ? "escrow"
+          : null;
 
   if (!source) return;
 
   const name =
     record.name ??
     record.event ??
-    (Array.isArray(record.topic) ? String(scValToNative(record.topic[0])) : "");
+    (Array.isArray(record.topic) ? String(scValToNative(record.topic[0] as any)) : "");
 
   const decoded = record.data ?? (Array.isArray(record.value) ? record.value : []);
   const data = Array.isArray(decoded) ? decoded : [decoded];
@@ -241,12 +243,7 @@ export function useContractEvents() {
 
         for (const event of response.events) {
           const contractId = event.contractId?.toString();
-          const source =
-            contractId === escrowId
-              ? "escrow"
-              : contractId === poolId
-              ? "pool"
-              : null;
+          const source = contractId === escrowId ? "escrow" : contractId === poolId ? "pool" : null;
           if (!source) continue;
 
           let name: string;

@@ -50,26 +50,19 @@ enum VerificationStatus {
   INELIGIBLE
 }
 
-enum LoanStatus {
-  PENDING
-  APPROVED
-  ACTIVE
-  REPAID
-  DEFAULTED
-}
-
 model Applicant {
-  id                 String             @id @default(uuid())
-  stellarAddress     String             @unique
-  verificationStatus VerificationStatus @default(PENDING)
-  creditScore        Int?
-  taxId              String?
-  monthlyIncome      String?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
-  verificationResults VerificationResult[]
-  loanApplications    LoanApplication[]
-  notificationPreference NotificationPreference?
+  id                      String                   @id @default(uuid())
+  stellarAddress          String                   @unique
+  verificationStatus      VerificationStatus       @default(PENDING)
+  creditScore             Int?
+  taxId                   String?
+  monthlyIncome           String?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  verificationResults     VerificationResult[]
+  loanApplications        LoanApplication[]
+  notificationPreference  NotificationPreference?
+  borrowerCredentials     BorrowerCredential[]
 }
 
 model NotificationPreference {
@@ -108,7 +101,7 @@ model LoanApplication {
   escrowContractId   String?
   loanId             String?
   principal          Float
-  status             LoanStatus @default(PENDING)
+  status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 
   // New fields for repayment tracking
@@ -128,4 +121,34 @@ model AuditLog {
 
   @@index([action])
   @@index([actorAddress])
+}
+
+model BorrowerCredential {
+  id                 String    @id @default(uuid())
+  applicantId        String
+  applicant          Applicant @relation(fields: [applicantId], references: [id])
+  did                String    @unique
+  didHash            String    @unique
+  verificationMethod String
+  challenge          String?
+  issuer             String?
+  verifiedAt         DateTime  @default(now())
+  expiresAt          DateTime?
+  revokedAt          DateTime?
+  isRevoked          Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([applicantId])
+  @@index([did])
+}
+
+model WebhookDLQ {
+  id              String   @id @default(uuid())
+  url             String
+  payload         Json
+  statusCode      Int?
+  responsePayload String?
+  error           String?
+  createdAt       DateTime @default(now())
 }

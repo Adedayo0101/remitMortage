@@ -55,6 +55,8 @@ export async function dispatchNotification(id: string): Promise<boolean> {
   const currentAttempts = notification.attempts + 1;
   let success = false;
   let errorMsg = "";
+  
+  let dlqWebhookData: any = null;
 
   try {
     if (notification.type === "EMAIL") {
@@ -68,12 +70,24 @@ export async function dispatchNotification(id: string): Promise<boolean> {
       } catch {
         payload = { message: notification.content };
       }
-      success = await sendWebhook(notification.recipient, payload);
+      const webhookResult = await sendWebhook(notification.recipient, payload);
+      success = webhookResult.success;
+      
+      if (!success) {
+        errorMsg = webhookResult.error || `HTTP ${webhookResult.status}: ${webhookResult.responsePayload?.slice(0, 200)}`;
+        dlqWebhookData = {
+          url: notification.recipient,
+          payload,
+          statusCode: webhookResult.status,
+          responsePayload: webhookResult.responsePayload,
+          error: webhookResult.error
+        };
+      }
     } else {
       throw new Error(`Unsupported notification type: ${notification.type}`);
     }
 
-    if (!success) {
+    if (!success && !errorMsg) {
       errorMsg = "Service dispatch returned false";
     }
   } catch (err: any) {
@@ -108,6 +122,23 @@ export async function dispatchNotification(id: string): Promise<boolean> {
         nextRetryAt,
       },
     });
+    
+    if (!hasMoreRetries && notification.type === "WEBHOOK" && dlqWebhookData) {
+      try {
+        await prisma.webhookDLQ.create({
+          data: {
+            url: dlqWebhookData.url,
+            payload: dlqWebhookData.payload,
+            statusCode: dlqWebhookData.statusCode,
+            responsePayload: dlqWebhookData.responsePayload,
+            error: dlqWebhookData.error,
+          }
+        });
+        logger.info(`[NotificationService] Webhook DLQ record created for notification ${id}`);
+      } catch (dlqErr) {
+        logger.error(`[NotificationService] Failed to create DLQ record for ${id}`, { err: dlqErr });
+      }
+    }
 
     logger.warn(
       `[NotificationService] Notification ${id} failed (attempt ${currentAttempts}/${MAX_ATTEMPTS}). Next retry at: ${nextRetryAt}`

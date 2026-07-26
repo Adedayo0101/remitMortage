@@ -4,11 +4,18 @@ import { loadConfig } from "../config.js";
 
 const config = loadConfig();
 
+export interface WebhookResult {
+  success: boolean;
+  status?: number;
+  responsePayload?: string;
+  error?: string;
+}
+
 /**
  * Sends a signed webhook payload to a specified partner URL.
  * Signs the payload using HMAC-SHA256 with the configured secret.
  */
-export async function sendWebhook(url: string, payload: any): Promise<boolean> {
+export async function sendWebhook(url: string, payload: any): Promise<WebhookResult> {
   const secret = config.webhookSecret;
   const timestamp = Date.now().toString();
   const bodyString = JSON.stringify(payload);
@@ -28,15 +35,17 @@ export async function sendWebhook(url: string, payload: any): Promise<boolean> {
       },
       body: bodyString,
     });
+    
+    const responsePayload = await response.text();
 
     if (!response.ok) {
       logger.error(`[WebhookService] HTTP Error from ${url}`, { status: response.status });
-      return false;
+      return { success: false, status: response.status, responsePayload };
     }
 
-    return true;
-  } catch (error) {
+    return { success: true, status: response.status, responsePayload };
+  } catch (error: any) {
     logger.error(`[WebhookService] Fetch failure sending webhook to ${url}`, { error });
-    return false;
+    return { success: false, error: error.message || String(error) };
   }
 }

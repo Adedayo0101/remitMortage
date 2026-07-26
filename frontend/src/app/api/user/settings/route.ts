@@ -82,7 +82,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (webhookUrl && !isValidWebhookUrl(webhookUrl)) {
-      return NextResponse.json({ error: "Webhook URL must be a valid HTTP or HTTPS URL." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Webhook URL must be a valid HTTP or HTTPS URL." },
+        { status: 400 }
+      );
     }
 
     const savedSettings = {

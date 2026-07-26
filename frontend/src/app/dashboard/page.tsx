@@ -10,9 +10,7 @@ import SavingsProgressCard from "../../components/SavingsProgressCard";
 import LoanStatusCard from "../../components/LoanStatusCard";
 import DepositModal from "../../components/DepositModal";
 import WithdrawModal from "../../components/WithdrawModal";
-import MilestoneTimeline, {
-  type MilestoneNode,
-} from "../../components/MilestoneTimeline";
+import MilestoneTimeline, { type MilestoneNode } from "../../components/MilestoneTimeline";
 import {
   consumeTxSuccessFeedback,
   shortenAddress,
@@ -75,9 +73,7 @@ const SAMPLE_MILESTONES: MilestoneNode[] = [
     state: "Voting",
     scheduledDate: "2026-06-15",
     description: "Full plumbing rough-in and electrical wiring inspection.",
-    evidence: [
-      { label: "Plumbing Permit", url: "ipfs://QmA4...plumbing" },
-    ],
+    evidence: [{ label: "Plumbing Permit", url: "ipfs://QmA4...plumbing" }],
     voters: [
       { address: "GABC...1234", vote: "yes", weight: 40 },
       { address: "GDEF...5678", vote: "no", weight: 35 },
@@ -120,13 +116,16 @@ export default function DashboardPage() {
       amount: milestone.title,
       status: milestone.state,
       reference: milestone.id,
-      counterparty: milestone.voters?.map((voter) => shortenAddress(voter.address)).join(", ") || "Protocol governance",
+      counterparty:
+        milestone.voters?.map((voter) => shortenAddress(voter.address)).join(", ") ||
+        "Protocol governance",
       notes: milestone.description,
     }));
 
     return {
       title: "RemitMortgage Borrower Statement",
-      subtitle: "Escrow savings, loan status, and milestone progress for mortgage underwriting review.",
+      subtitle:
+        "Escrow savings, loan status, and milestone progress for mortgage underwriting review.",
       metadata: createStatementMetadata({
         borrowerName: `Wallet ${shortenAddress(publicKey)}`,
         borrowerAddress: publicKey,
@@ -203,7 +202,8 @@ export default function DashboardPage() {
               Borrower <span className="gradient-text">Dashboard</span>
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              Track your 30% down-payment escrow savings, accrued protocol yield, and mortgage milestone disbursements.
+              Track your 30% down-payment escrow savings, accrued protocol yield, and mortgage
+              milestone disbursements.
             </p>
           </div>
 
@@ -215,17 +215,20 @@ export default function DashboardPage() {
             >
               Download Statement
             </button>
-            <button
-              onClick={() => setShowDeposit(true)}
-              className="btn-cta shadow-cyan-500/20"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            <button onClick={() => setShowDeposit(true)} className="btn-cta shadow-cyan-500/20">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
               Deposit USDC
             </button>
-            <button
-              onClick={() => setShowWithdraw(true)}
-              className="btn-outline-blue"
-            >
+            <button onClick={() => setShowWithdraw(true)} className="btn-outline-blue">
               Early Exit
             </button>
           </div>
@@ -294,25 +297,33 @@ export default function DashboardPage() {
             {/* Quick Metrics Bar */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-2xl">
-                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Escrow Deposited</span>
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  Escrow Deposited
+                </span>
                 <div className="text-2xl font-extrabold text-cyan-400 mt-1 font-mono">
                   ${Number(status.escrow.deposited).toLocaleString()} USDC
                 </div>
               </div>
               <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-2xl">
-                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Target Down Payment</span>
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  Target Down Payment
+                </span>
                 <div className="text-2xl font-extrabold text-white mt-1 font-mono">
                   ${Number(status.escrow.target).toLocaleString()} USDC
                 </div>
               </div>
               <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-2xl">
-                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Escrow Progress</span>
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  Escrow Progress
+                </span>
                 <div className="text-2xl font-extrabold text-emerald-400 mt-1 font-mono">
                   {status.escrow.progress}%
                 </div>
               </div>
               <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-2xl">
-                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Loan Principal</span>
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  Loan Principal
+                </span>
                 <div className="text-2xl font-extrabold text-indigo-400 mt-1 font-mono">
                   ${Number(status.loan.principal).toLocaleString()} USDC
                 </div>
@@ -353,9 +364,15 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between mb-6">
                   <div>
                     <h2 className="text-xl font-bold text-white">Loan Milestone Timeline</h2>
-                    <p className="text-xs text-slate-400 mt-0.5">Real-time status of construction disbursements gated by IPFS proof and multisig approval.</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Real-time status of construction disbursements gated by IPFS proof and
+                      multisig approval.
+                    </p>
                   </div>
-                  <a href="/contractor" className="text-xs font-semibold text-cyan-400 hover:underline">
+                  <a
+                    href="/contractor"
+                    className="text-xs font-semibold text-cyan-400 hover:underline"
+                  >
                     Contractor Portal &rarr;
                   </a>
                 </div>

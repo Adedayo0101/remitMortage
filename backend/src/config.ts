@@ -39,6 +39,12 @@ export interface Config {
   kycOperatorSecret: string;
   /** Lifetime (seconds) of a temporary KYC decryption access token. */
   kycAccessTokenTtlSeconds: number;
+  /** Maximum base fee for Stellar transactions (in stroops). */
+  maxStellarBaseFee: number;
+  /** Maximum base fee for EVM transactions (in wei). */
+  maxEvmBaseFee: number;
+  /** Maximum base fee for Solana transactions (in lamports). */
+  maxSolanaBaseFee: number;
 }
 
 /** Parses KMS_KEY_VERSIONS (a JSON map of version -> 64-hex-char key) with a dev-safe fallback. */
@@ -93,5 +99,8 @@ export function loadConfig(): Config {
     kmsActiveKeyVersion: process.env.KMS_ACTIVE_KEY_VERSION || "v1",
     kycOperatorSecret: process.env.KYC_OPERATOR_SECRET || "default_kyc_operator_secret",
     kycAccessTokenTtlSeconds: parseInt(process.env.KYC_ACCESS_TOKEN_TTL || "300", 10),
+    maxStellarBaseFee: parseInt(process.env.MAX_STELLAR_BASE_FEE || "100000", 10),
+    maxEvmBaseFee: parseInt(process.env.MAX_EVM_BASE_FEE || "100000000000", 10),
+    maxSolanaBaseFee: parseInt(process.env.MAX_SOLANA_BASE_FEE || "10000", 10),
   };
 }

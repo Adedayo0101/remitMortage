@@ -2,7 +2,14 @@
 
 import dynamic from "next/dynamic";
 import { ChangeEvent, useMemo, useState } from "react";
-import { BASE_FEE, Horizon, Keypair, Networks, Operation, TransactionBuilder } from "@stellar/stellar-sdk";
+import {
+  BASE_FEE,
+  Horizon,
+  Keypair,
+  Networks,
+  Operation,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -16,7 +23,10 @@ type CommitteeMember = {
 type FreighterModule = {
   requestAccess?: () => void | Promise<void>;
   getPublicKey?: () => string | Promise<string>;
-  signTransaction?: (transactionXdr: string, options: { networkPassphrase: string }) => string | Promise<string>;
+  signTransaction?: (
+    transactionXdr: string,
+    options: { networkPassphrase: string }
+  ) => string | Promise<string>;
 };
 
 const defaultMembers: CommitteeMember[] = [
@@ -80,7 +90,8 @@ export default function MultisigCoordinatorPage() {
     () => members.filter((member) => validatePublicKey(member.publicKey) && member.weight > 0),
     [members]
   );
-  const totalWeight = masterWeight + validMembers.reduce((sum, member) => sum + Number(member.weight || 0), 0);
+  const totalWeight =
+    masterWeight + validMembers.reduce((sum, member) => sum + Number(member.weight || 0), 0);
   const maxThreshold = Math.max(lowThreshold, mediumThreshold, highThreshold);
   const validationMessages = useMemo(() => {
     const messages: string[] = [];
@@ -105,12 +116,30 @@ export default function MultisigCoordinatorPage() {
       messages.push("Total available weight must meet or exceed the highest threshold.");
     }
 
-    if ([masterWeight, lowThreshold, mediumThreshold, highThreshold, ...members.map((member) => member.weight)].some((value) => value < 0 || value > 255)) {
+    if (
+      [
+        masterWeight,
+        lowThreshold,
+        mediumThreshold,
+        highThreshold,
+        ...members.map((member) => member.weight),
+      ].some((value) => value < 0 || value > 255)
+    ) {
       messages.push("Weights and thresholds must be between 0 and 255.");
     }
 
     return messages;
-  }, [governanceAccount, highThreshold, lowThreshold, masterWeight, maxThreshold, mediumThreshold, members, totalWeight, validMembers.length]);
+  }, [
+    governanceAccount,
+    highThreshold,
+    lowThreshold,
+    masterWeight,
+    maxThreshold,
+    mediumThreshold,
+    members,
+    totalWeight,
+    validMembers.length,
+  ]);
   const isValidConfiguration = validationMessages.length === 0;
   const chartScale = Math.max(totalWeight, highThreshold, 1);
 
@@ -126,7 +155,12 @@ export default function MultisigCoordinatorPage() {
     const nextIndex = members.length + 1;
     setMembers((current) => [
       ...current,
-      { id: `member-${Date.now()}`, label: `Committee member ${nextIndex}`, publicKey: "", weight: 1 },
+      {
+        id: `member-${Date.now()}`,
+        label: `Committee member ${nextIndex}`,
+        publicKey: "",
+        weight: 1,
+      },
     ]);
     setTransactionXdr("");
     setSignedTransactionXdr("");
@@ -154,7 +188,9 @@ export default function MultisigCoordinatorPage() {
       setGovernanceAccount(publicKey);
       setStatusMessage("Governance account loaded from Freighter.");
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not read Freighter account.");
+      setStatusMessage(
+        error instanceof Error ? error.message : "Could not read Freighter account."
+      );
     }
   }
 
@@ -221,14 +257,18 @@ export default function MultisigCoordinatorPage() {
       const freighterPublicKey = await getFreighterPublicKey();
 
       if (freighterPublicKey !== governanceAccount.trim()) {
-        throw new Error("Freighter must be connected to the governance account master key before signing.");
+        throw new Error(
+          "Freighter must be connected to the governance account master key before signing."
+        );
       }
 
       const signedXdr = await signTransactionWithFreighter(xdr, networkPassphrase);
       setSignedTransactionXdr(signedXdr);
       setStatusMessage("Freighter signed the multisig setup transaction.");
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Freighter could not sign the transaction.");
+      setStatusMessage(
+        error instanceof Error ? error.message : "Freighter could not sign the transaction."
+      );
     } finally {
       setIsBusy(false);
     }
@@ -241,10 +281,13 @@ export default function MultisigCoordinatorPage() {
       <section className="pt-24 pb-16 px-6">
         <div className="max-w-7xl mx-auto">
           <div className="mb-8">
-            <p className="text-sm font-semibold uppercase text-[var(--accent-secondary)]">Milestone governance</p>
+            <p className="text-sm font-semibold uppercase text-[var(--accent-secondary)]">
+              Milestone governance
+            </p>
             <h1 className="text-3xl md:text-4xl font-bold mt-2">Multisig Key Coordinator</h1>
             <p className="text-[var(--text-secondary)] mt-3 max-w-3xl">
-              Register committee signer keys, assign Stellar signature weights, set transaction thresholds, and build the SetOptions transaction for the governance account.
+              Register committee signer keys, assign Stellar signature weights, set transaction
+              thresholds, and build the SetOptions transaction for the governance account.
             </p>
           </div>
 
@@ -253,7 +296,9 @@ export default function MultisigCoordinatorPage() {
               <section className="glass-card p-6">
                 <div className="flex flex-col md:flex-row md:items-end gap-4">
                   <label className="flex-1 space-y-2">
-                    <span className="text-sm text-[var(--text-muted)]">Governance account master key</span>
+                    <span className="text-sm text-[var(--text-muted)]">
+                      Governance account master key
+                    </span>
                     <input
                       value={governanceAccount}
                       onChange={(event) => {
@@ -265,7 +310,11 @@ export default function MultisigCoordinatorPage() {
                       className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] font-mono"
                     />
                   </label>
-                  <button type="button" onClick={connectGovernanceAccount} className="btn-outline !py-3 !px-5">
+                  <button
+                    type="button"
+                    onClick={connectGovernanceAccount}
+                    className="btn-outline !py-3 !px-5"
+                  >
                     Use Freighter
                   </button>
                 </div>
@@ -275,7 +324,9 @@ export default function MultisigCoordinatorPage() {
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                   <div>
                     <h2 className="text-2xl font-semibold">Committee Signers</h2>
-                    <p className="text-[var(--text-secondary)] mt-1">Each valid signer becomes a SetOptions signer entry.</p>
+                    <p className="text-[var(--text-secondary)] mt-1">
+                      Each valid signer becomes a SetOptions signer entry.
+                    </p>
                   </div>
                   <button type="button" onClick={addMember} className="btn-primary !py-3 !px-5">
                     Add Key
@@ -284,20 +335,32 @@ export default function MultisigCoordinatorPage() {
 
                 <div className="space-y-4">
                   {members.map((member) => {
-                    const keyIsInvalid = member.publicKey.trim() && !validatePublicKey(member.publicKey);
+                    const keyIsInvalid =
+                      member.publicKey.trim() && !validatePublicKey(member.publicKey);
 
                     return (
-                      <div key={member.id} className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-4">
+                      <div
+                        key={member.id}
+                        className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-4"
+                      >
                         <div className="grid grid-cols-1 lg:grid-cols-[1fr_120px_auto] gap-3">
                           <label className="space-y-2">
-                            <span className="text-sm text-[var(--text-muted)]">{member.label} public key</span>
+                            <span className="text-sm text-[var(--text-muted)]">
+                              {member.label} public key
+                            </span>
                             <input
                               value={member.publicKey}
-                              onChange={(event) => updateMember(member.id, "publicKey", event.target.value)}
+                              onChange={(event) =>
+                                updateMember(member.id, "publicKey", event.target.value)
+                              }
                               placeholder="G..."
                               className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] font-mono"
                             />
-                            {keyIsInvalid && <span className="text-sm text-red-300">Invalid Stellar public key.</span>}
+                            {keyIsInvalid && (
+                              <span className="text-sm text-red-300">
+                                Invalid Stellar public key.
+                              </span>
+                            )}
                           </label>
 
                           <label className="space-y-2">
@@ -307,7 +370,13 @@ export default function MultisigCoordinatorPage() {
                               min={0}
                               max={255}
                               value={member.weight}
-                              onChange={(event) => updateMember(member.id, "weight", Math.max(0, Number(event.target.value)))}
+                              onChange={(event) =>
+                                updateMember(
+                                  member.id,
+                                  "weight",
+                                  Math.max(0, Number(event.target.value))
+                                )
+                              }
                               className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)]"
                             />
                           </label>
@@ -330,7 +399,10 @@ export default function MultisigCoordinatorPage() {
               <section className="glass-card p-6 space-y-5">
                 <div>
                   <h2 className="text-2xl font-semibold">Threshold Limits</h2>
-                  <p className="text-[var(--text-secondary)] mt-1">Stellar authorizes an operation when signer weight reaches the matching threshold.</p>
+                  <p className="text-[var(--text-secondary)] mt-1">
+                    Stellar authorizes an operation when signer weight reaches the matching
+                    threshold.
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -385,7 +457,9 @@ export default function MultisigCoordinatorPage() {
             <aside className="space-y-6">
               <section className="glass-card p-6">
                 <h2 className="text-2xl font-semibold">Weight Distribution</h2>
-                <p className="text-[var(--text-secondary)] mt-2">Available weight: {totalWeight}. Highest required threshold: {maxThreshold}.</p>
+                <p className="text-[var(--text-secondary)] mt-2">
+                  Available weight: {totalWeight}. Highest required threshold: {maxThreshold}.
+                </p>
 
                 <div className="mt-5 space-y-4">
                   <div>
@@ -394,7 +468,10 @@ export default function MultisigCoordinatorPage() {
                       <span>{masterWeight}</span>
                     </div>
                     <div className="h-3 rounded-full bg-[var(--bg-secondary)] overflow-hidden">
-                      <div className="h-full bg-indigo-400" style={{ width: `${(masterWeight / chartScale) * 100}%` }} />
+                      <div
+                        className="h-full bg-indigo-400"
+                        style={{ width: `${(masterWeight / chartScale) * 100}%` }}
+                      />
                     </div>
                   </div>
 
@@ -435,7 +512,10 @@ export default function MultisigCoordinatorPage() {
                 {validationMessages.length > 0 ? (
                   <div className="mt-4 space-y-2">
                     {validationMessages.map((message) => (
-                      <p key={message} className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                      <p
+                        key={message}
+                        className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-200"
+                      >
                         {message}
                       </p>
                     ))}
@@ -450,7 +530,8 @@ export default function MultisigCoordinatorPage() {
               <section className="glass-card p-6 space-y-4">
                 <h2 className="text-2xl font-semibold">Transaction Builder</h2>
                 <p className="text-[var(--text-secondary)]">
-                  The transaction adds one SetOptions operation for thresholds and one SetOptions operation per committee signer.
+                  The transaction adds one SetOptions operation for thresholds and one SetOptions
+                  operation per committee signer.
                 </p>
 
                 <div className="flex flex-col sm:flex-row gap-3">
@@ -472,11 +553,15 @@ export default function MultisigCoordinatorPage() {
                   </button>
                 </div>
 
-                {statusMessage && <p className="text-sm text-[var(--text-secondary)]">{statusMessage}</p>}
+                {statusMessage && (
+                  <p className="text-sm text-[var(--text-secondary)]">{statusMessage}</p>
+                )}
 
                 {transactionXdr && (
                   <label className="block space-y-2">
-                    <span className="text-sm text-[var(--text-muted)]">Unsigned setup transaction XDR</span>
+                    <span className="text-sm text-[var(--text-muted)]">
+                      Unsigned setup transaction XDR
+                    </span>
                     <textarea
                       readOnly
                       value={transactionXdr}

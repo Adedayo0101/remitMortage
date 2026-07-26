@@ -1,4 +1,11 @@
 import "dotenv/config";
+import * as Sentry from "@sentry/node";
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  tracesSampleRate: 1.0,
+});
+
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -16,6 +23,8 @@ import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
 import { notificationsRouter } from "./routes/notifications.js";
+import { didRouter } from "./routes/did.js";
+import { adminRouter } from "./routes/admin.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { authMiddleware } from "./middleware/auth.js";
@@ -72,15 +81,18 @@ app.use("/api/borrower", authMiddleware, borrowerRouter);
 app.use("/api/loan", authMiddleware, loanRouter);
 app.use("/api/milestone", milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/did", didRouter);
 app.use("/api/audit-logs", auditRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
 app.use("/api/notifications", notificationsRouter);
+app.use("/api/admin", authMiddleware, adminRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Global error handler (must be after routes)
+Sentry.setupExpressErrorHandler(app);
 app.use(errorHandler);
 
 // ── Start Server ────────────────────────────────────────────────────────

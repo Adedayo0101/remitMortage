@@ -11,14 +11,8 @@ function formatTimestamp(createdAt: number) {
 }
 
 export function NotificationDrawer() {
-  const {
-    notificationHistory,
-    unreadCount,
-    isPanelOpen,
-    closePanel,
-    clearHistory,
-    markAllRead,
-  } = useNotifications();
+  const { notificationHistory, unreadCount, isPanelOpen, closePanel, clearHistory, markAllRead } =
+    useNotifications();
 
   return (
     <>

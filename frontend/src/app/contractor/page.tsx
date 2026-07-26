@@ -39,13 +39,14 @@ function ContractorDashboardInner() {
             Contractor Portal
           </h1>
           <p className="text-slate-400 text-sm md:text-base max-w-2xl">
-            Upload construction inspection evidence to IPFS, request disbursement approvals, and track multisig voting status.
+            Upload construction inspection evidence to IPFS, request disbursement approvals, and
+            track multisig voting status.
           </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {MILESTONES.map((milestone) => (
-            <MilestoneCard 
+            <MilestoneCard
               key={milestone.id}
               id={milestone.id}
               name={milestone.name}

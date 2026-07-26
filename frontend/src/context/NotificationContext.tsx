@@ -1,13 +1,6 @@
 "use client";
 
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 
 export type ToastVariant = "success" | "info" | "warning" | "error";
 
@@ -46,9 +39,7 @@ type NotificationContextType = {
   clearHistory: () => void;
 };
 
-const NotificationContext = createContext<NotificationContextType | undefined>(
-  undefined
-);
+const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
 
 const DEFAULT_DURATION_MS = 5000;
 /** Maximum number of toasts shown at once; older ones drop off the stack. */
@@ -92,37 +83,40 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     });
   }, [markAllRead]);
 
-  const notify = useCallback((input: ToastInput) => {
-    counter.current += 1;
-    const id = input.id ?? `toast-${counter.current}`;
-    const toast: ToastNotification = {
-      id,
-      variant: input.variant,
-      title: input.title,
-      message: input.message,
-      duration: input.duration ?? DEFAULT_DURATION_MS,
-    };
+  const notify = useCallback(
+    (input: ToastInput) => {
+      counter.current += 1;
+      const id = input.id ?? `toast-${counter.current}`;
+      const toast: ToastNotification = {
+        id,
+        variant: input.variant,
+        title: input.title,
+        message: input.message,
+        duration: input.duration ?? DEFAULT_DURATION_MS,
+      };
 
-    setNotifications((current) => {
-      // Replace an existing toast with the same explicit id, otherwise append.
-      const withoutDup = current.filter((n) => n.id !== id);
-      // Keep only the most recent MAX_VISIBLE toasts on screen.
-      return [...withoutDup, toast].slice(-MAX_VISIBLE);
-    });
+      setNotifications((current) => {
+        // Replace an existing toast with the same explicit id, otherwise append.
+        const withoutDup = current.filter((n) => n.id !== id);
+        // Keep only the most recent MAX_VISIBLE toasts on screen.
+        return [...withoutDup, toast].slice(-MAX_VISIBLE);
+      });
 
-    setNotificationHistory((current) =>
-      [
-        ...current,
-        {
-          ...toast,
-          createdAt: Date.now(),
-          read: isPanelOpen,
-        },
-      ].slice(-MAX_HISTORY)
-    );
+      setNotificationHistory((current) =>
+        [
+          ...current,
+          {
+            ...toast,
+            createdAt: Date.now(),
+            read: isPanelOpen,
+          },
+        ].slice(-MAX_HISTORY)
+      );
 
-    return id;
-  }, [isPanelOpen]);
+      return id;
+    },
+    [isPanelOpen]
+  );
 
   const unreadCount = useMemo(
     () => notificationHistory.filter((item) => !item.read).length,
@@ -158,11 +152,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     ]
   );
 
-  return (
-    <NotificationContext.Provider value={value}>
-      {children}
-    </NotificationContext.Provider>
-  );
+  return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;
 }
 
 export function useNotifications() {

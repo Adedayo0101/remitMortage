@@ -48,13 +48,7 @@ describe("TransactionResult", () => {
   const hash = "a".repeat(64);
 
   it("renders confirmed state with checkmark and explorer link", () => {
-    render(
-      <TransactionResult
-        hash={hash}
-        success
-        onReturnToDashboard={jest.fn()}
-      />
-    );
+    render(<TransactionResult hash={hash} success onReturnToDashboard={jest.fn()} />);
 
     expect(screen.getByText("Transaction Confirmed")).toBeInTheDocument();
     expect(screen.getByText("Return to Dashboard")).toBeInTheDocument();

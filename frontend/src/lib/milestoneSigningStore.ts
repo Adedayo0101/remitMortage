@@ -29,9 +29,21 @@ export interface MilestoneSigningStatus {
 }
 
 const GOVERNANCE_SIGNERS: Array<Omit<MilestoneSigner, "status">> = [
-  { address: "GCOMMITTEELEAD00000000000000000000000000000000000000A", label: "Committee Lead", weight: 2 },
-  { address: "GLEGALREVIEW000000000000000000000000000000000000000B", label: "Legal Review", weight: 1 },
-  { address: "GFINANCEBOARD00000000000000000000000000000000000000C", label: "Finance Board", weight: 1 },
+  {
+    address: "GCOMMITTEELEAD00000000000000000000000000000000000000A",
+    label: "Committee Lead",
+    weight: 2,
+  },
+  {
+    address: "GLEGALREVIEW000000000000000000000000000000000000000B",
+    label: "Legal Review",
+    weight: 1,
+  },
+  {
+    address: "GFINANCEBOARD00000000000000000000000000000000000000C",
+    label: "Finance Board",
+    weight: 1,
+  },
 ];
 const REQUIRED_WEIGHT = 3;
 const TOTAL_WEIGHT = GOVERNANCE_SIGNERS.reduce((sum, s) => sum + s.weight, 0);
@@ -70,7 +82,10 @@ function castNextPendingVote(proposalId: string): void {
   scheduleNextSignerVote(proposalId);
 }
 
-export function createMockProposal(milestoneId: string, evidenceCid: string): MilestoneSigningStatus {
+export function createMockProposal(
+  milestoneId: string,
+  evidenceCid: string
+): MilestoneSigningStatus {
   const id = makeId();
   const now = new Date().toISOString();
   const proposal: MilestoneSigningStatus = {

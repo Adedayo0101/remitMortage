@@ -1,8 +1,7 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import { ExplorerTransactionRecord } from "@/components/explorer/ExplorerTransactionDetails";
 
-const HORIZON_URL =
-  process.env.NEXT_PUBLIC_HORIZON_URL ?? "https://horizon-testnet.stellar.org";
+const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL ?? "https://horizon-testnet.stellar.org";
 
 /**
  * Fetches a single transaction from Horizon for the explorer page. Returns

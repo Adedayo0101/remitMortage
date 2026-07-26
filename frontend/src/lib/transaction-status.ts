@@ -5,27 +5,13 @@ export const STELLAR_EXPERT_TX_BASE = "https://stellar.expert/explorer/testnet/t
 export const TX_SUCCESS_SESSION_KEY = "rm_tx_success";
 
 export type TransactionType =
-  | "Deposit"
-  | "Disbursement"
-  | "Repayment"
-  | "Milestone Proposal"
-  | "Withdrawal"
-  | "Transaction";
+  "Deposit" | "Disbursement" | "Repayment" | "Milestone Proposal" | "Withdrawal" | "Transaction";
 
 export type TxUiPhase =
-  | "submitted"
-  | "simulating"
-  | "pending_confirmation"
-  | "confirmed"
-  | "failed";
+  "submitted" | "simulating" | "pending_confirmation" | "confirmed" | "failed";
 
 export type TransactionModalPhase =
-  | "idle"
-  | "simulating"
-  | "signing"
-  | "pending"
-  | "success"
-  | "error";
+  "idle" | "simulating" | "signing" | "pending" | "success" | "error";
 
 export const TX_PROGRESS_STEPS = [
   "Submitted",
@@ -166,9 +152,7 @@ export function extractSenderAddress(
   return null;
 }
 
-export function extractGasFee(
-  response: rpc.Api.GetTransactionResponse | null
-): string | null {
+export function extractGasFee(response: rpc.Api.GetTransactionResponse | null): string | null {
   if (!response || response.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
     return null;
   }
@@ -190,9 +174,7 @@ function stringifyScVal(val: xdr.ScVal): unknown {
   }
 }
 
-export function extractContractError(
-  response: rpc.Api.GetFailedTransactionResponse
-): string {
+export function extractContractError(response: rpc.Api.GetFailedTransactionResponse): string {
   const messages: string[] = [];
 
   if (response.diagnosticEventsXdr?.length) {
@@ -261,7 +243,8 @@ export function formatTransactionLogs(
     return base;
   }
 
-  const detailed = response as rpc.Api.GetSuccessfulTransactionResponse | rpc.Api.GetFailedTransactionResponse;
+  const detailed = response as
+    rpc.Api.GetSuccessfulTransactionResponse | rpc.Api.GetFailedTransactionResponse;
 
   return {
     ...base,
@@ -275,7 +258,10 @@ export function formatTransactionLogs(
         const body = event.event().body();
         if (readSwitchName(body) === "contractEventBodyV0") {
           return {
-            topics: body.v0().topics().map((topic) => stringifyScVal(topic)),
+            topics: body
+              .v0()
+              .topics()
+              .map((topic) => stringifyScVal(topic)),
             data: stringifyScVal(body.v0().data()),
           };
         }
@@ -297,10 +283,7 @@ export function formatTransactionLogs(
 
 export function storeTxSuccessFeedback(hash: string, type: TransactionType): void {
   if (typeof window === "undefined") return;
-  sessionStorage.setItem(
-    TX_SUCCESS_SESSION_KEY,
-    JSON.stringify({ hash, type, at: Date.now() })
-  );
+  sessionStorage.setItem(TX_SUCCESS_SESSION_KEY, JSON.stringify({ hash, type, at: Date.now() }));
 }
 
 export function consumeTxSuccessFeedback(): { hash: string; type: TransactionType } | null {

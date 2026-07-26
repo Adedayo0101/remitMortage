@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import React, { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
@@ -15,7 +15,15 @@ interface StatsData {
   lastUpdated: string;
 }
 
-function AnimatedCounter({ value, prefix = "", suffix = "" }: { value: number; prefix?: string; suffix?: string }) {
+function AnimatedCounter({
+  value,
+  prefix = "",
+  suffix = "",
+}: {
+  value: number;
+  prefix?: string;
+  suffix?: string;
+}) {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
@@ -44,7 +52,13 @@ function AnimatedCounter({ value, prefix = "", suffix = "" }: { value: number; p
     return () => clearInterval(timer);
   }, [value]);
 
-  return <span>{prefix}{count.toLocaleString()}{suffix}</span>;
+  return (
+    <span>
+      {prefix}
+      {count.toLocaleString()}
+      {suffix}
+    </span>
+  );
 }
 
 function LoadingSkeleton() {
@@ -73,19 +87,13 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
         border: "1px solid rgba(239, 68, 68, 0.3)",
       }}
     >
-      <h3
-        className="font-semibold mb-2"
-        style={{ color: "var(--error)" }}
-      >
+      <h3 className="font-semibold mb-2" style={{ color: "var(--error)" }}>
         Error Loading Stats
       </h3>
       <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>
         {message}
       </p>
-      <button
-        onClick={onRetry}
-        className="btn-primary"
-      >
+      <button onClick={onRetry} className="btn-primary">
         Retry
       </button>
     </div>
@@ -110,10 +118,7 @@ function MetricCard({
   return (
     <div className="glass-card p-6 flex items-center justify-between">
       <div>
-        <p
-          className="text-sm font-medium mb-1"
-          style={{ color: "var(--text-secondary)" }}
-        >
+        <p className="text-sm font-medium mb-1" style={{ color: "var(--text-secondary)" }}>
           {title}
         </p>
         <h3
@@ -168,15 +173,8 @@ export default function StatsPage() {
 
       <main className="max-w-7xl mx-auto px-6 pt-28 pb-20">
         <div className="mb-10 text-center md:text-left">
-          <h1
-            className="text-4xl font-bold tracking-tight mb-2 gradient-text"
-          >
-            Platform Stats
-          </h1>
-          <p
-            className="text-lg max-w-2xl"
-            style={{ color: "var(--text-secondary)" }}
-          >
+          <h1 className="text-4xl font-bold tracking-tight mb-2 gradient-text">Platform Stats</h1>
+          <p className="text-lg max-w-2xl" style={{ color: "var(--text-secondary)" }}>
             Key protocol metrics for investors, borrowers, and contractors.
           </p>
         </div>
@@ -194,7 +192,13 @@ export default function StatsPage() {
                 prefix="$"
                 gradient="linear-gradient(135deg, #6366f1, #06b6d4)"
                 icon={
-                  <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" className="w-6 h-6">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="2.5"
+                    className="w-6 h-6"
+                  >
                     <rect x="3" y="11" width="18" height="10" rx="2" />
                     <path d="M12 2v9M8 5h8" />
                   </svg>
@@ -207,7 +211,13 @@ export default function StatsPage() {
                 prefix="$"
                 gradient="linear-gradient(135deg, #a855f7, #6366f1)"
                 icon={
-                  <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" className="w-6 h-6">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="2.5"
+                    className="w-6 h-6"
+                  >
                     <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
                   </svg>
                 }
@@ -219,7 +229,13 @@ export default function StatsPage() {
                 suffix=" pts"
                 gradient="linear-gradient(135deg, #06b6d4, #10b981)"
                 icon={
-                  <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" className="w-6 h-6">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="2.5"
+                    className="w-6 h-6"
+                  >
                     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
                     <polyline points="22 4 12 14.01 9 11.01" />
                   </svg>
@@ -231,7 +247,13 @@ export default function StatsPage() {
                 value={stats.totalMilestonesCompleted}
                 gradient="linear-gradient(135deg, #10b981, #06b6d4)"
                 icon={
-                  <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" className="w-6 h-6">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="2.5"
+                    className="w-6 h-6"
+                  >
                     <path d="M9 12l2 2 4-4" />
                     <path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
                   </svg>

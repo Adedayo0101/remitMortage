@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from 'react';
-import { X, Wallet, CheckCircle2, AlertCircle, Loader2, Link } from 'lucide-react';
-import { useWallet } from '../context/WalletContext';
+import React, { useState } from "react";
+import { X, Wallet, CheckCircle2, AlertCircle, Loader2, Link } from "lucide-react";
+import { useWallet } from "../context/WalletContext";
 
 interface MultiWalletModalProps {
   isOpen: boolean;
@@ -10,16 +10,20 @@ interface MultiWalletModalProps {
   onVerificationComplete: (address: string, chainType: string, signature: string) => void;
 }
 
-export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onClose, onVerificationComplete }) => {
+export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({
+  isOpen,
+  onClose,
+  onVerificationComplete,
+}) => {
   const wallet = useWallet();
   const [isSigning, setIsSigning] = useState(false);
   const [signStatus, setSignStatus] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleConnectAndSign = async (type: 'evm' | 'solana') => {
+  const handleConnectAndSign = async (type: "evm" | "solana") => {
     let address: string | null = null;
-    if (type === 'evm') {
+    if (type === "evm") {
       address = await wallet.connectEVM();
     } else {
       address = await wallet.connectSolana();
@@ -32,36 +36,36 @@ export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onCl
 
   const executeSignFlow = async (address: string, chainType: string) => {
     setIsSigning(true);
-    setSignStatus('Fetching challenge from server...');
+    setSignStatus("Fetching challenge from server...");
 
     try {
-      const challengeRes = await fetch('/api/verification/challenge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address, chainType })
+      const challengeRes = await fetch("/api/verification/challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, chainType }),
       });
 
       const { message } = await challengeRes.json();
 
-      if (!message) throw new Error('Invalid challenge received from server');
+      if (!message) throw new Error("Invalid challenge received from server");
 
-      setSignStatus('Please sign the message in your wallet...');
+      setSignStatus("Please sign the message in your wallet...");
 
       const signature = await wallet.signMessage(message);
 
-      if (!signature) throw new Error('Signature was rejected or failed');
+      if (!signature) throw new Error("Signature was rejected or failed");
 
-      setSignStatus('Verifying signature on server...');
+      setSignStatus("Verifying signature on server...");
 
-      const verifyRes = await fetch('/api/verification/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address, chainType, signature })
+      const verifyRes = await fetch("/api/verification/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, chainType, signature }),
       });
 
-      if (!verifyRes.ok) throw new Error('Verification failed on the server');
+      if (!verifyRes.ok) throw new Error("Verification failed on the server");
 
-      setSignStatus('Verification successful!');
+      setSignStatus("Verification successful!");
       onVerificationComplete(address, chainType, signature);
     } catch (err: unknown) {
       console.error(err);
@@ -77,7 +81,12 @@ export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onCl
     setSignStatus(null);
   };
 
-  const connectedAddress = wallet.walletType === 'evm' ? wallet.evmAddress : wallet.walletType === 'solana' ? wallet.solanaAddress : null;
+  const connectedAddress =
+    wallet.walletType === "evm"
+      ? wallet.evmAddress
+      : wallet.walletType === "solana"
+        ? wallet.solanaAddress
+        : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm transition-opacity">
@@ -89,16 +98,22 @@ export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onCl
             <div className="p-2 bg-indigo-500/10 rounded-lg">
               <Wallet className="w-5 h-5 text-indigo-400" />
             </div>
-            <h2 className="text-lg font-bold text-zinc-100 tracking-tight">Connect Remittance Wallet</h2>
+            <h2 className="text-lg font-bold text-zinc-100 tracking-tight">
+              Connect Remittance Wallet
+            </h2>
           </div>
-          <button onClick={onClose} className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors focus:outline-none">
+          <button
+            onClick={onClose}
+            className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors focus:outline-none"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <div className="p-6">
           <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
-            Please connect the wallet you previously used for sending remittances (Ethereum or Solana) to securely sign a proof-of-ownership message.
+            Please connect the wallet you previously used for sending remittances (Ethereum or
+            Solana) to securely sign a proof-of-ownership message.
           </p>
 
           {wallet.error && (
@@ -111,7 +126,7 @@ export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onCl
           {!wallet.isConnected ? (
             <div className="space-y-3">
               <button
-                onClick={() => handleConnectAndSign('evm')}
+                onClick={() => handleConnectAndSign("evm")}
                 disabled={wallet.isConnecting}
                 className="w-full flex items-center justify-between p-4 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-indigo-500/50 rounded-xl transition-all group disabled:opacity-50"
               >
@@ -121,14 +136,20 @@ export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onCl
                   </div>
                   <div className="text-left">
                     <span className="block font-bold text-zinc-100">Ethereum (EVM)</span>
-                    <span className="block text-xs text-zinc-500 font-medium">MetaMask, Trust Wallet</span>
+                    <span className="block text-xs text-zinc-500 font-medium">
+                      MetaMask, Trust Wallet
+                    </span>
                   </div>
                 </div>
-                {wallet.isConnecting && wallet.walletType === 'evm' ? <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" /> : <Link className="w-5 h-5 text-zinc-600 group-hover:text-indigo-400 transition-colors" />}
+                {wallet.isConnecting && wallet.walletType === "evm" ? (
+                  <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
+                ) : (
+                  <Link className="w-5 h-5 text-zinc-600 group-hover:text-indigo-400 transition-colors" />
+                )}
               </button>
 
               <button
-                onClick={() => handleConnectAndSign('solana')}
+                onClick={() => handleConnectAndSign("solana")}
                 disabled={wallet.isConnecting}
                 className="w-full flex items-center justify-between p-4 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-purple-500/50 rounded-xl transition-all group disabled:opacity-50"
               >
@@ -141,7 +162,11 @@ export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onCl
                     <span className="block text-xs text-zinc-500 font-medium">Phantom</span>
                   </div>
                 </div>
-                {wallet.isConnecting && wallet.walletType === 'solana' ? <Loader2 className="w-5 h-5 text-purple-400 animate-spin" /> : <Link className="w-5 h-5 text-zinc-600 group-hover:text-purple-400 transition-colors" />}
+                {wallet.isConnecting && wallet.walletType === "solana" ? (
+                  <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
+                ) : (
+                  <Link className="w-5 h-5 text-zinc-600 group-hover:text-purple-400 transition-colors" />
+                )}
               </button>
             </div>
           ) : (
@@ -152,9 +177,14 @@ export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onCl
                 <div>
                   <div className="flex items-center space-x-2 mb-1.5">
                     <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                    <span className="text-xs font-bold text-emerald-500 uppercase tracking-wider">{wallet.walletType === 'evm' ? 'Ethereum' : 'Solana'} Connected</span>
+                    <span className="text-xs font-bold text-emerald-500 uppercase tracking-wider">
+                      {wallet.walletType === "evm" ? "Ethereum" : "Solana"} Connected
+                    </span>
                   </div>
-                  <p className="text-zinc-300 font-mono text-sm truncate max-w-[200px]" title={connectedAddress || ''}>
+                  <p
+                    className="text-zinc-300 font-mono text-sm truncate max-w-[200px]"
+                    title={connectedAddress || ""}
+                  >
                     {connectedAddress}
                   </p>
                 </div>
@@ -169,12 +199,16 @@ export const MultiWalletModal: React.FC<MultiWalletModalProps> = ({ isOpen, onCl
               {isSigning ? (
                 <div className="flex items-center justify-center p-4 bg-zinc-950 rounded-lg border border-zinc-800/80 shadow-inner">
                   <Loader2 className="w-5 h-5 text-indigo-400 animate-spin mr-3" />
-                  <span className="text-sm text-zinc-300 font-medium tracking-wide">{signStatus}</span>
+                  <span className="text-sm text-zinc-300 font-medium tracking-wide">
+                    {signStatus}
+                  </span>
                 </div>
-              ) : signStatus === 'Verification successful!' ? (
+              ) : signStatus === "Verification successful!" ? (
                 <div className="flex items-center justify-center p-4 bg-emerald-500/10 rounded-lg border border-emerald-500/20 shadow-inner">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 mr-3" />
-                  <span className="text-sm text-emerald-400 font-semibold tracking-wide">Identity successfully verified</span>
+                  <span className="text-sm text-emerald-400 font-semibold tracking-wide">
+                    Identity successfully verified
+                  </span>
                 </div>
               ) : (
                 <button

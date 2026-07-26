@@ -29,7 +29,7 @@ const tabs: { id: SettingsTab; label: string }[] = [
   { id: "contractor", label: "Developer/Contractor" },
 ];
 
-const notificationDetails: Record<
+const notificationDetails: Record
   NotificationKey,
   { label: string; description: string; category: "channel" | "escrow" | "loan" }
 > = {
@@ -151,7 +151,9 @@ export default function SettingsPage() {
 
   const emailError = email && !isValidEmail(email) ? "Enter a valid linked email address." : "";
   const webhookError =
-    webhookUrl && !isValidWebhookUrl(webhookUrl) ? "Webhook URL must start with http:// or https://." : "";
+    webhookUrl && !isValidWebhookUrl(webhookUrl)
+      ? "Webhook URL must start with http:// or https://."
+      : "";
   const canSave = isValidEmail(email) && isValidWebhookUrl(webhookUrl);
 
   const enabledNotificationCount = useMemo(
@@ -225,7 +227,9 @@ export default function SettingsPage() {
       await fetch(webhookUrl, { method: "HEAD", mode: "no-cors" });
       setWebhookStatus("Webhook URL format is valid and endpoint accepted reachability check.");
     } catch {
-      setWebhookStatus("Webhook URL format is valid, but the endpoint could not be reached from this browser.");
+      setWebhookStatus(
+        "Webhook URL format is valid, but the endpoint could not be reached from this browser."
+      );
     }
   }
 
@@ -552,7 +556,11 @@ export default function SettingsPage() {
               )}
 
               {activeTab === "contractor" && (
-                <section role="tabpanel" aria-label="Developer and contractor settings" className="space-y-6">
+                <section
+                  role="tabpanel"
+                  aria-label="Developer and contractor settings"
+                  className="space-y-6"
+                >
                   <div>
                     <h2 className="text-2xl font-bold text-white">Developer / Contractor Credentials</h2>
                     <p className="text-slate-400 text-sm mt-1">

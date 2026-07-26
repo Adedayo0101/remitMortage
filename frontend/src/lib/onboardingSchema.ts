@@ -13,10 +13,7 @@ import { z } from "zod";
 export const stellarAddressSchema = z
   .string()
   .trim()
-  .regex(
-    /^G[A-Z2-7]{55}$/,
-    "Invalid Stellar address — must start with G and be 56 characters"
-  );
+  .regex(/^G[A-Z2-7]{55}$/, "Invalid Stellar address — must start with G and be 56 characters");
 
 // Step 2 — remittance recipient (address parameters).
 export const addressSchema = z.object({
@@ -42,9 +39,7 @@ export const depositSchema = z.object({
 });
 
 // Full onboarding form schema used by the react-hook-form resolver.
-export const onboardingSchema = addressSchema
-  .merge(savingsGoalSchema)
-  .merge(depositSchema);
+export const onboardingSchema = addressSchema.merge(savingsGoalSchema).merge(depositSchema);
 
 export type OnboardingFormValues = z.infer<typeof onboardingSchema>;
 

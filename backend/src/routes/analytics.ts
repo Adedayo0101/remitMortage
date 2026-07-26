@@ -5,6 +5,7 @@ import {
   getDisbursementProgress,
   getMonthlyVolume,
 } from "../services/analytics.js";
+import { cacheMiddleware } from "../middleware/cache.js";
 
 export const analyticsRouter = Router();
 
@@ -26,7 +27,7 @@ const MAX_VOLUME_MONTHS = 24;
  *       200:
  *         description: Protocol summary.
  */
-analyticsRouter.get("/overview", (_req, res) => {
+analyticsRouter.get("/overview", cacheMiddleware(60), (_req, res) => {
   try {
     res.json(getProtocolOverview());
   } catch (error) {
@@ -49,7 +50,7 @@ analyticsRouter.get("/overview", (_req, res) => {
  *       200:
  *         description: Loan performance metrics.
  */
-analyticsRouter.get("/loans", (_req, res) => {
+analyticsRouter.get("/loans", cacheMiddleware(60), (_req, res) => {
   try {
     res.json(getLoanPerformance());
   } catch (error) {
@@ -72,7 +73,7 @@ analyticsRouter.get("/loans", (_req, res) => {
  *       200:
  *         description: Disbursement progress metrics.
  */
-analyticsRouter.get("/disbursement", (_req, res) => {
+analyticsRouter.get("/disbursement", cacheMiddleware(60), (_req, res) => {
   try {
     res.json(getDisbursementProgress());
   } catch (error) {
@@ -105,7 +106,7 @@ analyticsRouter.get("/disbursement", (_req, res) => {
  *       200:
  *         description: Monthly volume series, oldest first.
  */
-analyticsRouter.get("/volume", (req, res) => {
+analyticsRouter.get("/volume", cacheMiddleware(60), (req, res) => {
   try {
     const parsed = parseInt(String(req.query.months ?? ""), 10);
     const months = Number.isFinite(parsed)
