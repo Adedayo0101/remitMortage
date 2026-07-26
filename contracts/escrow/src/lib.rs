@@ -13,6 +13,9 @@ mod fuzz_tests;
 #[cfg(any())]
 mod test_penalty_bounds;
 
+#[cfg(test)]
+mod test_ttl_config;
+
 pub use crate::errors::EscrowError;
 use crate::token_utils::get_token_client;
 use crate::types::DataKey;
@@ -23,8 +26,12 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short, vec, xdr::ToXdr, Address, BytesN, Env, IntoVal, Symbol,
 };
 
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
+// Fallback TTL values, used only before `initialize` has stored a config.
+// Live values come from EscrowConfig so each network can be tuned separately.
+const DEFAULT_INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
+const DEFAULT_INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
+const DEFAULT_PERSISTENT_BUMP_AMOUNT: u32 = 518_400; // ~30 days
+const DEFAULT_PERSISTENT_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 
 // Use a small constant in tests so ledger advances stay well within instance TTL.
 #[cfg(not(test))]
@@ -77,9 +84,60 @@ impl EscrowContract {
     }
 
     fn set_borrower(env: &Env, borrower: &Address, goal_id: &Symbol, record: &BorrowerRecord) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Borrower(borrower.clone(), goal_id.clone()), record);
+        let key = DataKey::Borrower(borrower.clone(), goal_id.clone());
+        env.storage().persistent().set(&key, record);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    /// Extend the instance TTL using the configured bump parameters.
+    ///
+    /// Falls back to the built-in defaults when no config has been stored yet,
+    /// so calls made before `initialize` still keep the instance alive.
+    fn extend_instance_ttl(env: &Env) {
+        let (threshold, bump) = match Self::get_config(env) {
+            Ok(config) => (
+                config.instance_lifetime_threshold,
+                config.instance_bump_amount,
+            ),
+            Err(_) => (
+                DEFAULT_INSTANCE_LIFETIME_THRESHOLD,
+                DEFAULT_INSTANCE_BUMP_AMOUNT,
+            ),
+        };
+        env.storage().instance().extend_ttl(threshold, bump);
+    }
+
+    /// Extend a persistent entry's TTL using the configured bump parameters.
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        let (threshold, bump) = match Self::get_config(env) {
+            Ok(config) => (
+                config.persistent_lifetime_threshold,
+                config.persistent_bump_amount,
+            ),
+            Err(_) => (
+                DEFAULT_PERSISTENT_LIFETIME_THRESHOLD,
+                DEFAULT_PERSISTENT_BUMP_AMOUNT,
+            ),
+        };
+        env.storage().persistent().extend_ttl(key, threshold, bump);
+    }
+
+    /// TTL parameters must all be positive, and each bump must reach at least
+    /// as far as the threshold that triggers it.
+    fn validate_ttl_config(config: &EscrowConfig) -> Result<(), EscrowError> {
+        if config.instance_bump_amount == 0
+            || config.instance_lifetime_threshold == 0
+            || config.persistent_bump_amount == 0
+            || config.persistent_lifetime_threshold == 0
+        {
+            return Err(EscrowError::InvalidTtlConfig);
+        }
+        if config.instance_bump_amount < config.instance_lifetime_threshold
+            || config.persistent_bump_amount < config.persistent_lifetime_threshold
+        {
+            return Err(EscrowError::InvalidTtlConfig);
+        }
+        Ok(())
     }
 
     fn read_total_pooled(env: &Env) -> i128 {
@@ -135,22 +193,11 @@ impl EscrowContract {
     ///   Approximately 518,400 per 6 months (at 5-second ledger time).
     ///   Pass 0 to disable the lockup check.
     /// - `penalty_bps_tier1..tier4` — Penalty basis points for tiers (months 1-2, 3-4, 5-6, 7+).
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        token: Address,
-        lending_pool: Address,
-        savings_target: i128,
-        max_duration_ledgers: u32,
-        early_withdrawal_penalty_bps: u32,
-        min_duration_ledgers: u32,
-        penalty_bps_tier1: u32,
-        penalty_bps_tier2: u32,
-        penalty_bps_tier3: u32,
-        penalty_bps_tier4: u32,
-        grace_period_ledgers: u32,
-        default_penalty_bps: u32,
-    ) -> Result<(), EscrowError> {
+    /// - `instance_bump_amount` / `instance_lifetime_threshold` — instance TTL
+    ///   bump parameters, applied on every state-changing call.
+    /// - `persistent_bump_amount` / `persistent_lifetime_threshold` — TTL bump
+    ///   parameters for persistent entries (borrower records).
+    ///   All four must be positive, and each bump must be >= its threshold.
     pub fn initialize(env: Env, config: EscrowConfig) -> Result<(), EscrowError> {
         if env.storage().instance().has(&DataKey::Config) {
             return Err(EscrowError::AlreadyInitialized);
@@ -160,32 +207,15 @@ impl EscrowContract {
             return Err(EscrowError::InvalidAmount);
         }
 
-        admin.require_auth();
+        Self::validate_ttl_config(&config)?;
 
-        let config = EscrowConfig {
-            admin,
-            token,
-            lending_pool,
-            savings_target,
-            max_duration_ledgers,
-            early_withdrawal_penalty_bps,
-            min_duration_ledgers,
-            penalty_bps_tier1,
-            penalty_bps_tier2,
-            penalty_bps_tier3,
-            penalty_bps_tier4,
-            grace_period_ledgers,
-            default_penalty_bps,
-        };
         config.admin.require_auth();
 
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().set(&DataKey::TotalPooled, &0i128);
         env.storage().instance().set(&DataKey::TotalYieldShares, &0i128);
         env.storage().instance().set(&DataKey::Version, &1u32);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::extend_instance_ttl(&env);
 
         Ok(())
     }
@@ -248,9 +278,7 @@ impl EscrowContract {
         let total = Self::read_total_pooled(&env) + amount;
         env.storage().instance().set(&DataKey::TotalPooled, &total);
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("deposit"), goal_id.clone()),
@@ -338,9 +366,7 @@ impl EscrowContract {
         record.deposited = 0;
         Self::set_borrower(&env, &borrower, &goal_id, &record);
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("withdraw"), goal_id.clone()),
@@ -422,9 +448,7 @@ impl EscrowContract {
         record.deposited = 0;
         Self::set_borrower(&env, &borrower, &goal_id, &record);
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::extend_instance_ttl(&env);
 
         Ok(amount_withdrawn)
         }) // non_reentrant
@@ -468,9 +492,7 @@ impl EscrowContract {
             (tier1, tier2, tier3, tier4, execute_after),
         );
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -503,9 +525,7 @@ impl EscrowContract {
             (pending.tier1, pending.tier2, pending.tier3, pending.tier4),
         );
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
