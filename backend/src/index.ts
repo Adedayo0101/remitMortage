@@ -25,8 +25,11 @@ import { kycRouter } from "./routes/kyc.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
 import { workspaceRouter } from "./routes/workspace.js";
+import { metricsRouter } from "./routes/metrics.js";
+import { webhooksRouter } from "./routes/webhooks.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
 import {
   globalRateLimiter,
@@ -49,6 +52,8 @@ const PORT = config.port;
 void initializeRedis();
 
 // ── Middleware ───────────────────────────────────────────────────────────
+// HTTP metrics must be first so the timer starts at the earliest possible point.
+app.use(httpMetricsMiddleware);
 app.use(requestLogger);
 app.use(helmet());
 app.use(cors({
@@ -98,6 +103,9 @@ const verificationLimiter = rateLimit({
 });
 
 // ── Routes ──────────────────────────────────────────────────────────────
+// /metrics is unauthenticated at the Express level — the route itself
+// enforces bearer-token auth via metricsAuthMiddleware when METRICS_TOKEN is set.
+app.use("/metrics", metricsRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
 app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
@@ -109,8 +117,9 @@ app.use("/api/audit-logs", auditRouter);
 app.use("/api/workspaces", workspaceRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
-app.use("/api/kyc", sensitiveRateLimiter, kycRouter);
-app.use("/api/admin", sensitiveRateLimiter, authMiddleware, adminRouter);
+app.use("/api/kyc", kycRouter);
+app.use("/api/admin", authMiddleware, adminRouter);
+app.use("/api/webhooks", authMiddleware, webhooksRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 

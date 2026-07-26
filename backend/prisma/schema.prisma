@@ -189,3 +189,81 @@ model WebhookDLQ {
   error           String?
   createdAt       DateTime @default(now())
 }
+
+// ---------------------------------------------------------------------------
+// Webhook subscription model
+// ---------------------------------------------------------------------------
+
+/// The event topics a subscriber can opt into.
+enum WebhookEventTopic {
+  deposit
+  withdraw
+  release
+  disburse
+  repay
+  /// Catch-all — subscriber receives every event kind.
+  all
+}
+
+/// Lifecycle state of a subscription.
+enum WebhookSubscriptionStatus {
+  active
+  paused
+  revoked
+}
+
+/// A partner/third-party webhook endpoint registration.
+/// Each subscription carries its own HMAC secret so secrets can be rotated
+/// per subscriber without affecting any other subscription.
+model WebhookSubscription {
+  id          String                    @id @default(uuid())
+  /// Human-readable label for the subscriber (e.g. "Acme Underwriter").
+  label       String
+  /// The HTTPS endpoint that will receive POST requests.
+  url         String
+  /// Per-subscription HMAC-SHA256 secret (stored encrypted at rest).
+  secret      String
+  /// Comma-separated list of event topics this subscription listens for,
+  /// or a single "all" entry to receive everything.
+  topics      WebhookEventTopic[]
+  status      WebhookSubscriptionStatus @default(active)
+  /// Optional owning wallet address — used to scope management API access.
+  ownerAddress String?
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+
+  deliveries  WebhookDelivery[]
+
+  @@index([status])
+  @@index([ownerAddress])
+}
+
+/// Immutable delivery attempt record — one row per HTTP attempt.
+/// Successful deliveries and every retry attempt are all persisted so the
+/// full dispatch history is always available for debugging.
+model WebhookDelivery {
+  id             String              @id @default(uuid())
+  subscriptionId String
+  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  /// The event topic that triggered this delivery.
+  topic          String
+  /// Full JSON payload that was (or will be) sent.
+  payload        Json
+  /// HTTP status code returned by the target (null if the request never completed).
+  statusCode     Int?
+  /// Truncated response body from the target (max 2 KB stored).
+  responseBody   String?
+  /// Error message if the fetch itself threw (network error, timeout, etc.).
+  error          String?
+  /// Whether this attempt resulted in a 2xx response.
+  success        Boolean             @default(false)
+  /// Zero-based attempt index (0 = first try, 1 = first retry, …).
+  attempt        Int                 @default(0)
+  /// When the next retry should be attempted (null once terminal).
+  nextRetryAt    DateTime?
+  createdAt      DateTime            @default(now())
+
+  @@index([subscriptionId])
+  @@index([success])
+  @@index([nextRetryAt])
+}
