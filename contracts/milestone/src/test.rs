@@ -179,7 +179,7 @@ fn evidence(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[9u8; 32])
 }
 
-fn cidv0(env: &Env) -> Bytes {
+pub fn cidv0(env: &Env) -> Bytes {
     let mut raw = [b'x'; 46];
     raw[0] = b'Q';
     raw[1] = b'm';
@@ -832,4 +832,64 @@ fn test_disputed_milestone_prevents_release() {
     env.ledger().set_sequence_number(100);
     let res = h.milestone.try_release_milestone(&pid);
     assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
+}
+
+// ── Reentrancy guard ──────────────────────────────────────────────────
+
+#[test]
+fn test_release_milestone_blocked_when_reentrant_flag_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &500i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+
+    // Manually set the reentrancy guard flag.
+    env.as_contract(&h.milestone.address, || {
+        env.storage().instance().set(&DataKey::Reentrant, &true);
+    });
+
+    let res = h.milestone.try_release_milestone(&pid);
+    assert_eq!(res, Err(Ok(MilestoneError::ReentrancyGuard)));
+}
+
+#[test]
+fn test_release_milestone_succeeds_when_flag_is_clear() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &500i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+
+    // Flag is false by default — release should not be blocked by the guard.
+    // (It may fail for other reasons like the timelock, so we check
+    // the error is NOT ReentrancyGuard.)
+    let res = h.milestone.try_release_milestone(&pid);
+    if let Err(e) = res {
+        assert_ne!(e, Ok(MilestoneError::ReentrancyGuard));
+    }
 }
