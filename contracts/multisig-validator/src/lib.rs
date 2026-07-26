@@ -6,10 +6,18 @@ mod types;
 pub use crate::errors::ValidatorError;
 pub use crate::types::{DataKey, MultisigConfig, Proposal, ProposalState, Signer, TimelockConfig};
 
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, Vec};
 
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
+
+/// Default proposal lifetime in ledgers when the caller passes 0 at submission.
+/// At ~5 seconds per ledger this is approximately 30 days.
+#[cfg(not(test))]
+const DEFAULT_PROPOSAL_EXPIRY_LEDGERS: u32 = 518_400;
+/// Compact default used in tests so expiry can be crossed with small ledger advances.
+#[cfg(test)]
+const DEFAULT_PROPOSAL_EXPIRY_LEDGERS: u32 = 1_000;
 
 /// Multisig Threshold Validator
 ///
@@ -74,6 +82,18 @@ impl MultisigValidator {
             }
         }
         None
+    }
+
+    /// Return `true` when the current ledger sequence has passed the proposal's
+    /// `expiration_ledger`.
+    ///
+    /// A value of `0` means the field was not set (legacy record) — treated as
+    /// non-expiring to preserve backwards compatibility.
+    fn is_expired(env: &Env, proposal: &Proposal) -> bool {
+        if proposal.expiration_ledger == 0 {
+            return false; // legacy / no-expiry
+        }
+        env.ledger().sequence() > proposal.expiration_ledger
     }
 }
 
@@ -207,19 +227,42 @@ impl MultisigValidator {
 
     /// Submit a new action proposal. `proposal_id` should be a unique 32-byte
     /// value (e.g. a hash of the action details). Anyone may submit.
+    ///
+    /// # Arguments
+    /// - `proposal_id`       — Unique 32-byte identifier (e.g. SHA-256 of action details).
+    /// - `expiration_ledger` — Ledger sequence number after which the proposal is
+    ///   considered expired and eligible for pruning.  Pass `0` to use the
+    ///   protocol default (`DEFAULT_PROPOSAL_EXPIRY_LEDGERS` from the current
+    ///   ledger sequence).
     pub fn submit_action(
         env: Env,
         proposal_id: BytesN<32>,
+        expiration_ledger: u32,
     ) -> Result<(), ValidatorError> {
         let now = env.ledger().timestamp();
+        let current_seq = env.ledger().sequence();
+
+        let effective_expiry = if expiration_ledger == 0 {
+            current_seq.saturating_add(DEFAULT_PROPOSAL_EXPIRY_LEDGERS)
+        } else {
+            expiration_ledger
+        };
+
         let proposal = Proposal {
             state: ProposalState::Pending,
             ready_at: 0,
             created_at: now,
+            expiration_ledger: effective_expiry,
         };
         env.storage()
             .persistent()
-            .set(&DataKey::ActionProposal(proposal_id), &proposal);
+            .set(&DataKey::ActionProposal(proposal_id.clone()), &proposal);
+
+        env.events().publish(
+            (symbol_short!("submitted"),),
+            (proposal_id, effective_expiry),
+        );
+
         Self::bump_instance(&env);
         Ok(())
     }
@@ -227,6 +270,9 @@ impl MultisigValidator {
     /// Approve a proposal with the given `signing_keys`. Once the cumulative
     /// weight meets the account's threshold, the proposal transitions from
     /// `Pending` to `Locked` and the timelock countdown begins.
+    ///
+    /// Returns `ProposalExpired` when the current ledger sequence has passed
+    /// the proposal's `expiration_ledger`.
     pub fn approve_action(
         env: Env,
         account: Address,
@@ -241,6 +287,11 @@ impl MultisigValidator {
 
         if proposal.state == ProposalState::Executed {
             return Err(ValidatorError::ProposalAlreadyExecuted);
+        }
+
+        // Reject votes on expired proposals before any other state check.
+        if Self::is_expired(&env, &proposal) {
+            return Err(ValidatorError::ProposalExpired);
         }
 
         // Already locked — no-op.
@@ -281,8 +332,8 @@ impl MultisigValidator {
         }
     }
 
-    /// Execute a timelocked proposal. Fails if not Locked, or if the timelock
-    /// delay has not yet elapsed.
+    /// Execute a timelocked proposal. Fails if not Locked, if the timelock
+    /// delay has not yet elapsed, or if the proposal has expired.
     pub fn execute_action(
         env: Env,
         proposal_id: BytesN<32>,
@@ -298,6 +349,12 @@ impl MultisigValidator {
         }
         if proposal.state != ProposalState::Locked {
             return Err(ValidatorError::NotYetApproved);
+        }
+
+        // A Locked proposal that somehow crosses its expiry without being
+        // executed is also blocked — the approval window has closed.
+        if Self::is_expired(&env, &proposal) {
+            return Err(ValidatorError::ProposalExpired);
         }
 
         let now = env.ledger().timestamp();
@@ -319,6 +376,72 @@ impl MultisigValidator {
             .persistent()
             .get(&DataKey::ActionProposal(proposal_id))
             .ok_or(ValidatorError::ProposalNotFound)
+    }
+
+    /// Returns `true` when the given proposal exists and its expiration ledger
+    /// has been passed.  Returns `false` when the proposal is non-expiring
+    /// (legacy `expiration_ledger == 0`) or still within its window.
+    /// Returns `ProposalNotFound` when the ID is not in storage.
+    pub fn is_proposal_expired(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Result<bool, ValidatorError> {
+        let proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActionProposal(proposal_id))
+            .ok_or(ValidatorError::ProposalNotFound)?;
+        Ok(Self::is_expired(&env, &proposal))
+    }
+
+    /// Remove expired proposals from persistent storage, reclaiming ledger
+    /// storage rent.
+    ///
+    /// Iterates over every ID in `proposal_ids`.  For each entry:
+    ///   - If the proposal does not exist in storage it is silently skipped.
+    ///   - If the proposal exists but has **not** expired, the function returns
+    ///     `ProposalNotExpired` immediately (no partial pruning for that entry,
+    ///     but already-pruned entries in the same call are not rolled back).
+    ///   - If the proposal is expired it is removed from storage and a
+    ///     `pruned` event is emitted.
+    ///
+    /// Anyone may call this function; no authorization is required because
+    /// removing stale storage is always safe and benefits all participants.
+    ///
+    /// Returns the number of entries successfully pruned.
+    pub fn prune_expired_proposals(
+        env: Env,
+        proposal_ids: Vec<BytesN<32>>,
+    ) -> Result<u32, ValidatorError> {
+        let mut pruned: u32 = 0;
+
+        for i in 0..proposal_ids.len() {
+            let pid = proposal_ids.get_unchecked(i);
+            let key = DataKey::ActionProposal(pid.clone());
+
+            let maybe: Option<Proposal> = env.storage().persistent().get(&key);
+
+            match maybe {
+                None => {
+                    // Already gone — skip silently.
+                }
+                Some(proposal) => {
+                    if !Self::is_expired(&env, &proposal) {
+                        // Proposal is still live — refuse to prune it.
+                        return Err(ValidatorError::ProposalNotExpired);
+                    }
+                    env.storage().persistent().remove(&key);
+                    env.events().publish(
+                        (symbol_short!("pruned"),),
+                        (pid, proposal.expiration_ledger),
+                    );
+                    pruned = pruned.saturating_add(1);
+                }
+            }
+        }
+
+        Self::bump_instance(&env);
+        Ok(pruned)
     }
 
     /// Contract version.

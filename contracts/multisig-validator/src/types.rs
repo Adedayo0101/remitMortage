@@ -51,6 +51,13 @@ pub struct Proposal {
     pub ready_at: u64,
     /// Ledger timestamp when the proposal was first submitted.
     pub created_at: u64,
+    /// Ledger sequence number after which this proposal is considered expired.
+    /// Once `env.ledger().sequence() > expiration_ledger` the proposal cannot
+    /// be voted on or executed and is eligible for pruning.
+    ///
+    /// Set at submission time.  A value of 0 means no expiry (legacy records
+    /// created before this field existed are treated as non-expiring).
+    pub expiration_ledger: u32,
 }
 
 /// Storage keys.
