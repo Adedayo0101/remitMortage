@@ -87,15 +87,46 @@ export async function buildWithdrawTx(borrower: string): Promise<string> {
   return SorobanRpc.assembleTransaction(tx, simulated).build().toXDR();
 }
 
-export async function signAndSubmit(txXdr: string): Promise<string> {
-  const freighter = await import("@stellar/freighter-api");
-  if (typeof freighter.signTransaction !== "function") {
-    throw new Error("Freighter signing API is unavailable");
-  }
+/**
+ * Sign and submit a pre-assembled Stellar transaction XDR.
+ *
+ * Accepts an optional `signer` callback so callers can inject the active
+ * wallet's signing function (Freighter or Ledger) without creating a hard
+ * dependency on the React context from this utility module.
+ *
+ * When `signer` is omitted the function falls back to Freighter for
+ * backwards-compatibility with any code that has not yet been updated to
+ * pass a signer.
+ *
+ * @param txXdr  Base-64 encoded assembled transaction XDR.
+ * @param signer Optional async function that accepts the XDR string and
+ *               returns the signed XDR string.  Provide
+ *               `WalletContext.signStellarTx` here.
+ */
+export async function signAndSubmit(
+  txXdr: string,
+  signer?: (xdr: string) => Promise<string>
+): Promise<string> {
+  let signedXdr: string;
 
-  const signedXdr = await freighter.signTransaction(txXdr, {
-    networkPassphrase: networkPassphrase(),
-  });
+  if (signer) {
+    // Wallet-aware path: Freighter or Ledger via the context abstraction.
+    signedXdr = await signer(txXdr);
+  } else {
+    // Legacy fallback: always use Freighter directly.
+    const freighter = await import("@stellar/freighter-api");
+    if (typeof freighter.signTransaction !== "function") {
+      throw new Error("Freighter signing API is unavailable");
+    }
+    const result = await freighter.signTransaction(txXdr, {
+      networkPassphrase: networkPassphrase(),
+    });
+    // freighter-api v1 returns a plain string; v2+ wraps it.
+    signedXdr =
+      typeof result === "string"
+        ? result
+        : (result as { signedTxXdr: string }).signedTxXdr;
+  }
 
   const server = getRpcServer();
   const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase());
