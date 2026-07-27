@@ -185,6 +185,10 @@ pub enum DataKey {
     Config,
     /// Investor record keyed by investor address.
     Investor(Address),
+    /// Transferable senior/junior principal-claim balance.
+    DebtBalance(Address, Tranche),
+    /// Total debt-share supply for a tranche.
+    DebtTotalSupply(Tranche),
     /// Total available liquidity in the pool.
     TotalLiquidity,
     /// Loan record keyed by a unique loan ID (hash).
