@@ -183,6 +183,18 @@ impl StakingPoolContract {
         Self::bump_instance(&env);
     }
 
+    /// Update the APY for an existing supported token. Admin only.
+    /// Does not affect existing deposits — only new reward accrual calculations.
+    pub fn set_token_apy(env: Env, token: Address, new_apy_bps: u32) {
+        let admin = Self::admin(&env);
+        admin.require_auth();
+
+        let mut info = Self::read_token_info(&env, &token).expect("token not supported");
+        info.apy_bps = new_apy_bps;
+        Self::write_token_info(&env, &token, &info);
+        Self::bump_instance(&env);
+    }
+
     /// Remove a supported token. Admin only. Reverts if the token still has deposits.
     pub fn remove_token(env: Env, token: Address) {
         let admin = Self::admin(&env);
