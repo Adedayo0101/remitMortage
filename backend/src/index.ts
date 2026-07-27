@@ -1,4 +1,7 @@
 import "dotenv/config";
+// Must load before any other module — OpenTelemetry auto-instrumentation
+// patches libraries (express, http, pg, etc.) at require-time.
+import "./tracing.js";
 import * as Sentry from "@sentry/node";
 
 Sentry.init({
@@ -30,6 +33,7 @@ import { webhooksRouter } from "./routes/webhooks.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
+import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
 import {
   globalRateLimiter,
@@ -41,6 +45,7 @@ import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
 import { startBackupScheduler } from "./jobs/backupScheduler.js";
+import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
 import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
 import { initializeRedis } from "./services/redis.js";
@@ -54,6 +59,7 @@ void initializeRedis();
 // ── Middleware ───────────────────────────────────────────────────────────
 // HTTP metrics must be first so the timer starts at the earliest possible point.
 app.use(httpMetricsMiddleware);
+app.use(tracingMiddleware);
 app.use(requestLogger);
 app.use(helmet());
 app.use(cors({
@@ -141,6 +147,7 @@ app.listen(PORT, () => {
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();
+  startWebhookKeyRotationScheduler();
 });
 
 export default app;
