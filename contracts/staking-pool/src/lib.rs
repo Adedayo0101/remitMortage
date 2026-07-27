@@ -868,6 +868,78 @@ mod test {
     }
 
     #[test]
+    fn test_withdrawal_isolation_multi_staker() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, token_a, token_b, client) = setup(&env);
+        client.add_token(&token_a, &500u32);
+        client.add_token(&token_b, &300u32);
+
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+
+        mint_to(&env, &token_a, &s1, 100_000_0000i128);
+        mint_to(&env, &token_a, &s2, 100_000_0000i128);
+        mint_to(&env, &token_b, &s1, 100_000_0000i128);
+        mint_to(&env, &token_b, &s2, 100_000_0000i128);
+
+        // Both stake the same amounts.
+        client.stake(&s1, &token_a, &40_000_0000i128).unwrap();
+        client.stake(&s1, &token_b, &10_000_0000i128).unwrap();
+        client.stake(&s2, &token_a, &20_000_0000i128).unwrap();
+        client.stake(&s2, &token_b, &30_000_0000i128).unwrap();
+
+        // S1 unstakes fully.
+        let s1_shares = client.get_shares(&s1);
+        client.unstake(&s1, &s1_shares).unwrap();
+
+        // S1 should have zero in both pools.
+        assert_eq!(client.get_stake_balance(&s1, &token_a), 0);
+        assert_eq!(client.get_stake_balance(&s1, &token_b), 0);
+
+        // S2's balances should be completely unaffected by S1's withdrawal.
+        let s2_bal_a = client.get_stake_balance(&s2, &token_a);
+        let s2_bal_b = client.get_stake_balance(&s2, &token_b);
+        assert_eq!(s2_bal_a, 20_000_0000i128);
+        assert_eq!(s2_bal_b, 30_000_0000i128);
+
+        // S2 can still unstake.
+        let s2_shares = client.get_shares(&s2);
+        client.unstake(&s2, &s2_shares).unwrap();
+        assert_eq!(client.get_stake_balance(&s2, &token_a), 0);
+        assert_eq!(client.get_stake_balance(&s2, &token_b), 0);
+    }
+
+    #[test]
+    fn test_partial_unstake_preserves_ratio() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, token_a, token_b, client) = setup(&env);
+        client.add_token(&token_a, &500u32);
+        client.add_token(&token_b, &300u32);
+
+        let staker = Address::generate(&env);
+        mint_to(&env, &token_a, &staker, 100_000_0000i128);
+        mint_to(&env, &token_b, &staker, 100_000_0000i128);
+
+        client.stake(&staker, &token_a, &80_000_0000i128).unwrap();
+        client.stake(&staker, &token_b, &20_000_0000i128).unwrap();
+
+        // Unstake 25% of shares.
+        let total = client.get_shares(&staker);
+        let quarter = total / 4;
+        client.unstake(&staker, &quarter).unwrap();
+
+        // The remaining balance ratios should be roughly preserved.
+        let rem_a = client.get_stake_balance(&staker, &token_a);
+        let rem_b = client.get_stake_balance(&staker, &token_b);
+        // Original: 80_000 A, 20_000 B. After 25% withdrawal: ~60_000 A, ~15_000 B.
+        assert!(rem_a > rem_b);
+        assert!(rem_a < 80_000_0000i128);
+        assert_eq!(client.get_shares(&staker), total - quarter);
+    }
+
+    #[test]
     fn test_add_token_twice_fails() {
         let env = Env::default();
         env.mock_all_auths();
@@ -878,6 +950,138 @@ mod test {
             client.add_token(&token_a, &600u32);
         }));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yield_waterfall_exact_proportions() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, token_a, token_b, client) = setup(&env);
+        client.add_token(&token_a, &500u32);
+        client.add_token(&token_b, &300u32);
+
+        let staker = Address::generate(&env);
+        mint_to(&env, &token_a, &staker, 100_000_0000i128);
+        mint_to(&env, &token_b, &staker, 100_000_0000i128);
+
+        // Stake exactly 75_000 in token A, 25_000 in token B.
+        client.stake(&staker, &token_a, &75_000_0000i128).unwrap();
+        client.stake(&staker, &token_b, &25_000_0000i128).unwrap();
+
+        // Preview the waterfall for a reward of 12_000.
+        let waterfall = client.preview_yield_waterfall(&12_000_0000i128);
+        assert_eq!(waterfall.len(), 2);
+
+        // Find the allocations.
+        let mut alloc_a: i128 = 0;
+        let mut alloc_b: i128 = 0;
+        for (addr, alloc) in waterfall.iter() {
+            if addr == token_a {
+                alloc_a = alloc;
+            } else if addr == token_b {
+                alloc_b = alloc;
+            }
+        }
+
+        // Token A: 75% of 12_000 = 9_000
+        // Token B: 25% of 12_000 = 3_000
+        assert_eq!(alloc_a, 9_000_0000i128);
+        assert_eq!(alloc_b, 3_000_0000i128);
+    }
+
+    #[test]
+    fn test_yield_waterfall_uneven_weights() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, token_a, token_b, client) = setup(&env);
+        client.add_token(&token_a, &500u32);
+        client.add_token(&token_b, &300u32);
+
+        let staker = Address::generate(&env);
+        mint_to(&env, &token_a, &staker, 100_000_0000i128);
+        mint_to(&env, &token_b, &staker, 100_000_0000i128);
+
+        // Stake 10_000 in token A, 90_000 in token B.
+        client.stake(&staker, &token_a, &10_000_0000i128).unwrap();
+        client.stake(&staker, &token_b, &90_000_0000i128).unwrap();
+
+        let waterfall = client.preview_yield_waterfall(&100_000_0000i128);
+        assert_eq!(waterfall.len(), 2);
+
+        let mut alloc_a: i128 = 0;
+        let mut alloc_b: i128 = 0;
+        for (addr, alloc) in waterfall.iter() {
+            if addr == token_a {
+                alloc_a = alloc;
+            } else if addr == token_b {
+                alloc_b = alloc;
+            }
+        }
+
+        // Token A: 10% of 100_000 = 10_000
+        // Token B: 90% of 100_000 = 90_000
+        assert_eq!(alloc_a, 10_000_0000i128);
+        assert_eq!(alloc_b, 90_000_0000i128);
+    }
+
+    #[test]
+    fn test_yield_waterfall_single_token() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, token_a, _token_b, client) = setup(&env);
+        client.add_token(&token_a, &500u32);
+
+        let staker = Address::generate(&env);
+        mint_to(&env, &token_a, &staker, 100_000_0000i128);
+        client.stake(&staker, &token_a, &50_000_0000i128).unwrap();
+
+        // Single pool should get 100% of rewards.
+        let waterfall = client.preview_yield_waterfall(&10_000_0000i128);
+        assert_eq!(waterfall.len(), 1);
+        let (addr, alloc) = waterfall.get(0).unwrap();
+        assert_eq!(addr, token_a);
+        assert_eq!(alloc, 10_000_0000i128);
+    }
+
+    #[test]
+    fn test_yield_waterfall_empty_pool() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, token_a, _token_b, client) = setup(&env);
+        client.add_token(&token_a, &500u32);
+
+        // No deposits yet — waterfall should return empty.
+        let waterfall = client.preview_yield_waterfall(&10_000_0000i128);
+        assert_eq!(waterfall.len(), 0);
+    }
+
+    #[test]
+    fn test_yield_waterfall_zero_reward() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, token_a, token_b, client) = setup(&env);
+        client.add_token(&token_a, &500u32);
+        client.add_token(&token_b, &300u32);
+
+        let staker = Address::generate(&env);
+        mint_to(&env, &token_a, &staker, 100_000_0000i128);
+        client.stake(&staker, &token_a, &50_000_0000i128).unwrap();
+
+        // Zero reward — waterfall should return empty.
+        let waterfall = client.preview_yield_waterfall(&0i128);
+        assert_eq!(waterfall.len(), 0);
+    }
+
+    #[test]
+    fn test_set_token_apy() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, token_a, _token_b, client) = setup(&env);
+        client.add_token(&token_a, &500u32);
+
+        client.set_token_apy(&token_a, &800u32);
+        let info = client.get_token_info(&token_a).unwrap();
+        assert_eq!(info.apy_bps, 800);
     }
 
     #[test]
