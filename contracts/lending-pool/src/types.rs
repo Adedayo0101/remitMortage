@@ -273,4 +273,8 @@ pub enum DataKey {
     LastHalvingLedger,
     /// Zero-based epoch counter. Incremented on every halving event.
     HalvingEpoch,
+    /// Lifetime interest paid by a borrower, keyed by borrower address.
+    BorrowerLifetimeInterest(Address),
+    /// Tracks whether a loan's maturity rebate has been claimed.
+    LoanRebateClaimed(BytesN<32>),
 }

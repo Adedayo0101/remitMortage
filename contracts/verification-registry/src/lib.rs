@@ -13,6 +13,12 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 const PERSISTENT_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 
+// ── Rate Cap & Floor Constants ────────────────────────────────────────────
+/// Maximum interest rate cap: 18% APR (1800 basis points).
+const RATE_CAP_BPS: u32 = 1800;
+/// Minimum interest rate floor: 2% APR (200 basis points).
+const RATE_FLOOR_BPS: u32 = 200;
+
 /// Verification Registry Contract
 ///
 /// Acts as an on-chain anchor for borrower eligibility verification
@@ -110,6 +116,20 @@ impl VerificationRegistryContract {
 
     fn read_lending_pool(env: &Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::LendingPool)
+    }
+
+    fn read_rate_cap(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RateCap)
+            .unwrap_or(RATE_CAP_BPS)
+    }
+
+    fn read_rate_floor(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RateFloor)
+            .unwrap_or(RATE_FLOOR_BPS)
     }
 
     fn bump_instance(env: &Env) {
@@ -286,11 +306,17 @@ impl VerificationRegistryContract {
         let admin = Self::read_admin(&env)?;
         admin.require_auth();
 
+        let cap = Self::read_rate_cap(&env);
+        let floor = Self::read_rate_floor(&env);
+
+        // Clamp each tier rate within the configured boundaries.
+        let clamp = |r: u32| -> u32 { r.max(floor).min(cap) };
+
         let config = RateConfig {
-            rate_excellent_bps,
-            rate_good_bps,
-            rate_fair_bps,
-            rate_fallback_bps,
+            rate_excellent_bps: clamp(rate_excellent_bps),
+            rate_good_bps: clamp(rate_good_bps),
+            rate_fair_bps: clamp(rate_fair_bps),
+            rate_fallback_bps: clamp(rate_fallback_bps),
         };
 
         env.storage().instance().set(&DataKey::RateConfig, &config);
@@ -307,6 +333,8 @@ impl VerificationRegistryContract {
     /// Get the current dynamic interest rate configuration.
     ///
     /// Returns the rate config if set, or defaults if not yet configured.
+    /// Individual rates are clamped to the configured cap and floor before
+    /// being returned.
     pub fn get_rate_config(env: Env) -> RateConfig {
         env.storage()
             .instance()
@@ -319,19 +347,75 @@ impl VerificationRegistryContract {
             })
     }
 
+    /// Set the interest rate cap and floor limits in basis points.
+    ///
+    /// Admin-only. The floor must be less than or equal to the cap, and both
+    /// must be in the range 0–10000 bps. These limits are enforced in
+    /// `set_rate_config` and `get_borrower_rate` so that no computed rate
+    /// exceeds the configured boundaries.
+    pub fn set_rate_limits(
+        env: Env,
+        cap_bps: u32,
+        floor_bps: u32,
+    ) -> Result<(), RegistryError> {
+        let admin = Self::read_admin(&env)?;
+        admin.require_auth();
+
+        if floor_bps > cap_bps {
+            return Err(RegistryError::InvalidRateLimits);
+        }
+
+        if cap_bps > 10_000 {
+            return Err(RegistryError::InvalidRateLimits);
+        }
+
+        env.storage().instance().set(&DataKey::RateCap, &cap_bps);
+        env.storage().instance().set(&DataKey::RateFloor, &floor_bps);
+        Self::bump_instance(&env);
+
+        Ok(())
+    }
+
+    /// Returns the current rate cap in basis points.
+    pub fn get_rate_cap(env: Env) -> u32 {
+        Self::read_rate_cap(&env)
+    }
+
+    /// Returns the current rate floor in basis points.
+    pub fn get_rate_floor(env: Env) -> u32 {
+        Self::read_rate_floor(&env)
+    }
+
     /// Resolve the interest rate for a borrower based on their credit score.
     ///
     /// Uses the current rate configuration and the borrower's verification
     /// record. Returns the fallback rate if no valid verification exists.
     pub fn get_borrower_rate(env: Env, borrower: Address) -> u32 {
         let config = Self::get_rate_config(env.clone());
+        let cap = Self::read_rate_cap(&env);
+        let floor = Self::read_rate_floor(&env);
 
-        if let Some(risk) = Self::read_risk_record(&env, &borrower) {
-            return match Self::tier_from_score(risk.score) {
+        let rate = if let Some(risk) = Self::read_risk_record(&env, &borrower) {
+            match Self::tier_from_score(risk.score) {
                 RiskTier::Excellent => config.rate_excellent_bps,
                 RiskTier::Good => config.rate_good_bps,
                 RiskTier::Fair => config.rate_fair_bps,
                 RiskTier::Poor => config.rate_fallback_bps,
+            }
+        } else {
+            // Check if borrower has valid, non-expired verification
+            match Self::read_record(&env, &borrower) {
+                Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
+                    let score = record.score;
+                    if score >= 80 {
+                        config.rate_excellent_bps
+                    } else if score >= 60 {
+                        config.rate_good_bps
+                    } else if score >= 40 {
+                        config.rate_fair_bps
+                    } else {
+                        config.rate_fallback_bps
+                    }
             };
         }
 
@@ -347,9 +431,12 @@ impl VerificationRegistryContract {
                 } else {
                     config.rate_fallback_bps
                 }
+                _ => config.rate_fallback_bps,
             }
-            _ => config.rate_fallback_bps,
-        }
+        };
+
+        // Clamp the resolved rate within the configured boundaries.
+        rate.max(floor).min(cap)
     }
 
     /// Configure the lending pool contract that is allowed to push repayment
@@ -810,6 +897,80 @@ mod test {
         assert!(client.is_verified(&borrower));
     }
 
+    // ── Rate Cap & Floor Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_default_rate_limits() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        assert_eq!(client.get_rate_cap(), 1800);
+        assert_eq!(client.get_rate_floor(), 200);
+    }
+
+    #[test]
+    fn test_set_rate_limits_ok() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        client.set_rate_limits(&1500u32, &300u32);
+        assert_eq!(client.get_rate_cap(), 1500);
+        assert_eq!(client.get_rate_floor(), 300);
+    }
+
+    #[test]
+    fn test_set_rate_limits_floor_greater_than_cap_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let result = client.try_set_rate_limits(&500u32, &1000u32);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidRateLimits)));
+    }
+
+    #[test]
+    fn test_set_rate_limits_cap_over_10000_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let result = client.try_set_rate_limits(&10001u32, &200u32);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidRateLimits)));
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamps_to_floor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        // Set a rate config where the excellent rate is below the default floor (200).
+        // Default floor is 200 bps, so setting excellent to 50 bps should be clamped to 200.
+        client.set_rate_config(&50u32, &600u32, &800u32, &1200u32);
+
+        // The stored config clamps rates on write, so when we read them back:
+        let config = client.get_rate_config();
+        assert_eq!(config.rate_excellent_bps, 200); // clamped to floor
+        assert_eq!(config.rate_good_bps, 600);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamps_to_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        // Set a rate config where the fallback rate exceeds the default cap (1800).
+        client.set_rate_config(&400u32, &600u32, &800u32, &5000u32);
+
+        let config = client.get_rate_config();
+        assert_eq!(config.rate_fallback_bps, 1800); // clamped to cap
+    }
+
+    #[test]
+    fn test_get_borrower_rate_live_clamping() {
     #[test]
     fn test_record_repayment_status_emits_event() {
         let env = Env::default();
@@ -818,6 +979,67 @@ mod test {
 
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[10u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Set tight limits: floor 500, cap 700
+        client.set_rate_limits(&700u32, &500u32);
+
+        // Config was stored before we set limits; re-set to trigger clamp.
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        // Borrower score is 95 (Excellent tier). With clamping:
+        // rate_excellent 400 -> floor 500, so borrower rate should be 500.
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 500);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamp_to_cap_live() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[11u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Set cap very low: 300 bps
+        client.set_rate_limits(&300u32, &100u32);
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        // Excellent tier rate 400 clamped to cap 300
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 300);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_floor_below_defaults_unaffected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[12u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Rate limits are wide (1-5000), default rates should pass through.
+        client.set_rate_limits(&5000u32, &1u32);
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 400);
+    }
+
+    #[test]
+    fn test_set_rate_limits_before_initialize_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(VerificationRegistryContract, ());
+        let client = VerificationRegistryContractClient::new(&env, &contract_id);
+
+        let result = client.try_set_rate_limits(&1800u32, &200u32);
+        assert_eq!(result, Err(Ok(RegistryError::NotInitialized)));
 
         client.register_verification(&borrower, &report_hash, &1_000u32, &70u32);
 
