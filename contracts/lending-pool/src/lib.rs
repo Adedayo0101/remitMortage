@@ -5156,6 +5156,45 @@ mod test {
     }
 
     #[test]
+    fn test_maturity_rebate_exact_ten_percent_accuracy() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Use a 0% interest pool to isolate the interest tracking.
+        // Actually we need interest to be paid, so use 10% pool for easy math.
+        let (admin, investor, treasury, token_address, client) = setup_pool_with_rates(&env, 1000u32, 500u32);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 100_000_0000000i128; // 100k
+
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, principal * 2);
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+
+        // Advance 1 compound period so interest accrues.
+        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+
+        // Repay principal + 10% interest = 110,000
+        let interest = (principal * 1000) / 10_000; // 10% = 10,000
+        let total_owed = principal + interest;
+        sac.mint(&borrower, total_owed);
+        client.repay(&borrower, &loan_id, &total_owed);
+
+        let lifetime_interest = client.get_borrower_lifetime_interest(&borrower);
+        // With 10% simple interest on 100k: 10,000 interest
+        // With compound it might be slightly different but close.
+        assert!(lifetime_interest >= 9_000_0000000i128);
+
+        // Rebate should be exactly lifetime_interest / 10.
+        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        assert_eq!(rebate, lifetime_interest / 10);
+    }
+
+    #[test]
     fn test_maturity_rebate_double_claim_fails() {
         let env = Env::default();
         env.mock_all_auths();
