@@ -261,6 +261,35 @@ impl LendingPoolContract {
             .unwrap_or(false)
     }
 
+    // ── Borrower Reward Rebate Helpers ───────────────────────────────────
+
+    fn read_borrower_lifetime_interest(env: &Env, borrower: &Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BorrowerLifetimeInterest(borrower.clone()))
+            .unwrap_or(0)
+    }
+
+    fn add_borrower_lifetime_interest(env: &Env, borrower: &Address, amount: i128) {
+        let total = Self::read_borrower_lifetime_interest(env, borrower) + amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::BorrowerLifetimeInterest(borrower.clone()), &total);
+    }
+
+    fn is_rebate_claimed(env: &Env, loan_id: &BytesN<32>) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LoanRebateClaimed(loan_id.clone()))
+            .unwrap_or(false)
+    }
+
+    fn mark_rebate_claimed(env: &Env, loan_id: &BytesN<32>) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanRebateClaimed(loan_id.clone()), &true);
+    }
+
     // ── Reward Halving Helpers ──────────────────────────────────────────
 
     /// Read the configured halving interval.  Returns the default when the
@@ -1405,6 +1434,8 @@ impl LendingPoolContract {
             env.storage()
                 .instance()
                 .set(&DataKey::TotalRepaidInterest, &total_interest);
+            // ── Credit Reward Rebate: track borrower lifetime interest ────
+            Self::add_borrower_lifetime_interest(&env, &loan.borrower, interest_paid);
         }
 
         // Mark as repaid if fully paid (compound debt cleared).
@@ -2485,6 +2516,106 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .get(&DataKey::PendingUpgrade)
+    }
+
+    // ── Borrower Credit Reward Rebate Functions ──────────────────────────
+
+    /// Claim a maturity rebate equal to 10 % of the total lifetime interest
+    /// paid on a loan that has been fully repaid without any missed payments.
+    ///
+    /// # Parameters
+    /// - `loan_id` — the unique identifier of the repaid loan.
+    ///
+    /// # Eligibility
+    /// - The loan must be in `Repaid` status.
+    /// - The borrower must have made all payments on time
+    ///   (`payments_missed == 0` in the repayment schedule).
+    /// - The rebate must not have been claimed already for this loan ID.
+    ///
+    /// On success the contract transfers the rebate amount (in the pool's
+    /// underlying token) to the borrower and marks the loan as claimed so
+    /// the rebate cannot be drawn twice.
+    pub fn claim_maturity_rebate(env: Env, loan_id: BytesN<32>) -> Result<i128, PoolError> {
+        Self::check_not_paused(&env)?;
+
+        let loan = Self::read_loan(&env, &loan_id)?;
+
+        // Must be fully repaid.
+        if loan.status != LoanStatus::Repaid {
+            return Err(PoolError::InvalidLoanState);
+        }
+
+        // Must not have been claimed already.
+        if Self::is_rebate_claimed(&env, &loan_id) {
+            return Err(PoolError::RebateAlreadyClaimed);
+        }
+
+        // Check the repayment schedule for zero missed payments.
+        if env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
+            let schedule: RepaymentSchedule = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LoanSchedule(loan_id.clone()))
+                .unwrap();
+            if schedule.payments_missed > 0 {
+                return Err(PoolError::MissedPaymentsPreventRebate);
+            }
+        }
+
+        // Compute the rebate: 10 % of the borrower's total lifetime interest.
+        let lifetime_interest = Self::read_borrower_lifetime_interest(&env, &loan.borrower);
+        let rebate_amount = lifetime_interest / 10; // 10 %
+
+        if rebate_amount <= 0 {
+            // No interest paid → nothing to rebate.
+            return Err(PoolError::InvalidAmount);
+        }
+
+        // Check the pool has sufficient liquidity.
+        let liquidity = Self::read_total_liquidity(&env);
+        if liquidity < rebate_amount {
+            return Err(PoolError::InsufficientLiquidity);
+        }
+
+        let config = Self::read_config(&env)?;
+
+        // Transfer the rebate from the pool to the borrower.
+        let token_client = Self::token_client(&env, &config.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &loan.borrower,
+            &rebate_amount,
+        );
+
+        // Reduce liquidity by the rebate amount.
+        let new_liquidity = liquidity - rebate_amount;
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalLiquidity, &new_liquidity);
+
+        // Mark the rebate as claimed to prevent double-dipping.
+        Self::mark_rebate_claimed(&env, &loan_id);
+
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "maturity_rebate"),),
+            (loan.borrower.clone(), loan_id.clone(), rebate_amount),
+        );
+
+        Ok(rebate_amount)
+    }
+
+    /// Returns the total lifetime interest paid by a borrower across all
+    /// loans that have been repaid.
+    pub fn get_borrower_lifetime_interest(env: Env, borrower: Address) -> i128 {
+        Self::read_borrower_lifetime_interest(&env, &borrower)
+    }
+
+    /// Returns `true` if the maturity rebate for a given loan has already
+    /// been claimed.
+    pub fn is_rebate_claimed_flag(env: Env, loan_id: BytesN<32>) -> bool {
+        Self::is_rebate_claimed(&env, &loan_id)
     }
 }
 
@@ -4962,5 +5093,197 @@ mod test {
         // The record is retained as Cancelled, so the ID stays taken.
         let result = client.try_request_loan(&borrower, &loan_id, &10_000_0000000i128);
         assert_eq!(result.unwrap_err(), Ok(PoolError::LoanAlreadyExists));
+    }
+
+    // ── Maturity Rebate Tests (Issue #298) ─────────────────────────────
+
+    fn setup_loan_for_full_repayment<'a>(
+        env: &Env,
+        client: &LendingPoolContractClient<'a>,
+        token_address: &Address,
+        borrower: &Address,
+        principal: i128,
+    ) -> BytesN<32> {
+        let loan_id = mock_loan_id(env);
+        let investor = Address::generate(env);
+        let sac = StellarAssetClient::new(env, token_address);
+        sac.mint(investor, principal * 2);
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(borrower);
+        client.disburse(&loan_id, borrower, &principal);
+        // Advance 1 compound period so interest accrues.
+        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        // Give the borrower enough for principal + interest.
+        sac.mint(borrower, &(principal + principal / 10));
+        loan_id
+    }
+
+    #[test]
+    fn test_maturity_rebate_ten_percent_of_interest() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        let loan_id = setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
+
+        // Full repayment: principal + 8% interest = 10,800
+        let interest = (principal * 800) / 10_000;
+        let total_owed = principal + interest;
+        client.repay(&borrower, &loan_id, &total_owed);
+
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Repaid);
+
+        let lifetime_interest = client.get_borrower_lifetime_interest(&borrower);
+        assert!(lifetime_interest > 0);
+
+        // Claim the rebate — should be 10% of interest paid.
+        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        let expected_rebate = lifetime_interest / 10;
+        assert_eq!(rebate, expected_rebate);
+        assert!(rebate > 0);
+
+        // Rebate should now be marked as claimed.
+        assert!(client.is_rebate_claimed_flag(&loan_id));
+    }
+
+    #[test]
+    fn test_maturity_rebate_double_claim_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        let loan_id = setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
+
+        let interest = (principal * 800) / 10_000;
+        let total_owed = principal + interest;
+        client.repay(&borrower, &loan_id, &total_owed);
+
+        // First claim succeeds.
+        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        assert!(rebate > 0);
+
+        // Second claim fails with RebateAlreadyClaimed.
+        let result = client.try_claim_maturity_rebate(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::RebateAlreadyClaimed));
+    }
+
+    #[test]
+    fn test_maturity_rebate_fails_if_payments_were_missed() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        // Set up the loan but manually mark missed payments.
+        let loan_id = mock_loan_id(&env);
+        let investor = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, principal * 2);
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+
+        // Manually set missed payments to 1 via direct storage access.
+        env.as_contract(&client.address, || {
+            let mut sched: RepaymentSchedule = env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap();
+            sched.payments_missed = 1;
+            env.storage().persistent().set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
+        });
+
+        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+
+        sac.mint(&borrower, &(principal + principal / 10));
+        let interest = (principal * 800) / 10_000;
+        let total_owed = principal + interest;
+        client.repay(&borrower, &loan_id, &total_owed);
+
+        // Loan is repaid but had missed payments — rebate should fail.
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Repaid);
+
+        let result = client.try_claim_maturity_rebate(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::MissedPaymentsPreventRebate));
+    }
+
+    #[test]
+    fn test_maturity_rebate_fails_if_loan_not_repaid() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 10_000_0000000i128;
+
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, principal * 2);
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+
+        // Loan is Approved but not repaid — rebate should fail.
+        let result = client.try_claim_maturity_rebate(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::InvalidLoanState));
+    }
+
+    #[test]
+    fn test_maturity_rebate_paused_contract_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        let loan_id = setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
+
+        let interest = (principal * 800) / 10_000;
+        let total_owed = principal + interest;
+        client.repay(&borrower, &loan_id, &total_owed);
+
+        client.pause();
+
+        let result = client.try_claim_maturity_rebate(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
+    }
+
+    #[test]
+    fn test_borrower_lifetime_interest_tracking() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        let loan_id = setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
+
+        // Before repayment — lifetime interest is zero.
+        assert_eq!(client.get_borrower_lifetime_interest(&borrower), 0);
+
+        let interest = (principal * 800) / 10_000;
+        let total_owed = principal + interest;
+        client.repay(&borrower, &loan_id, &total_owed);
+
+        // After full repayment — lifetime interest should be tracked.
+        let lifetime = client.get_borrower_lifetime_interest(&borrower);
+        assert!(lifetime > 0);
+        // Interest paid = repaid - principal (at 8% on 10k = 800)
+        // With compound interest after 1 period it may be slightly different.
+        let expected_interest = total_owed - principal;
+        assert!(lifetime >= expected_interest - 10); // allow small rounding
     }
 }

@@ -67,4 +67,8 @@ pub enum PoolError {
     ReferralCycleDetected = 30,
     /// Referral relationship already exists.
     ReferralAlreadySet = 31,
+    /// Loan maturity rebate has already been claimed.
+    RebateAlreadyClaimed = 32,
+    /// Loan has missed payments, so is ineligible for the maturity rebate.
+    MissedPaymentsPreventRebate = 33,
 }
