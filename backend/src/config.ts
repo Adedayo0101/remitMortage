@@ -32,6 +32,8 @@ export interface Config {
   allowedOrigins: string[];
   adminApiKey: string;
   redisUrl: string | null;
+  redisClusterEnabled: boolean;
+  redisClusterNodes: string[];
   remittanceCacheTtl: number;
   /** KMS-managed Key Encryption Keys, keyed by rotation version (e.g. "v1", "v2"). */
   kmsKeyVersions: Record<string, string>;
@@ -47,6 +49,23 @@ export interface Config {
   maxEvmBaseFee: number;
   /** Maximum base fee for Solana transactions (in lamports). */
   maxSolanaBaseFee: number;
+  /**
+   * Incoming webhook URL (Slack or Discord) used to alert operators when a
+   * Soroban RPC node becomes unhealthy or recovers. Null disables alerting.
+   */
+  alertWebhookUrl: string | null;
+  /**
+   * Maximum number of ledgers a node may lag behind the best-observed node
+   * before it is flagged as suffering a sync delay.
+   */
+  rpcSyncLagThreshold: number;
+  /**
+   * Minimum retained ledger window (latest − oldest) a node must expose before
+   * it is flagged for insufficient ledger history. 0 disables the check.
+   */
+  rpcMinLedgerRetention: number;
+  /** Interval (ms) between background Soroban RPC health probes. */
+  rpcHealthCheckIntervalMs: number;
 }
 
 /** Parses KMS_KEY_VERSIONS (a JSON map of version -> 64-hex-char key) with a dev-safe fallback. */
@@ -97,6 +116,10 @@ export function loadConfig(): Config {
       : ["http://localhost:3000", "http://localhost:4000"],
     adminApiKey: process.env.ADMIN_API_KEY || "default_admin_api_key",
     redisUrl: process.env.REDIS_URL || null,
+    redisClusterEnabled: process.env.REDIS_CLUSTER_ENABLED === "true",
+    redisClusterNodes: process.env.REDIS_CLUSTER_NODES
+      ? process.env.REDIS_CLUSTER_NODES.split(",").map((n) => n.trim())
+      : [],
     remittanceCacheTtl: parseInt(process.env.REMITTANCE_CACHE_TTL || "300", 10),
     kmsKeyVersions: parseKmsKeyVersions(process.env.KMS_KEY_VERSIONS),
     kmsActiveKeyVersion: process.env.KMS_ACTIVE_KEY_VERSION || "v1",
@@ -105,5 +128,12 @@ export function loadConfig(): Config {
     maxStellarBaseFee: parseInt(process.env.MAX_STELLAR_BASE_FEE || "100000", 10),
     maxEvmBaseFee: parseInt(process.env.MAX_EVM_BASE_FEE || "100000000000", 10),
     maxSolanaBaseFee: parseInt(process.env.MAX_SOLANA_BASE_FEE || "10000", 10),
+    alertWebhookUrl: process.env.ALERT_WEBHOOK_URL || null,
+    rpcSyncLagThreshold: parseInt(process.env.RPC_SYNC_LAG_THRESHOLD || "100", 10),
+    rpcMinLedgerRetention: parseInt(process.env.RPC_MIN_LEDGER_RETENTION || "0", 10),
+    rpcHealthCheckIntervalMs: parseInt(
+      process.env.RPC_HEALTH_CHECK_INTERVAL_MS || "60000",
+      10
+    ),
   };
 }

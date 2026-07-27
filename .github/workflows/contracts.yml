@@ -1,0 +1,104 @@
+name: Contracts
+
+# Dedicated CI/CD pipeline for the Soroban smart-contract workspace. It gates
+# every pull request on formatting, WASM compilation and the full test suite so
+# that a broken contract can never merge into an integration branch.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main, development ]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so a fresh push doesn't queue behind
+# an already-outdated compilation.
+concurrency:
+  group: contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Formatting ──────────────────────────────────────────────────────────
+  # A formatting violation fails CI before any expensive compilation runs.
+  format:
+    name: Format Check (rustfmt)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts -> target
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+        working-directory: contracts
+
+  # ── Compilation ─────────────────────────────────────────────────────────
+  # Compiles every contract to the Soroban WASM target. A compilation failure
+  # fails CI.
+  build:
+    name: Compile Contracts (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts -> target
+
+      - name: Build Soroban Contracts (release WASM)
+        run: cargo build --target wasm32-unknown-unknown --release
+        working-directory: contracts
+
+      - name: Upload Compiled WASM Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: soroban-wasm
+          path: contracts/target/wasm32-unknown-unknown/release/*.wasm
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── Tests ───────────────────────────────────────────────────────────────
+  # Runs the workspace unit tests and cross-contract integration tests. A test
+  # failure fails CI.
+  test:
+    name: Run Tests (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts -> target
+
+      - name: Run Workspace Unit Tests
+        run: cargo test --workspace
+        working-directory: contracts
+
+      - name: Run Cross-Contract Integration Tests
+        run: cargo test -p integration-tests
+        working-directory: contracts

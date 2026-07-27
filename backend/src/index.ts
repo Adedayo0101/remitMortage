@@ -15,9 +15,9 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
-import rTracer from "cls-rtracer";
 import { swaggerSpec } from "./docs/swagger.js";
 import { healthRouter } from "./routes/health.js";
+import { rpcHealthRouter } from "./routes/rpcHealth.js";
 import { verificationRouter } from "./routes/verification.js";
 import { borrowerRouter } from "./routes/borrower.js";
 import { loanRouter } from "./routes/loan.js";
@@ -32,6 +32,7 @@ import { metricsRouter } from "./routes/metrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { correlationId } from "./middleware/correlationId.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
@@ -46,9 +47,14 @@ import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
 import { startBackupScheduler } from "./jobs/backupScheduler.js";
 import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
+import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
 import { initializeRedis } from "./services/redis.js";
+import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js";
+import { queueService } from "./services/queueService.js";
+import { startNotificationWorker, stopNotificationWorker } from "./workers/notificationWorker.js";
+import { startWebhookWorker, stopWebhookWorker } from "./workers/webhookWorker.js";
 
 const app = express();
 const config = loadConfig();
@@ -56,7 +62,27 @@ const PORT = config.port;
 
 void initializeRedis();
 
+// ── Background Queue Initialization ─────────────────────────────────
+void (async () => {
+  try {
+    await initializeRedisCluster();
+    await queueService.initialize();
+    await Promise.all([
+      startNotificationWorker(),
+      startWebhookWorker(),
+    ]);
+    logger.info("[queue] BullMQ workers started", {
+      mode: config.redisClusterEnabled ? "cluster" : "single",
+    });
+  } catch (err) {
+    logger.error("[queue] failed to start workers, running without queue", { err });
+  }
+})();
+
 // ── Middleware ───────────────────────────────────────────────────────────
+// Correlation ID must be first so every downstream middleware, handler and
+// log line for this request resolves the same trace ID.
+app.use(correlationId);
 // HTTP metrics must be first so the timer starts at the earliest possible point.
 app.use(httpMetricsMiddleware);
 app.use(tracingMiddleware);
@@ -112,6 +138,7 @@ const verificationLimiter = rateLimit({
 // /metrics is unauthenticated at the Express level — the route itself
 // enforces bearer-token auth via metricsAuthMiddleware when METRICS_TOKEN is set.
 app.use("/metrics", metricsRouter);
+app.use("/api/health/rpc", rpcHealthRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
 app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
@@ -148,6 +175,25 @@ app.listen(PORT, () => {
   startScheduler();
   startBackupScheduler();
   startWebhookKeyRotationScheduler();
+  // Proactively monitor Soroban RPC node health and alert operators on
+  // degradation, downtime or failover through the existing webhook mechanism.
+  startRpcHealthMonitor();
 });
+
+// ── Graceful Shutdown ─────────────────────────────────────────────────
+async function shutdown(signal: string) {
+  logger.info(`[shutdown] received ${signal}, shutting down gracefully`);
+  await Promise.allSettled([
+    stopNotificationWorker(),
+    stopWebhookWorker(),
+    queueService.close(),
+    closeCluster(),
+  ]);
+  logger.info("[shutdown] complete");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 export default app;
