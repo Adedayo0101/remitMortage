@@ -30,6 +30,7 @@ import crypto from "crypto";
 import { prisma } from "./db.js";
 import logger from "../utils/logger.js";
 import { encrypt, decrypt } from "../utils/crypto.js";
+import { correlationHeaders } from "../middleware/correlationId.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -179,7 +180,14 @@ async function attemptPost(
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
+      // Forward the in-flight request's correlation ID so the subscriber's
+      // logs join up with ours. Explicit `headers` still win if a caller
+      // deliberately overrides the value.
+      headers: {
+        "Content-Type": "application/json",
+        ...correlationHeaders(),
+        ...headers,
+      },
       body,
       signal: controller.signal,
     });
