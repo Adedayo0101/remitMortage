@@ -32,6 +32,14 @@ if (otlpEndpoint) {
     }),
     traceExporter: new OTLPTraceExporter({
       url: `${otlpEndpoint.replace(/\/$/, "")}/v1/traces`,
+      headers: process.env.OTEL_EXPORTER_OTLP_HEADERS
+        ? Object.fromEntries(
+            process.env.OTEL_EXPORTER_OTLP_HEADERS.split(",").map((kv) => {
+              const idx = kv.indexOf("=");
+              return idx !== -1 ? [kv.slice(0, idx), kv.slice(idx + 1)] : [kv, ""];
+            })
+          )
+        : undefined,
     }),
     sampler: new TraceIdRatioBasedSampler(
       Number.isFinite(sampleRatio) ? Math.min(Math.max(sampleRatio, 0), 1) : 1.0

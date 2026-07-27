@@ -21,9 +21,30 @@ spec:
           ports:
             - name: http
               containerPort: 4000
+          envFrom:
+            - configMapRef:
+                name: remitmortgage-backend-config
           env:
-            - name: PORT
-              value: "4000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: remitmortgage-backend-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: remitmortgage-backend-secrets
+                  key: redis-url
+            - name: REDIS_CLUSTER_NODES
+              valueFrom:
+                secretKeyRef:
+                  name: remitmortgage-backend-secrets
+                  key: redis-cluster-nodes
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: remitmortgage-backend-secrets
+                  key: otel-exporter-otlp-endpoint
           # CPU requests are mandatory for the HPA: utilization is computed as
           # a percentage of the request, not of the node capacity.
           resources:
