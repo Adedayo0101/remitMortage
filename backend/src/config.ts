@@ -27,6 +27,8 @@ export interface Config {
   smtpPass: string;
   smtpFrom: string;
   webhookSecret: string;
+  /** Recipient notified when a webhook signing key auto-rotates. Rotation still runs if unset. */
+  webhookRotationNotifyEmail: string;
   allowedOrigins: string[];
   adminApiKey: string;
   redisUrl: string | null;
@@ -108,6 +110,7 @@ export function loadConfig(): Config {
     smtpPass: process.env.SMTP_PASS || "",
     smtpFrom: process.env.SMTP_FROM || "no-reply@remitmortgage.com",
     webhookSecret: process.env.WEBHOOK_SECRET || "default_signing_secret_key",
+    webhookRotationNotifyEmail: process.env.WEBHOOK_ROTATION_NOTIFY_EMAIL || "",
     allowedOrigins: process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim())
       : ["http://localhost:3000", "http://localhost:4000"],
