@@ -67,4 +67,6 @@ pub enum PoolError {
     ReferralCycleDetected = 30,
     /// Referral relationship already exists.
     ReferralAlreadySet = 31,
+    /// Reentrant call detected — a mutating function is already in progress.
+    ReentrancyGuard = 32,
 }

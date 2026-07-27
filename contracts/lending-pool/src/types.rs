@@ -250,4 +250,7 @@ pub enum DataKey {
     LastHalvingLedger,
     /// Zero-based epoch counter. Incremented on every halving event.
     HalvingEpoch,
+    /// Reentrancy guard flag. `true` while a guarded mutating function
+    /// (deposit/withdraw/disburse/repay) is executing; cleared on exit.
+    Reentrant,
 }
