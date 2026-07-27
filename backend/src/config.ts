@@ -26,6 +26,14 @@ export interface Config {
   smtpUser: string;
   smtpPass: string;
   smtpFrom: string;
+  /** SendGrid API key used by the event-driven email alerting service. */
+  sendgridApiKey: string;
+  /** Verified sender address for SendGrid alert emails. */
+  sendgridFrom: string;
+  /** Map of on-chain borrower address -> alert recipient email address. */
+  alertRecipients: Record<string, string>;
+  /** Fallback recipient used when a borrower address has no mapped email. */
+  alertDefaultRecipient: string;
   webhookSecret: string;
   allowedOrigins: string[];
   adminApiKey: string;
@@ -62,6 +70,20 @@ function parseKmsKeyVersions(raw: string | undefined): Record<string, string> {
   return devDefault;
 }
 
+/** Parses ALERT_RECIPIENTS (a JSON map of borrower address -> email address). */
+function parseAlertRecipients(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+  } catch {
+    // malformed input falls back to an empty map
+  }
+  return {};
+}
+
 export function loadConfig(): Config {
   return {
     port: parseInt(process.env.PORT || "4000", 10),
@@ -88,6 +110,13 @@ export function loadConfig(): Config {
     smtpUser: process.env.SMTP_USER || "",
     smtpPass: process.env.SMTP_PASS || "",
     smtpFrom: process.env.SMTP_FROM || "no-reply@remitmortgage.com",
+    sendgridApiKey: process.env.SENDGRID_API_KEY || "",
+    sendgridFrom:
+      process.env.SENDGRID_FROM ||
+      process.env.SMTP_FROM ||
+      "no-reply@remitmortgage.com",
+    alertRecipients: parseAlertRecipients(process.env.ALERT_RECIPIENTS),
+    alertDefaultRecipient: process.env.ALERT_DEFAULT_RECIPIENT || "",
     webhookSecret: process.env.WEBHOOK_SECRET || "default_signing_secret_key",
     allowedOrigins: process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim())
