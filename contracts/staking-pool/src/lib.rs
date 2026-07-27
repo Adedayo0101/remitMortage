@@ -495,6 +495,9 @@ impl StakingPoolContract {
     /// Preview the yield waterfall: returns how a reward of `total_reward`
     /// would be split across the supported token pools based on their
     /// proportional deposit weights.
+    ///
+    /// Each entry is `(token_address, allocated_amount)`. The sum of all
+    /// allocated amounts will be ≤ `total_reward` (rounding down).
     pub fn preview_yield_waterfall(env: Env, total_reward: i128) -> Vec<(Address, i128)> {
         let mut result: Vec<(Address, i128)> = Vec::new(&env);
         if total_reward <= 0 {
