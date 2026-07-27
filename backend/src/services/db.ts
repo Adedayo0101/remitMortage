@@ -20,13 +20,13 @@ export async function disconnect(): Promise<void> {
 const ENCRYPTED_FIELDS = ["taxId", "monthlyIncome"] as const;
 
 function encryptFields<T extends Record<string, any>>(data: T): T {
-  const result = { ...data };
+  const result: Record<string, any> = { ...data };
   for (const field of ENCRYPTED_FIELDS) {
     if (result[field] !== undefined && result[field] !== null) {
       result[field] = encrypt(String(result[field]));
     }
   }
-  return result;
+  return result as T;
 }
 
 function decryptApplicant(applicant: any): any {

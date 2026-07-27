@@ -32,6 +32,16 @@ pub struct EscrowConfig {
     pub grace_period_ledgers: u32,
     /// Penalty applied on forced default removal, in basis points.
     pub default_penalty_bps: u32,
+    /// Ledgers added to the instance TTL on every state-changing call.
+    /// Set per network (Testnet vs Pubnet) at initialization.
+    pub instance_bump_amount: u32,
+    /// Remaining instance TTL that triggers a bump. The bump is skipped while
+    /// the entry still has more than this many ledgers left.
+    pub instance_lifetime_threshold: u32,
+    /// Ledgers added to a persistent entry's TTL when it is written.
+    pub persistent_bump_amount: u32,
+    /// Remaining persistent TTL that triggers a bump.
+    pub persistent_lifetime_threshold: u32,
     /// Optional lending protocol vault address for yield routing.
     pub yield_vault: Option<Address>,
 }
@@ -44,12 +54,33 @@ pub struct BorrowerRecord {
     pub deposited: i128,
     /// Ledger sequence when the borrower first deposited.
     pub start_ledger: u32,
+    /// Ledger sequence of the latest contribution.
+    pub last_contribution_ledger: u32,
     /// Whether the borrower has completed their savings target and funds were released.
     pub released: bool,
     /// Whether the borrower withdrew early.
     pub withdrawn: bool,
     /// Whether the collateral was seized by the lending pool due to default.
     pub seized: bool,
+}
+
+/// Pending upgrade proposal data.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingUpgradeRecord {
+    pub new_wasm_hash: BytesN<32>,
+    pub execute_after: u32,
+}
+
+/// Pending penalty tier proposal data.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingPenaltyProposal {
+    pub tier1: u32,
+    pub tier2: u32,
+    pub tier3: u32,
+    pub tier4: u32,
+    pub execute_after: u32,
 }
 
 /// Storage keys for the escrow contract.
@@ -66,6 +97,8 @@ pub enum DataKey {
     Version,
     /// Pending upgrade proposal (present only when a timelock delay is active).
     PendingUpgrade,
+    /// Pending penalty tier proposal (present only when a timelock delay is active).
+    PendingPenaltyTiers,
     /// Number of ledgers the admin must wait between proposing and executing an upgrade.
     UpgradeDelay,
     /// Emergency pause flag. When true, deposits and withdrawals are blocked.

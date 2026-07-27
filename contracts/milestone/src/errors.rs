@@ -36,4 +36,6 @@ pub enum MilestoneError {
     RefundFailed = 15,
     /// Contractor cannot also be the borrower for the same loan.
     SelfDealingNotAllowed = 16,
+    /// Reentrancy guard is already set.
+    ReentrancyGuard = 17,
 }

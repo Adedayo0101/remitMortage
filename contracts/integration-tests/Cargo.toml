@@ -15,3 +15,4 @@ soroban-sdk = { workspace = true }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 escrow = { path = "../escrow" }
 lending-pool = { path = "../lending-pool" }
+yield-vault = { path = "../yield-vault" }
