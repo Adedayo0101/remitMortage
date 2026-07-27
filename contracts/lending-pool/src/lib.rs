@@ -7,8 +7,9 @@ mod types;
 mod fuzz;
 
 pub use crate::errors::PoolError;
-pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, Tranche, TrancheInfo};
-use soroban_sdk::{contract, contractimpl, symbol_short, Symbol, token, Address, BytesN, Env};
+pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo};
+use soroban_sdk::{contract, contractimpl, symbol_short, IntoVal, Symbol, token, Address, BytesN, Env, Vec};
+use multisig_validator::MultisigValidatorClient;
 use verification_registry::VerificationRegistryContractClient;
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
@@ -224,6 +225,67 @@ impl LendingPoolContract {
             .persistent()
             .get(&DataKey::Whitelist(contractor.clone()))
             .unwrap_or(false)
+    }
+
+    // ── Restructure Proposal Helpers ──────────────────────────────────────
+
+    fn read_restructure_proposal(env: &Env, loan_id: &BytesN<32>) -> Result<RestructureProposal, PoolError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RestructureProposal(loan_id.clone()))
+            .ok_or(PoolError::NoRestructureProposal)
+    }
+
+    fn write_restructure_proposal(env: &Env, loan_id: &BytesN<32>, proposal: &RestructureProposal) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RestructureProposal(loan_id.clone()), proposal);
+    }
+
+    fn remove_restructure_proposal(env: &Env, loan_id: &BytesN<32>) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RestructureProposal(loan_id.clone()));
+    }
+
+    fn has_restructure_proposal(env: &Env, loan_id: &BytesN<32>) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::RestructureProposal(loan_id.clone()))
+    }
+
+    fn read_multisig_validator(env: &Env) -> Result<Address, PoolError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultisigValidator)
+            .ok_or(PoolError::MultisigValidatorNotSet)
+    }
+
+    // ── Reentrancy Guard ─────────────────────────────────────────────────
+
+    /// Execute `f` with a reentrancy guard.  The guard is set in instance
+    /// storage before calling `f` and cleared afterwards, so nested calls
+    /// will see the guard and trap.
+    fn non_reentrant<F>(env: &Env, f: F) -> Result<(), PoolError>
+    where
+        F: FnOnce() -> Result<(), PoolError>,
+    {
+        let guard: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false);
+        if guard {
+            panic!("reentrancy");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+        let result = f();
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
+        result
     }
 
     // ── Reward Halving Helpers ──────────────────────────────────────────
@@ -895,6 +957,175 @@ impl LendingPoolContract {
         Ok(())
     }
 
+    // ── Debt Restructuring ────────────────────────────────────────────────
+
+    /// Propose a debt restructuring for an active loan.
+    ///
+    /// The borrower submits a new repayment schedule (e.g. lower monthly
+    /// payment, extended duration) which is stored as a pending proposal.
+    /// The new terms only take effect after admin multisig approval via
+    /// `approve_restructure`.
+    ///
+    /// Fails if:
+    /// - The loan is not in `Approved` state.
+    /// - A restructure proposal already exists for this loan (`RestructureProposalExists`).
+    ///
+    /// # Arguments
+    /// - `loan_id` — The unique 32-byte loan identifier.
+    /// - `new_schedule` — The proposed `RepaymentSchedule` to apply on approval.
+    pub fn propose_restructure(
+        env: Env,
+        loan_id: BytesN<32>,
+        new_schedule: RepaymentSchedule,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+
+        let mut loan = Self::read_loan(&env, &loan_id)?;
+        loan.borrower.require_auth();
+
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::LoanNotActive);
+        }
+
+        // Ensure a schedule exists (loan has been approved with a schedule)
+        if !env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
+            return Err(PoolError::InvalidLoanState);
+        }
+
+        if Self::has_restructure_proposal(&env, &loan_id) {
+            return Err(PoolError::RestructureProposalExists);
+        }
+
+        // Validate the proposed schedule: monthly_amount must be positive
+        if new_schedule.monthly_amount <= 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        let proposal = RestructureProposal {
+            new_schedule,
+            proposed_at_ledger: env.ledger().sequence(),
+        };
+
+        Self::write_restructure_proposal(&env, &loan_id, &proposal);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "rst_prop"),),
+            (loan.borrower.clone(), loan_id.clone()),
+        );
+
+        Ok(())
+    }
+
+    /// Approve a pending restructure proposal via admin multisig.
+    ///
+    /// Verifies that the presented `signers` meet the configured multisig
+    /// threshold via the `MultisigValidator` contract. On success:
+    /// - Outstanding compound interest is accrued up to the current ledger.
+    /// - The loan's repayment schedule is replaced with the proposed schedule.
+    /// - `payments_made` and `payments_missed` are reset to 0.
+    /// - `next_due_ledger` is set to `current_ledger + LEDGERS_PER_MONTH`.
+    /// - The pending proposal is removed.
+    ///
+    /// Fails if:
+    /// - No pending proposal exists (`NoRestructureProposal`).
+    /// - MultisigValidator address has not been set (`MultisigValidatorNotSet`).
+    /// - The signers do not meet the threshold (delegated to MultisigValidator).
+    ///
+    /// # Arguments
+    /// - `loan_id` — The unique 32-byte loan identifier.
+    /// - `signers` — The list of signer addresses to validate against the
+    ///   configured k-of-n multisig threshold.
+    pub fn approve_restructure(
+        env: Env,
+        loan_id: BytesN<32>,
+        signers: Vec<Address>,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+
+        let proposal = Self::read_restructure_proposal(&env, &loan_id)?;
+
+        // Verify multisig threshold.
+        let validator = Self::read_multisig_validator(&env)?;
+        let msig_client = MultisigValidatorClient::new(&env, &validator);
+        msig_client.enforce_signatures(&signers);
+
+        let mut loan = Self::read_loan(&env, &loan_id)?;
+
+        // Accrue outstanding interest before applying the new schedule.
+        Self::accrue_interest(&env, &mut loan);
+
+        // Apply the new schedule.
+        let mut schedule = proposal.new_schedule;
+        schedule.payments_made = 0;
+        schedule.payments_missed = 0;
+        schedule.next_due_ledger = env.ledger().sequence() + LEDGERS_PER_MONTH;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanSchedule(loan_id.clone()), &schedule);
+
+        Self::set_loan(&env, &loan_id, &loan);
+
+        // Remove the pending proposal.
+        Self::remove_restructure_proposal(&env, &loan_id);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "rst_appr"),),
+            (loan_id.clone(),),
+        );
+
+        Ok(())
+    }
+
+    /// Cancel a pending restructure proposal.
+    ///
+    /// Either the borrower or the pool admin may cancel by passing their
+    /// address as `auth_address`. Has no effect if no proposal exists.
+    pub fn cancel_restructure(env: Env, loan_id: BytesN<32>, auth_address: Address) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+
+        auth_address.require_auth();
+
+        // Verify auth_address is either the borrower or the admin.
+        let loan = Self::read_loan(&env, &loan_id)?;
+        let config = Self::read_config(&env)?;
+        if auth_address != loan.borrower && auth_address != config.admin {
+            return Err(PoolError::Unauthorized);
+        }
+
+        if !Self::has_restructure_proposal(&env, &loan_id) {
+            return Err(PoolError::NoRestructureProposal);
+        }
+
+        Self::remove_restructure_proposal(&env, &loan_id);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "rst_cncl"),),
+            (loan_id.clone(),),
+        );
+
+        Ok(())
+    }
+
+    /// Return the pending restructure proposal for a loan, if one exists.
+    pub fn get_restructure_proposal(env: Env, loan_id: BytesN<32>) -> Option<RestructureProposal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RestructureProposal(loan_id))
+    }
+
     /// Refinance an active loan to extend its term or adjust its interest rate.
     pub fn refinance_loan(
         env: Env,
@@ -1440,16 +1671,9 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("default"),),
-            (loan_id.clone(), loan.borrower.clone(), seized_amount),
-        );
-                .set(&DataKey::TotalLiquidity, &new_liquidity);
-
-            // Record the realized loss for pool-health accounting.
-            let total_loss = Self::read_total_defaulted_loss(&env) + loss;
-            Self::set_total_defaulted_loss(&env, total_loss);
-        }
+        // Record the realized loss for pool-health accounting.
+        let total_loss = Self::read_total_defaulted_loss(&env) + loss;
+        Self::set_total_defaulted_loss(&env, total_loss);
 
         // Release the undisbursed portion of this loan's commitment.
         let undisbursed = (loan.principal - loan.disbursed).max(0);
@@ -1561,6 +1785,7 @@ impl LendingPoolContract {
     pub fn withdraw(env: Env, investor: Address, amount: i128) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
         investor.require_auth();
+        Self::non_reentrant(&env, || {
 
         if amount <= 0 {
             return Err(PoolError::InvalidAmount);
@@ -2004,6 +2229,37 @@ impl LendingPoolContract {
         Self::read_verification_registry(&env)
     }
 
+    // ── Multisig Validator ────────────────────────────────────────────────
+
+    /// Set the MultisigValidator contract address used for admin multisig
+    /// approval of privileged operations (e.g. restructure approval). Admin-only.
+    pub fn set_multisig_validator(env: Env, validator: Address) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultisigValidator, &validator);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (symbol_short!("set_msig"),),
+            (validator,),
+        );
+
+        Ok(())
+    }
+
+    /// Returns the configured MultisigValidator contract address, or `None`
+    /// if one has not been set.
+    pub fn get_multisig_validator(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultisigValidator)
+    }
+
     /// Set the daily borrow limit. Admin-only.
     /// A limit <= 0 means no limit.
     pub fn set_daily_borrow_limit(env: Env, limit: i128) -> Result<(), PoolError> {
@@ -2423,7 +2679,7 @@ mod test {
 
         let (admin, _investor, _treasury, token_address, client) = setup_pool(&env);
 
-        let result = client.try_initialize(&admin, &token_address, &Address::generate(&env), &800u32, &400u32, &Address::generate(&env));
+        let result = client.try_initialize(&admin, &token_address, &Address::generate(&env), &800u32, &400u32, &Address::generate(&env), &0u32);
         assert!(result.is_err());
     }
 
@@ -2692,14 +2948,12 @@ mod test {
 
         client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
 
-        client
-            .request_loan_with_origin(
-                &borrower,
-                &loan_id,
-                &10_000_0000000i128,
-                &escrow_origin,
-            )
-            .unwrap();
+        client.request_loan_with_origin(
+            &borrower,
+            &loan_id,
+            &10_000_0000000i128,
+            &escrow_origin,
+        );
 
         let loan = client.get_loan_info(&loan_id);
         assert_eq!(loan.interest_rate_bps, INTEREST_RATE_FALLBACK_BPS);
@@ -2996,7 +3250,7 @@ mod test {
         // 0% interest keeps the loss exactly equal to the disbursed amount even
         // after advancing the ledger to make the loan overdue.
         extend_test_ttls(&env);
-        let (_admin, senior_investor, token_address, client) =
+        let (_admin, senior_investor, _treasury, token_address, client) =
             setup_pool_with_rates(&env, 0u32, 0u32);
         let sac = StellarAssetClient::new(&env, &token_address);
 
@@ -3163,6 +3417,7 @@ mod test {
             &800u32,
             &400u32,
             &Address::generate(&env),
+            &0u32,
         );
 
         client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
@@ -3811,7 +4066,7 @@ mod test {
     /// interest so the loss equals the disbursed amount exactly.
     fn setup_overdue_loan(env: &Env) -> (Address, Address, BytesN<32>, LendingPoolContractClient<'_>) {
         extend_test_ttls(env);
-        let (admin, senior_investor, token_address, client) = setup_pool_with_rates(env, 0u32, 0u32);
+        let (admin, senior_investor, _treasury, token_address, client) = setup_pool_with_rates(env, 0u32, 0u32);
 
         // Junior 30,000 + Senior 70,000 = 100,000 liquidity.
         let junior_investor = Address::generate(env);
@@ -3872,7 +4127,7 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (_admin, investor, _token_address, client) = setup_pool(&env);
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
         let borrower = Address::generate(&env);
         let loan_id = mock_loan_id(&env);
 
@@ -3889,7 +4144,7 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (_admin, senior_investor, token_address, client) =
+        let (_admin, senior_investor, _treasury, token_address, client) =
             setup_pool_with_rates(&env, 0u32, 0u32);
         let junior_investor = Address::generate(&env);
         let sac = StellarAssetClient::new(&env, &token_address);
@@ -3952,7 +4207,7 @@ mod test {
         env.mock_all_auths();
 
         extend_test_ttls(&env);
-        let (_admin, investor, _token_address, client) =
+        let (_admin, investor, _treasury, _token_address, client) =
             setup_pool_with_rates(&env, 0u32, 0u32);
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
 
@@ -4609,5 +4864,388 @@ mod test {
         // The record is retained as Cancelled, so the ID stays taken.
         let result = client.try_request_loan(&borrower, &loan_id, &10_000_0000000i128);
         assert_eq!(result.unwrap_err(), Ok(PoolError::LoanAlreadyExists));
+    }
+
+    // ── Debt Restructuring Tests ──────────────────────────────────────────
+
+    /// Helper: deploy and configure a MultisigValidator contract with a 2-of-3
+    /// admin signer set, then register it on the lending pool.
+    fn setup_multisig<'a>(
+        env: &'a Env,
+        pool_admin: &'a Address,
+    ) -> (Address, Vec<Address>, multisig_validator::MultisigValidatorClient<'a>) {
+        let validator_id = env.register(multisig_validator::MultisigValidator, ());
+        let validator = multisig_validator::MultisigValidatorClient::new(env, &validator_id);
+
+        let admin_addr = Address::generate(env);
+        validator.init_admin(&admin_addr);
+
+        let signer1 = Address::generate(env);
+        let signer2 = Address::generate(env);
+        let signer3 = Address::generate(env);
+        let signers = soroban_sdk::vec![env, signer1.clone(), signer2.clone(), signer3.clone()];
+
+        validator.configure_signers(&signers, &2u32);
+
+        (validator.address.clone(), signers, validator)
+    }
+
+    #[test]
+    fn test_set_multisig_validator() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
+        let (validator_addr, _signers, _validator) = setup_multisig(&env, &_admin);
+
+        assert_eq!(client.get_multisig_validator(), None);
+
+        client.set_multisig_validator(&validator_addr);
+
+        assert_eq!(client.get_multisig_validator(), Some(validator_addr));
+    }
+
+    #[test]
+    fn test_propose_restructure_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[20u8; 32]);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        // Propose a new schedule with lower monthly payment over longer term
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+
+        client.propose_restructure(&loan_id, &new_schedule);
+
+        // Verify proposal was stored
+        let stored = client.get_restructure_proposal(&loan_id).unwrap();
+        assert_eq!(stored.new_schedule.monthly_amount, 2_000_0000000i128);
+        assert_eq!(stored.new_schedule.duration_months, 36u32);
+        assert_eq!(stored.proposed_at_ledger, env.ledger().sequence());
+
+        // Verify original schedule is unchanged (not yet approved)
+        let orig = client.get_repayment_schedule(&loan_id).unwrap();
+        let interest = (50_000_0000000i128 * 800u32 as i128) / 10_000;
+        let total_owed = 50_000_0000000i128 + interest;
+        let default_monthly = total_owed / 12;
+        assert_eq!(orig.monthly_amount, default_monthly);
+    }
+
+    #[test]
+    fn test_propose_restructure_fails_not_approved() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[21u8; 32]);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+
+        // Request but don't approve
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+
+        let res = client.try_propose_restructure(&loan_id, &new_schedule);
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::LoanNotActive);
+    }
+
+    #[test]
+    fn test_propose_restructure_fails_duplicate() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[22u8; 32]);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+
+        client.propose_restructure(&loan_id, &new_schedule);
+
+        // Second proposal should fail
+        let res = client.try_propose_restructure(&loan_id, &new_schedule);
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::RestructureProposalExists);
+    }
+
+    #[test]
+    fn test_approve_restructure_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[23u8; 32]);
+
+        // Setup: deposit, request, approve loan
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        // Setup multisig validator
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &_admin);
+        client.set_multisig_validator(&validator_addr);
+
+        // Propose a new schedule
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+        client.propose_restructure(&loan_id, &new_schedule);
+
+        // Approve via multisig (2 signers out of 3)
+        client.approve_restructure(&loan_id, &signers);
+
+        // Verify the new schedule was applied
+        let stored = client.get_repayment_schedule(&loan_id).unwrap();
+        assert_eq!(stored.monthly_amount, 2_000_0000000i128);
+        assert_eq!(stored.duration_months, 36u32);
+
+        // Verify resets
+        assert_eq!(stored.payments_made, 0u32);
+        assert_eq!(stored.payments_missed, 0u32);
+        assert!(stored.next_due_ledger > 0);
+
+        // Verify proposal was removed
+        assert_eq!(client.get_restructure_proposal(&loan_id), None);
+    }
+
+    #[test]
+    fn test_approve_restructure_fails_no_multisig_configured() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[24u8; 32]);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+        client.propose_restructure(&loan_id, &new_schedule);
+
+        // No multisig configured
+        let signers = soroban_sdk::vec![&env];
+        let res = client.try_approve_restructure(&loan_id, &signers);
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::MultisigValidatorNotSet);
+    }
+
+    #[test]
+    fn test_restructure_resets_penalty_and_misses() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[25u8; 32]);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, &100_000_0000000i128);
+
+        let treasury = Address::generate(&env);
+        let escrow = Address::generate(&env);
+        let contract_id = env.register(LendingPoolContract, ());
+        let client = LendingPoolContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_address, &escrow, &800u32, &400u32, &treasury, &0u32);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        // Directly set payments_missed > 0 via storage to simulate missed payments
+        let mut sched: RepaymentSchedule = env.as_contract(&contract_id, || {
+            env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap()
+        });
+        sched.payments_missed = 3;
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
+        });
+
+        // Verify misses were set
+        let sched_after_late = client.get_repayment_schedule(&loan_id).unwrap();
+        assert_eq!(sched_after_late.payments_missed, 3u32);
+
+        // Setup multisig validator
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+
+        // Propose restructure
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+        client.propose_restructure(&loan_id, &new_schedule);
+
+        // Approve restructure
+        client.approve_restructure(&loan_id, &signers);
+
+        // Verify misses and payments are reset to 0
+        let final_sched = client.get_repayment_schedule(&loan_id).unwrap();
+        assert_eq!(final_sched.payments_missed, 0u32);
+        assert_eq!(final_sched.payments_made, 0u32);
+    }
+
+    #[test]
+    fn test_restructure_terms_only_post_approval() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[26u8; 32]);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        // Store original schedule
+        let original = client.get_repayment_schedule(&loan_id).unwrap();
+
+        // Propose restructure
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+        client.propose_restructure(&loan_id, &new_schedule);
+
+        // Verify terms unchanged before approval
+        let before = client.get_repayment_schedule(&loan_id).unwrap();
+        assert_eq!(before.monthly_amount, original.monthly_amount);
+        assert_eq!(before.duration_months, original.duration_months);
+
+        // Setup multisig and approve
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &_admin);
+        client.set_multisig_validator(&validator_addr);
+        client.approve_restructure(&loan_id, &signers);
+
+        // Verify terms changed post-approval
+        let after = client.get_repayment_schedule(&loan_id).unwrap();
+        assert_eq!(after.monthly_amount, 2_000_0000000i128);
+        assert_eq!(after.duration_months, 36u32);
+    }
+
+    #[test]
+    fn test_cancel_restructure_by_borrower() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[27u8; 32]);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+        client.propose_restructure(&loan_id, &new_schedule);
+        assert!(client.get_restructure_proposal(&loan_id).is_some());
+
+        // Borrower cancels
+        client.cancel_restructure(&loan_id, &borrower);
+        assert!(client.get_restructure_proposal(&loan_id).is_none());
+    }
+
+    #[test]
+    fn test_cancel_restructure_by_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[28u8; 32]);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        let new_schedule = RepaymentSchedule {
+            monthly_amount: 2_000_0000000i128,
+            duration_months: 36u32,
+            next_due_ledger: 0u32,
+            payments_made: 0u32,
+            payments_missed: 0u32,
+        };
+        client.propose_restructure(&loan_id, &new_schedule);
+        assert!(client.get_restructure_proposal(&loan_id).is_some());
+
+        // Admin cancels
+        client.cancel_restructure(&loan_id, &_admin);
+        assert!(client.get_restructure_proposal(&loan_id).is_none());
+    }
+
+    #[test]
+    fn test_cancel_restructure_fails_no_proposal() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = BytesN::from_array(&env, &[29u8; 32]);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        let res = client.try_cancel_restructure(&loan_id, &_admin);
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::NoRestructureProposal);
     }
 }
