@@ -30,6 +30,8 @@ export interface Config {
   allowedOrigins: string[];
   adminApiKey: string;
   redisUrl: string | null;
+  redisClusterEnabled: boolean;
+  redisClusterNodes: string[];
   remittanceCacheTtl: number;
   /** KMS-managed Key Encryption Keys, keyed by rotation version (e.g. "v1", "v2"). */
   kmsKeyVersions: Record<string, string>;
@@ -94,6 +96,10 @@ export function loadConfig(): Config {
       : ["http://localhost:3000", "http://localhost:4000"],
     adminApiKey: process.env.ADMIN_API_KEY || "default_admin_api_key",
     redisUrl: process.env.REDIS_URL || null,
+    redisClusterEnabled: process.env.REDIS_CLUSTER_ENABLED === "true",
+    redisClusterNodes: process.env.REDIS_CLUSTER_NODES
+      ? process.env.REDIS_CLUSTER_NODES.split(",").map((n) => n.trim())
+      : [],
     remittanceCacheTtl: parseInt(process.env.REMITTANCE_CACHE_TTL || "300", 10),
     kmsKeyVersions: parseKmsKeyVersions(process.env.KMS_KEY_VERSIONS),
     kmsActiveKeyVersion: process.env.KMS_ACTIVE_KEY_VERSION || "v1",

@@ -30,6 +30,8 @@ import crypto from "crypto";
 import { prisma } from "./db.js";
 import logger from "../utils/logger.js";
 import { encrypt, decrypt } from "../utils/crypto.js";
+import { queueService, WebhookJobData } from "./queueService.js";
+import { loadConfig } from "../config.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -303,9 +305,8 @@ export async function rotateSecret(
 /**
  * Dispatch a contract event to all active subscriptions that match its topic.
  *
- * Each dispatch is fire-and-forget from the caller's perspective — delivery
- * is retried internally up to MAX_ATTEMPTS times with exponential backoff.
- * The function returns immediately after spawning the background work.
+ * Each dispatch adds BullMQ jobs for load-balanced processing by webhook workers.
+ * The function returns immediately — retries and failover are handled by the queue.
  */
 export function dispatchEvent(
   topic: EventTopic,
@@ -333,10 +334,31 @@ async function _dispatchEventAsync(
 
   if (subscriptions.length === 0) return;
 
-  // Fan-out: dispatch to every matching subscriber concurrently.
-  await Promise.allSettled(
-    subscriptions.map((sub: any) => _deliverToSubscription(sub, topic, data))
+  // Enqueue a BullMQ job per subscription for load-balanced delivery
+  const results = await Promise.allSettled(
+    subscriptions.map((sub: any) =>
+      queueService.addWebhookJob({
+        subscriptionId: sub.id,
+        url: sub.url,
+        encryptedSecret: sub.secret,
+        topic,
+        data,
+      } as WebhookJobData, {
+        attempts: MAX_ATTEMPTS,
+        backoff: { type: "exponential", delay: BASE_BACKOFF_MS },
+      })
+    )
   );
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === "rejected") {
+      logger.error("[webhook] failed to enqueue job", {
+        subscriptionId: subscriptions[i]?.id,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    }
+  }
 }
 
 /**
@@ -550,7 +572,6 @@ export async function sendWebhook(
   url: string,
   payload: unknown
 ): Promise<WebhookResult> {
-  const { loadConfig } = await import("../config.js");
   const secret = loadConfig().webhookSecret;
   const timestamp = String(Date.now());
   const body = JSON.stringify(payload);
