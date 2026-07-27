@@ -12,7 +12,6 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
-import rTracer from "cls-rtracer";
 import { swaggerSpec } from "./docs/swagger.js";
 import { healthRouter } from "./routes/health.js";
 import { verificationRouter } from "./routes/verification.js";
@@ -29,6 +28,7 @@ import { metricsRouter } from "./routes/metrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { correlationId } from "./middleware/correlationId.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
 import {
@@ -52,6 +52,9 @@ const PORT = config.port;
 void initializeRedis();
 
 // ── Middleware ───────────────────────────────────────────────────────────
+// Correlation ID must be first so every downstream middleware, handler and
+// log line for this request resolves the same trace ID.
+app.use(correlationId);
 // HTTP metrics must be first so the timer starts at the earliest possible point.
 app.use(httpMetricsMiddleware);
 app.use(requestLogger);
