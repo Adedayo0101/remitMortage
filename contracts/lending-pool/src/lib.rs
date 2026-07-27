@@ -136,6 +136,32 @@ impl LendingPoolContract {
             .set(&DataKey::Investor(investor.clone()), record);
     }
 
+    fn read_debt_balance(env: &Env, owner: &Address, tranche: &Tranche) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DebtBalance(owner.clone(), tranche.clone()))
+            .unwrap_or(0i128)
+    }
+
+    fn set_debt_balance(env: &Env, owner: &Address, tranche: &Tranche, amount: i128) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::DebtBalance(owner.clone(), tranche.clone()), &amount);
+    }
+
+    fn read_debt_total_supply(env: &Env, tranche: &Tranche) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DebtTotalSupply(tranche.clone()))
+            .unwrap_or(0i128)
+    }
+
+    fn set_debt_total_supply(env: &Env, tranche: &Tranche, amount: i128) {
+        env.storage()
+            .instance()
+            .set(&DataKey::DebtTotalSupply(tranche.clone()), &amount);
+    }
+
     fn read_total_liquidity(env: &Env) -> i128 {
         env.storage()
             .instance()
@@ -486,6 +512,22 @@ impl LendingPoolContract {
         (amount * fee_bps as i128) / BPS_SCALE as i128
     }
 
+    fn current_yield_share(env: &Env, amount: i128) -> i128 {
+        let total_dep = Self::read_total_deposited(env);
+        if total_dep == 0 || amount <= 0 {
+            return 0;
+        }
+        (amount * Self::read_total_repaid_interest(env)) / total_dep
+    }
+
+    fn settle_accrued_yield(env: &Env, record: &mut InvestorRecord) {
+        let pending = Self::calculate_pending_yield(env, record);
+        if pending > 0 {
+            record.accrued_yield += pending;
+        }
+        record.claimed_yield = Self::current_yield_share(env, record.deposited);
+    }
+
     /// Map an anchored verification score to the corresponding interest rate tier.
     fn interest_rate_from_score(score: u32) -> u32 {
         if score >= 80 {
@@ -571,6 +613,8 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .set(&DataKey::JuniorTranche, &empty_tranche);
+        Self::set_debt_total_supply(&env, &Tranche::Senior, 0);
+        Self::set_debt_total_supply(&env, &Tranche::Junior, 0);
 
         env.storage().instance().set(&DataKey::TotalRepaidInterest, &0i128);
         env.storage().instance().set(&DataKey::ActiveLoanCommitments, &0i128);
@@ -639,6 +683,11 @@ impl LendingPoolContract {
         record.deposited += amount;
         Self::set_investor(&env, &investor, &record);
 
+        let debt_balance = Self::read_debt_balance(&env, &investor, &tranche) + amount;
+        Self::set_debt_balance(&env, &investor, &tranche, debt_balance);
+        let debt_supply = Self::read_debt_total_supply(&env, &tranche) + amount;
+        Self::set_debt_total_supply(&env, &tranche, debt_supply);
+
         // Update per-tranche aggregate.
         let mut tranche_info = Self::read_tranche_info(&env, &tranche);
         tranche_info.total_deposited += amount;
@@ -662,6 +711,10 @@ impl LendingPoolContract {
         env.events().publish(
             (symbol_short!("deposit"),),
             (investor.clone(), amount, total),
+        );
+        env.events().publish(
+            (symbol_short!("debt_mnt"),),
+            (investor.clone(), tranche.clone(), amount),
         );
 
         Ok(())
@@ -1433,11 +1486,11 @@ impl LendingPoolContract {
 
         let mut loan = Self::read_loan(&env, &loan_id)?;
 
-        if loan.status == LoanStatus::Repaid || loan.status == LoanStatus::Cancelled {
+        if loan.status != LoanStatus::Approved {
+            if loan.status == LoanStatus::Defaulted {
+                return Err(PoolError::AlreadyDefaulted);
+            }
             return Err(PoolError::InvalidLoanState);
-        }
-        if loan.status == LoanStatus::Defaulted {
-            return Err(PoolError::AlreadyDefaulted);
         }
 
         if !env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
@@ -1452,54 +1505,47 @@ impl LendingPoolContract {
 
         // Outstanding loss = principal + accrued interest - total repaid, which
         // is tracked as the compounded outstanding debt.
-        let loss = loan.outstanding_debt;
+        let gross_loss = loan.outstanding_debt;
 
         let sched: RepaymentSchedule = env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap();
         if sched.payments_missed < DEFAULT_MISSED_THRESHOLD {
             return Err(PoolError::NotEligibleForDefault);
         }
 
-        // Seize collateral from escrow contract
-        // Invokes: escrow::seize_collateral(borrower, lending_pool_address)
+        // Seize borrower collateral into the pool. The escrow contract returns
+        // the stablecoin value routed to this contract address.
         let seized_amount: i128 = env.invoke_contract(
             &config.escrow,
             &soroban_sdk::Symbol::new(&env, "seize_collateral"),
             soroban_sdk::vec![&env, loan.borrower.into_val(&env), env.current_contract_address().into_val(&env)],
         );
 
-        // Reduce outstanding defaulted loss using the seized savings balance
-        loan.repaid += seized_amount;
-        loan.status = LoanStatus::Defaulted;
-        Self::set_loan(&env, &loan_id, &loan);
+        let net_loss = gross_loss.saturating_sub(seized_amount);
 
-        // Update lending pool total liquidity
-        let mut liquidity = Self::read_total_liquidity(&env);
-        liquidity += seized_amount;
-        env.storage().instance().set(&DataKey::TotalLiquidity, &liquidity);
+        // Collateral increases liquidity; unrecovered debt is removed from
+        // pool liquidity and absorbed by tranches.
+        let mut liquidity = Self::read_total_liquidity(&env).saturating_add(seized_amount);
+        if net_loss > 0 {
+            let mut junior_info = Self::read_tranche_info(&env, &Tranche::Junior);
+            let mut senior_info = Self::read_tranche_info(&env, &Tranche::Senior);
 
-        // Release undisbursed active commitments
-        let undisbursed = loan.principal - loan.disbursed;
-        if undisbursed > 0 {
-            let active_commitments = Self::read_active_commitments(&env);
-            env.storage()
-                .instance()
-                .set(&DataKey::ActiveLoanCommitments, &(active_commitments - undisbursed));
-        }
+            let junior_loss = net_loss.min(junior_info.total_deposited);
+            junior_info.total_deposited -= junior_loss;
+            junior_info.total_loss_absorbed += junior_loss;
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            let senior_loss = (net_loss - junior_loss).min(senior_info.total_deposited);
+            senior_info.total_deposited -= senior_loss;
+            senior_info.total_loss_absorbed += senior_loss;
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("default"),),
-            (loan_id.clone(), loan.borrower.clone(), seized_amount),
-        );
-                .set(&DataKey::TotalLiquidity, &new_liquidity);
+            Self::set_tranche_info(&env, &Tranche::Junior, &junior_info);
+            Self::set_tranche_info(&env, &Tranche::Senior, &senior_info);
 
-            // Record the realized loss for pool-health accounting.
-            let total_loss = Self::read_total_defaulted_loss(&env) + loss;
+            liquidity = liquidity.saturating_sub(net_loss);
+
+            let total_loss = Self::read_total_defaulted_loss(&env) + net_loss;
             Self::set_total_defaulted_loss(&env, total_loss);
         }
+        env.storage().instance().set(&DataKey::TotalLiquidity, &liquidity);
 
         // Release the undisbursed portion of this loan's commitment.
         let undisbursed = (loan.principal - loan.disbursed).max(0);
@@ -1518,11 +1564,21 @@ impl LendingPoolContract {
 
         loan.status = LoanStatus::Defaulted;
         loan.defaulted_ledger = env.ledger().sequence();
+        loan.repaid = loan.repaid.saturating_add(seized_amount);
+        loan.outstanding_debt = net_loss;
         Self::set_loan(&env, &loan_id, &loan);
 
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("default"),),
+            (loan_id.clone(), loan.borrower.clone(), seized_amount, net_loss),
+        );
         env.events().publish(
             (Symbol::new(&env, "loan_defaulted"),),
-            (loan_id.clone(), loss),
+            (loan_id.clone(), net_loss),
         );
 
         Ok(())
@@ -1599,6 +1655,69 @@ impl LendingPoolContract {
         Ok(())
     }
 
+    /// Transfer tokenized principal claims without changing any loan maturity
+    /// or repayment schedule. Accrued yield through the transfer ledger remains
+    /// claimable by the seller; future yield follows the recipient.
+    pub fn transfer_debt_shares(
+        env: Env,
+        from: Address,
+        to: Address,
+        tranche: Tranche,
+        amount: i128,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        from.require_auth();
+
+        if amount <= 0 || from == to {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        let from_balance = Self::read_debt_balance(&env, &from, &tranche);
+        if from_balance < amount {
+            return Err(PoolError::InsufficientBalance);
+        }
+
+        let mut from_record = Self::read_investor(&env, &from);
+        if from_record.tranche != tranche || from_record.deposited < amount {
+            return Err(PoolError::InsufficientBalance);
+        }
+        Self::settle_accrued_yield(&env, &mut from_record);
+
+        let mut to_record = Self::read_investor(&env, &to);
+        if to_record.deposited > 0 && to_record.tranche != tranche {
+            return Err(PoolError::TrancheMismatch);
+        }
+        if to_record.deposited == 0 {
+            to_record.start_ledger = env.ledger().sequence();
+            to_record.tranche = tranche.clone();
+        } else {
+            Self::settle_accrued_yield(&env, &mut to_record);
+        }
+
+        from_record.deposited -= amount;
+        from_record.claimed_yield = Self::current_yield_share(&env, from_record.deposited);
+
+        to_record.deposited += amount;
+        to_record.claimed_yield = Self::current_yield_share(&env, to_record.deposited);
+
+        Self::set_investor(&env, &from, &from_record);
+        Self::set_investor(&env, &to, &to_record);
+        Self::set_debt_balance(&env, &from, &tranche, from_balance - amount);
+        let to_balance = Self::read_debt_balance(&env, &to, &tranche);
+        Self::set_debt_balance(&env, &to, &tranche, to_balance + amount);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (symbol_short!("debt_xfer"),),
+            (from.clone(), to.clone(), tranche.clone(), amount),
+        );
+
+        Ok(())
+    }
+
     /// Investor withdraws available capital.
     ///
     /// A dynamic withdrawal fee is applied based on the pool's current utilization rate:
@@ -1643,6 +1762,18 @@ impl LendingPoolContract {
         }
 
         // Update investor state
+        let mut tranche_info = Self::read_tranche_info(&env, &record.tranche);
+        tranche_info.total_deposited = tranche_info.total_deposited.saturating_sub(amount);
+        Self::set_tranche_info(&env, &record.tranche, &tranche_info);
+
+        let debt_balance = Self::read_debt_balance(&env, &investor, &record.tranche);
+        if debt_balance < amount {
+            return Err(PoolError::InsufficientBalance);
+        }
+        Self::set_debt_balance(&env, &investor, &record.tranche, debt_balance - amount);
+        let debt_supply = Self::read_debt_total_supply(&env, &record.tranche);
+        Self::set_debt_total_supply(&env, &record.tranche, debt_supply.saturating_sub(amount));
+
         record.deposited -= amount;
         Self::set_investor(&env, &investor, &record);
 
@@ -1703,7 +1834,9 @@ impl LendingPoolContract {
         let config = Self::read_config(&env)?;
 
         // Update state
-        record.claimed_yield += pending_yield;
+        let spend_accrued = pending_yield.min(record.accrued_yield);
+        record.accrued_yield -= spend_accrued;
+        record.claimed_yield = Self::current_yield_share(&env, record.deposited);
         Self::set_investor(&env, &investor, &record);
 
         let liquidity = Self::read_total_liquidity(&env) - pending_yield;
@@ -1725,21 +1858,12 @@ impl LendingPoolContract {
     // ── Query Functions ──────────────────────────────────────────────────
 
     fn calculate_pending_yield(env: &Env, record: &InvestorRecord) -> i128 {
-        let total_dep = Self::read_total_deposited(env);
-        if total_dep == 0 {
-            return 0;
-        }
-
-        let total_interest = Self::read_total_repaid_interest(env);
-
-        // Math: (investor.deposited * total_interest) / total_deposited
-        // Note: Using point-in-time calculation as accepted in the implementation plan
-        let share = (record.deposited * total_interest) / total_dep;
+        let share = Self::current_yield_share(env, record.deposited);
 
         if share > record.claimed_yield {
-            share - record.claimed_yield
+            record.accrued_yield + (share - record.claimed_yield)
         } else {
-            0
+            record.accrued_yield
         }
     }
 
@@ -1814,6 +1938,16 @@ impl LendingPoolContract {
     /// Returns an investor's record.
     pub fn get_investor_info(env: Env, investor: Address) -> InvestorRecord {
         Self::read_investor(&env, &investor)
+    }
+
+    /// Returns transferable principal-claim balance for an investor/tranche.
+    pub fn debt_balance(env: Env, owner: Address, tranche: Tranche) -> i128 {
+        Self::read_debt_balance(&env, &owner, &tranche)
+    }
+
+    /// Returns total tokenized principal-claim supply for a tranche.
+    pub fn debt_total_supply(env: Env, tranche: Tranche) -> i128 {
+        Self::read_debt_total_supply(&env, &tranche)
     }
 
     /// Returns a loan record by ID.
