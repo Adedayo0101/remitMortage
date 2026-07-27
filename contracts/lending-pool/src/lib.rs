@@ -5303,6 +5303,47 @@ mod test {
     }
 
     #[test]
+    fn test_maturity_rebate_reverted_on_cancelled_loan() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 10_000_0000000i128;
+
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, principal * 2);
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.cancel_loan(&loan_id);
+
+        // Rebate should fail — loan was cancelled, never repaid.
+        let result = client.try_claim_maturity_rebate(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::InvalidLoanState));
+    }
+
+    #[test]
+    fn test_maturity_rebate_reverted_on_requested_loan() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 10_000_0000000i128;
+
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, principal * 2);
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+
+        // Loan is still in Requested state — rebate should fail.
+        let result = client.try_claim_maturity_rebate(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::InvalidLoanState));
+    }
+
+    #[test]
     fn test_borrower_lifetime_interest_tracking() {
         let env = Env::default();
         env.mock_all_auths();
