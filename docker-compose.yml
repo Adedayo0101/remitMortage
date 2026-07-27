@@ -20,6 +20,72 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  redis-cluster-node-1:
+    image: redis:7-alpine
+    container_name: remitmortgage-redis-1
+    ports:
+      - "6379:6379"
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes-1.conf --appendonly yes --port 6379
+    volumes:
+      - redis-node-1-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis-cluster-node-2:
+    image: redis:7-alpine
+    container_name: remitmortgage-redis-2
+    ports:
+      - "6380:6379"
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes-2.conf --appendonly yes --port 6379
+    volumes:
+      - redis-node-2-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis-cluster-node-3:
+    image: redis:7-alpine
+    container_name: remitmortgage-redis-3
+    ports:
+      - "6381:6379"
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes-3.conf --appendonly yes --port 6379
+    volumes:
+      - redis-node-3-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: remitmortgage-redis-init
+    depends_on:
+      redis-cluster-node-1:
+        condition: service_healthy
+      redis-cluster-node-2:
+        condition: service_healthy
+      redis-cluster-node-3:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Creating Redis cluster...' &&
+        redis-cli --cluster create
+          redis-cluster-node-1:6379
+          redis-cluster-node-2:6379
+          redis-cluster-node-3:6379
+          --cluster-replicas 0
+          --cluster-yes
+      "
+
   migration:
     build:
       context: ./backend
@@ -42,10 +108,14 @@ services:
       PORT: 4000
       STELLAR_NETWORK: testnet
       HORIZON_URL: http://stellar-quickstart:8000
+      REDIS_CLUSTER_ENABLED: "true"
+      REDIS_CLUSTER_NODES: redis-cluster-node-1:6379,redis-cluster-node-2:6379,redis-cluster-node-3:6379
     ports:
       - "4000:4000"
     depends_on:
       migration:
+        condition: service_completed_successfully
+      redis-cluster-init:
         condition: service_completed_successfully
     restart: unless-stopped
 
@@ -54,9 +124,6 @@ services:
     container_name: stellar-quickstart
     ports:
       - "8000:8000"
-    # Command arguments for running a standalone local network.
-    # --local mode runs Horizon, Soroban RPC, Friendbot, and Core in local network mode.
-    # --enable-soroban-rpc starts the Soroban RPC server inside the container.
     command: >
       /start --local --enable-soroban-rpc
     environment:
@@ -67,4 +134,7 @@ services:
 
 volumes:
   postgres-data:
+  redis-node-1-data:
+  redis-node-2-data:
+  redis-node-3-data:
   stellar-data:

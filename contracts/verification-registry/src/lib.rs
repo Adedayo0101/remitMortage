@@ -5,7 +5,7 @@ mod types;
 
 use crate::errors::RegistryError;
 use crate::types::{DataKey, RateConfig, RiskRecord, RiskTier, VerificationRecord};
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env};
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
@@ -40,7 +40,6 @@ impl VerificationRegistryContract {
         let key = Self::record_key(borrower);
         let record: Option<VerificationRecord> = env.storage().persistent().get(&key);
         if record.is_some() {
-            // Keep the anchor alive for as long as it is actively read.
             env.storage().persistent().extend_ttl(
                 &key,
                 PERSISTENT_LIFETIME_THRESHOLD,
@@ -133,12 +132,17 @@ impl VerificationRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         Self::bump_instance(&env);
 
+        env.events().publish(
+            (symbol_short!("init"),),
+            (admin,),
+        );
+
         Ok(())
     }
 
     /// Anchor a borrower eligibility report hash on-chain.
     ///
-    /// Admin-only. The record expires `duration_ledgers` after the current
+    /// Admin-only. The record expires duration_ledgers after the current
     /// ledger; registering again for the same borrower overwrites the
     /// previous record.
     pub fn register_verification(
@@ -177,11 +181,16 @@ impl VerificationRegistryContract {
         Self::set_risk_record(&env, &borrower, &Self::seed_risk_from_score(score));
         Self::bump_instance(&env);
 
+        env.events().publish(
+            (symbol_short!("vreg"),),
+            (admin, borrower, score, verified_ledger, record.expiration_ledger),
+        );
+
         Ok(())
     }
 
-    /// Returns `true` if the borrower has a valid, non-expired verification
-    /// record anchored on-chain, and `false` otherwise.
+    /// Returns 	rue if the borrower has a valid, non-expired verification
+    /// record anchored on-chain, and alse otherwise.
     pub fn is_verified(env: Env, borrower: Address) -> bool {
         match Self::read_record(&env, &borrower) {
             Some(record) => env.ledger().sequence() <= record.expiration_ledger,
@@ -211,7 +220,7 @@ impl VerificationRegistryContract {
     ///
     /// Admin-only. This is the first step of a secure two-step admin
     /// transfer: the proposed admin is recorded but does not gain any
-    /// authority until they explicitly call [`Self::accept_admin`]. Calling
+    /// authority until they explicitly call [Self::accept_admin]. Calling
     /// this again overwrites any previously proposed admin, allowing the
     /// current admin to correct a mistake before acceptance.
     pub fn propose_new_admin(env: Env, new_admin: Address) -> Result<(), RegistryError> {
@@ -223,13 +232,18 @@ impl VerificationRegistryContract {
             .set(&DataKey::ProposedAdmin, &new_admin);
         Self::bump_instance(&env);
 
+        env.events().publish(
+            (symbol_short!("prop_adm"),),
+            (admin, new_admin),
+        );
+
         Ok(())
     }
 
     /// Accept a pending admin proposal, completing the two-step transfer.
     ///
     /// Can only be called by the address previously set via
-    /// [`Self::propose_new_admin`]. On success the caller becomes the new
+    /// [Self::propose_new_admin]. On success the caller becomes the new
     /// admin and the pending proposal is cleared, stripping the old admin of
     /// all authority.
     pub fn accept_admin(env: Env) -> Result<(), RegistryError> {
@@ -243,6 +257,11 @@ impl VerificationRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &proposed);
         env.storage().instance().remove(&DataKey::ProposedAdmin);
         Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("acc_adm"),),
+            (proposed,),
+        );
 
         Ok(())
     }
@@ -276,6 +295,11 @@ impl VerificationRegistryContract {
 
         env.storage().instance().set(&DataKey::RateConfig, &config);
         Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("rate_cfg"),),
+            (admin, rate_excellent_bps, rate_good_bps, rate_fair_bps, rate_fallback_bps),
+        );
 
         Ok(())
     }
@@ -311,7 +335,6 @@ impl VerificationRegistryContract {
             };
         }
 
-        // Check if borrower has valid, non-expired verification
         match Self::read_record(&env, &borrower) {
             Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
                 let score = record.score;
@@ -338,6 +361,11 @@ impl VerificationRegistryContract {
         env.storage().instance().set(&DataKey::LendingPool, &lending_pool);
         Self::bump_instance(&env);
 
+        env.events().publish(
+            (symbol_short!("set_lp"),),
+            (admin, lending_pool),
+        );
+
         Ok(())
     }
 
@@ -350,6 +378,8 @@ impl VerificationRegistryContract {
     ) -> Result<RiskRecord, RegistryError> {
         let mut profile = Self::read_risk_record(&env, &borrower)
             .unwrap_or_else(|| Self::seed_risk_from_score(70));
+
+        let old_score = profile.score;
 
         if was_on_time {
             profile.on_time_payments = profile.on_time_payments.saturating_add(1);
@@ -368,6 +398,11 @@ impl VerificationRegistryContract {
         Self::set_risk_record(&env, &borrower, &profile);
         Self::bump_instance(&env);
 
+        env.events().publish(
+            (symbol_short!("risk_upd"),),
+            (borrower, old_score, profile.score, was_on_time),
+        );
+
         Ok(profile)
     }
 
@@ -380,8 +415,8 @@ impl VerificationRegistryContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{Address, BytesN, Env};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+    use soroban_sdk::{Address, BytesN, Env, IntoVal};
 
     fn setup(env: &Env) -> (Address, VerificationRegistryContractClient<'static>) {
         let admin = Address::generate(env);
@@ -426,6 +461,37 @@ mod test {
         assert_eq!(record.report_hash, report_hash);
         assert_eq!(record.expiration_ledger, record.verified_ledger + 1_000);
         assert_eq!(record.score, 80u32);
+    }
+
+    #[test]
+    fn test_register_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+        client.register_verification(&borrower, &report_hash, &1_000u32, &80u32);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::vec![
+            &env,
+            symbol_short!("vreg").into_val(&env),
+        ];
+        assert_eq!(last_event.1, expected_topic);
+
+        let (event_admin, event_borrower, event_score, event_ledger, event_expiry): (Address, Address, u32, u32, u32) =
+            last_event.2.into_val(&env);
+        assert_eq!(event_admin, admin);
+        assert_eq!(event_borrower, borrower);
+        assert_eq!(event_score, 80u32);
+        assert_eq!(event_expiry, event_ledger + 1_000);
+
+        let record = client.get_verification(&borrower);
+        assert_eq!(event_ledger, record.verified_ledger);
     }
 
     #[test]
@@ -494,11 +560,9 @@ mod test {
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
         assert!(client.is_verified(&borrower));
 
-        // Advance the ledger right up to the expiration boundary: still valid.
         env.ledger().set_sequence_number(start + 100);
         assert!(client.is_verified(&borrower));
 
-        // One ledger past expiration: no longer valid.
         env.ledger().set_sequence_number(start + 101);
         assert!(!client.is_verified(&borrower));
     }
@@ -552,8 +616,6 @@ mod test {
         let contract_id = env.register(VerificationRegistryContract, ());
         let client = VerificationRegistryContractClient::new(&env, &contract_id);
 
-        // Authorize initialization, then withdraw all authorizations so the
-        // admin has not signed the subsequent call.
         env.mock_all_auths();
         client.initialize(&admin);
         env.set_auths(&[]);
@@ -561,7 +623,6 @@ mod test {
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[1u8; 32]);
 
-        // The admin never signed this call, so `require_auth` panics.
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
     }
 
@@ -584,8 +645,6 @@ mod test {
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[1u8; 32]);
 
-        // Only the non-admin signs. The contract calls `admin.require_auth()`,
-        // which is not satisfied, so the call fails with an authorization error.
         env.mock_auths(&[MockAuth {
             address: &non_admin,
             invoke: &MockAuthInvoke {
@@ -606,13 +665,9 @@ mod test {
 
         let new_admin = Address::generate(&env);
 
-        // Step 1: current admin proposes a new admin.
         client.propose_new_admin(&new_admin);
-
-        // Step 2: proposed admin accepts the role.
         client.accept_admin();
 
-        // The new admin can now perform admin-only actions.
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[3u8; 32]);
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
@@ -660,8 +715,6 @@ mod test {
 
         let new_admin = Address::generate(&env);
 
-        // A non-admin signs the call, but the contract requires the current
-        // admin's authorization, so the proposal is rejected.
         env.mock_auths(&[MockAuth {
             address: &non_admin,
             invoke: &MockAuthInvoke {
@@ -692,9 +745,6 @@ mod test {
         client.initialize(&admin);
         client.propose_new_admin(&new_admin);
 
-        // Someone other than the proposed admin tries to accept the role.
-        // The contract calls `proposed.require_auth()`, which the imposter's
-        // signature does not satisfy, so the call panics.
         env.mock_auths(&[MockAuth {
             address: &imposter,
             invoke: &MockAuthInvoke {
@@ -728,9 +778,6 @@ mod test {
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[5u8; 32]);
 
-        // The old admin signs, but it is no longer the admin, so the
-        // `admin.require_auth()` inside `register_verification` (which now
-        // checks `new_admin`) is not satisfied and the call panics.
         env.mock_auths(&[MockAuth {
             address: &admin,
             invoke: &MockAuthInvoke {
@@ -752,11 +799,9 @@ mod test {
         let first_candidate = Address::generate(&env);
         let second_candidate = Address::generate(&env);
 
-        // Admin proposes one address, then changes their mind.
         client.propose_new_admin(&first_candidate);
         client.propose_new_admin(&second_candidate);
 
-        // The latest proposal is the one that takes effect on acceptance.
         client.accept_admin();
 
         let borrower = Address::generate(&env);
@@ -764,4 +809,36 @@ mod test {
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
         assert!(client.is_verified(&borrower));
     }
+
+    #[test]
+    fn test_record_repayment_status_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[10u8; 32]);
+
+        client.register_verification(&borrower, &report_hash, &1_000u32, &70u32);
+
+        client.record_repayment_status(&borrower, &true);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::vec![
+            &env,
+            symbol_short!("risk_upd").into_val(&env),
+        ];
+        assert_eq!(last_event.1, expected_topic);
+
+        let (event_borrower, old_score, new_score, was_on_time): (Address, u32, u32, bool) =
+            last_event.2.into_val(&env);
+        assert_eq!(event_borrower, borrower);
+        assert_eq!(old_score, 70u32);
+        assert_eq!(new_score, 74u32);
+        assert_eq!(was_on_time, true);
+    }
 }
+
+

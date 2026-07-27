@@ -67,4 +67,12 @@ pub enum PoolError {
     ReferralCycleDetected = 30,
     /// Referral relationship already exists.
     ReferralAlreadySet = 31,
+    /// Loan must be in Approved state for this operation.
+    LoanNotActive = 32,
+    /// A restructure proposal already exists for this loan.
+    RestructureProposalExists = 33,
+    /// No pending restructure proposal for this loan.
+    NoRestructureProposal = 34,
+    /// MultisigValidator contract address has not been configured.
+    MultisigValidatorNotSet = 35,
 }

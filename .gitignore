@@ -41,3 +41,5 @@ fix.md
 
 # Private KYC document storage (envelope-encrypted at rest, never committed)
 backend/storage/kyc-private/
+
+fix.md

@@ -21,6 +21,7 @@
     "@types/ioredis": "^4.28.10",
     "axios": "^1.7.9",
     "bs58": "^6.0.0",
+    "bullmq": "^5.81.2",
     "cls-rtracer": "^2.6.4",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",

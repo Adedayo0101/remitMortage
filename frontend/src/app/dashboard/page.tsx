@@ -328,6 +328,7 @@ export default function DashboardPage() {
                   deposited={status.escrow.deposited}
                   target={status.escrow.target}
                   progress={status.escrow.progress}
+                  shareId={publicKey ?? undefined}
                 />
               </div>
               <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl flex flex-col justify-between">

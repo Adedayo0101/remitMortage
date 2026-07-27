@@ -44,12 +44,33 @@ import { startBackupScheduler } from "./jobs/backupScheduler.js";
 import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
 import { initializeRedis } from "./services/redis.js";
+import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js";
+import { queueService } from "./services/queueService.js";
+import { startNotificationWorker, stopNotificationWorker } from "./workers/notificationWorker.js";
+import { startWebhookWorker, stopWebhookWorker } from "./workers/webhookWorker.js";
 
 const app = express();
 const config = loadConfig();
 const PORT = config.port;
 
 void initializeRedis();
+
+// ── Background Queue Initialization ─────────────────────────────────
+void (async () => {
+  try {
+    await initializeRedisCluster();
+    await queueService.initialize();
+    await Promise.all([
+      startNotificationWorker(),
+      startWebhookWorker(),
+    ]);
+    logger.info("[queue] BullMQ workers started", {
+      mode: config.redisClusterEnabled ? "cluster" : "single",
+    });
+  } catch (err) {
+    logger.error("[queue] failed to start workers, running without queue", { err });
+  }
+})();
 
 // ── Middleware ───────────────────────────────────────────────────────────
 // Correlation ID must be first so every downstream middleware, handler and
@@ -145,5 +166,21 @@ app.listen(PORT, () => {
   startScheduler();
   startBackupScheduler();
 });
+
+// ── Graceful Shutdown ─────────────────────────────────────────────────
+async function shutdown(signal: string) {
+  logger.info(`[shutdown] received ${signal}, shutting down gracefully`);
+  await Promise.allSettled([
+    stopNotificationWorker(),
+    stopWebhookWorker(),
+    queueService.close(),
+    closeCluster(),
+  ]);
+  logger.info("[shutdown] complete");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 export default app;
