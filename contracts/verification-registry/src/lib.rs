@@ -13,6 +13,12 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 const PERSISTENT_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 
+// ── Rate Cap & Floor Constants ────────────────────────────────────────────
+/// Maximum interest rate cap: 18% APR (1800 basis points).
+const RATE_CAP_BPS: u32 = 1800;
+/// Minimum interest rate floor: 2% APR (200 basis points).
+const RATE_FLOOR_BPS: u32 = 200;
+
 /// Verification Registry Contract
 ///
 /// Acts as an on-chain anchor for borrower eligibility verification
@@ -111,6 +117,20 @@ impl VerificationRegistryContract {
 
     fn read_lending_pool(env: &Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::LendingPool)
+    }
+
+    fn read_rate_cap(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RateCap)
+            .unwrap_or(RATE_CAP_BPS)
+    }
+
+    fn read_rate_floor(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RateFloor)
+            .unwrap_or(RATE_FLOOR_BPS)
     }
 
     fn bump_instance(env: &Env) {
@@ -267,11 +287,17 @@ impl VerificationRegistryContract {
         let admin = Self::read_admin(&env)?;
         admin.require_auth();
 
+        let cap = Self::read_rate_cap(&env);
+        let floor = Self::read_rate_floor(&env);
+
+        // Clamp each tier rate within the configured boundaries.
+        let clamp = |r: u32| -> u32 { r.max(floor).min(cap) };
+
         let config = RateConfig {
-            rate_excellent_bps,
-            rate_good_bps,
-            rate_fair_bps,
-            rate_fallback_bps,
+            rate_excellent_bps: clamp(rate_excellent_bps),
+            rate_good_bps: clamp(rate_good_bps),
+            rate_fair_bps: clamp(rate_fair_bps),
+            rate_fallback_bps: clamp(rate_fallback_bps),
         };
 
         env.storage().instance().set(&DataKey::RateConfig, &config);
@@ -283,6 +309,8 @@ impl VerificationRegistryContract {
     /// Get the current dynamic interest rate configuration.
     ///
     /// Returns the rate config if set, or defaults if not yet configured.
+    /// Individual rates are clamped to the configured cap and floor before
+    /// being returned.
     pub fn get_rate_config(env: Env) -> RateConfig {
         env.storage()
             .instance()
@@ -295,38 +323,82 @@ impl VerificationRegistryContract {
             })
     }
 
+    /// Set the interest rate cap and floor limits in basis points.
+    ///
+    /// Admin-only. The floor must be less than or equal to the cap, and both
+    /// must be in the range 0–10000 bps. These limits are enforced in
+    /// `set_rate_config` and `get_borrower_rate` so that no computed rate
+    /// exceeds the configured boundaries.
+    pub fn set_rate_limits(
+        env: Env,
+        cap_bps: u32,
+        floor_bps: u32,
+    ) -> Result<(), RegistryError> {
+        let admin = Self::read_admin(&env)?;
+        admin.require_auth();
+
+        if floor_bps > cap_bps {
+            return Err(RegistryError::InvalidRateLimits);
+        }
+
+        if cap_bps > 10_000 {
+            return Err(RegistryError::InvalidRateLimits);
+        }
+
+        env.storage().instance().set(&DataKey::RateCap, &cap_bps);
+        env.storage().instance().set(&DataKey::RateFloor, &floor_bps);
+        Self::bump_instance(&env);
+
+        Ok(())
+    }
+
+    /// Returns the current rate cap in basis points.
+    pub fn get_rate_cap(env: Env) -> u32 {
+        Self::read_rate_cap(&env)
+    }
+
+    /// Returns the current rate floor in basis points.
+    pub fn get_rate_floor(env: Env) -> u32 {
+        Self::read_rate_floor(&env)
+    }
+
     /// Resolve the interest rate for a borrower based on their credit score.
     ///
     /// Uses the current rate configuration and the borrower's verification
     /// record. Returns the fallback rate if no valid verification exists.
     pub fn get_borrower_rate(env: Env, borrower: Address) -> u32 {
         let config = Self::get_rate_config(env.clone());
+        let cap = Self::read_rate_cap(&env);
+        let floor = Self::read_rate_floor(&env);
 
-        if let Some(risk) = Self::read_risk_record(&env, &borrower) {
-            return match Self::tier_from_score(risk.score) {
+        let rate = if let Some(risk) = Self::read_risk_record(&env, &borrower) {
+            match Self::tier_from_score(risk.score) {
                 RiskTier::Excellent => config.rate_excellent_bps,
                 RiskTier::Good => config.rate_good_bps,
                 RiskTier::Fair => config.rate_fair_bps,
                 RiskTier::Poor => config.rate_fallback_bps,
-            };
-        }
-
-        // Check if borrower has valid, non-expired verification
-        match Self::read_record(&env, &borrower) {
-            Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
-                let score = record.score;
-                if score >= 80 {
-                    config.rate_excellent_bps
-                } else if score >= 60 {
-                    config.rate_good_bps
-                } else if score >= 40 {
-                    config.rate_fair_bps
-                } else {
-                    config.rate_fallback_bps
-                }
             }
-            _ => config.rate_fallback_bps,
-        }
+        } else {
+            // Check if borrower has valid, non-expired verification
+            match Self::read_record(&env, &borrower) {
+                Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
+                    let score = record.score;
+                    if score >= 80 {
+                        config.rate_excellent_bps
+                    } else if score >= 60 {
+                        config.rate_good_bps
+                    } else if score >= 40 {
+                        config.rate_fair_bps
+                    } else {
+                        config.rate_fallback_bps
+                    }
+                }
+                _ => config.rate_fallback_bps,
+            }
+        };
+
+        // Clamp the resolved rate within the configured boundaries.
+        rate.max(floor).min(cap)
     }
 
     /// Configure the lending pool contract that is allowed to push repayment
