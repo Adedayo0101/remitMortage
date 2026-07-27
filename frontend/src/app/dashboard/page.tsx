@@ -11,6 +11,7 @@ import LoanStatusCard from "../../components/LoanStatusCard";
 import DepositModal from "../../components/DepositModal";
 import WithdrawModal from "../../components/WithdrawModal";
 import MilestoneTimeline, { type MilestoneNode } from "../../components/MilestoneTimeline";
+import YieldEstimatorCalculator from "../../components/YieldEstimatorCalculator";
 import {
   consumeTxSuccessFeedback,
   shortenAddress,
@@ -320,6 +321,11 @@ export default function DashboardPage() {
                 </div>
               </div>
             </div>
+
+            {/* Yield & APY Estimator */}
+            <YieldEstimatorCalculator
+              initialAmount={Number(status.escrow.deposited) || undefined}
+            />
 
             {/* Savings & Loan Cards Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
