@@ -5,14 +5,16 @@ horizontal pod autoscaling.
 
 | File | Purpose |
 | --- | --- |
-| `backend-deployment.yaml` | Backend Deployment with CPU/memory requests and limits |
+| `backend-deployment.yaml` | Backend Deployment with CPU/memory requests, limits, ConfigMap, and secret environment mapping |
 | `backend-service.yaml` | ClusterIP Service fronting the backend pods |
-| `backend-hpa.yaml` | HorizontalPodAutoscaler: 2–10 replicas, scale at 80% CPU |
+| `backend-configmap.yaml` | ConfigMap defining standard non-sensitive variables |
+| `backend-ingress.yaml` | Ingress mapping external/internal APIs to the ClusterIP Service |
+| `backend-hpa.yaml` | HorizontalPodAutoscaler: 2–10 replicas, scale at 80% CPU and 85% Memory |
 | `loadtest-job.yaml` | Job that generates mock request load to verify scale-up |
 
 ## Prerequisites
 
-The HPA reads pod CPU from the metrics API, so `metrics-server` must be running:
+The HPA reads pod CPU/memory from the metrics API, so `metrics-server` must be running:
 
 ```bash
 kubectl get deployment metrics-server -n kube-system
@@ -20,14 +22,33 @@ kubectl get deployment metrics-server -n kube-system
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 ```
 
+Before applying, ensure the backend secrets exist:
+```bash
+kubectl create secret generic remitmortgage-backend-secrets \
+  --from-literal=database-url="postgres://..." \
+  --from-literal=redis-url="redis://..." \
+  --from-literal=redis-cluster-nodes="..." \
+  --from-literal=otel-exporter-otlp-endpoint="http://jaeger-collector:4318"
+```
+
 CPU **requests** are required on the Deployment — utilization is a percentage of
 the request, and an HPA targeting a pod without one reports `<unknown>`.
+
+## Dry-run Validation
+
+You can validate the manifests syntax before deploying using `kubectl`:
+
+```bash
+kubectl apply --dry-run=client -f devops/k8s/
+```
 
 ## Deploy
 
 ```bash
+kubectl apply -f devops/k8s/backend-configmap.yaml
 kubectl apply -f devops/k8s/backend-deployment.yaml
 kubectl apply -f devops/k8s/backend-service.yaml
+kubectl apply -f devops/k8s/backend-ingress.yaml
 kubectl apply -f devops/k8s/backend-hpa.yaml
 ```
 
