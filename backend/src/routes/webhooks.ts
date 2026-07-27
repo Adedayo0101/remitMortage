@@ -27,6 +27,7 @@ import {
   rotateSecret,
   replayDelivery,
   verifySignature,
+  verifySubscriptionSignature,
   type EventTopic,
 } from "../services/webhook.js";
 
@@ -294,8 +295,11 @@ webhooksRouter.patch(
  *   post:
  *     summary: Rotate the HMAC secret for a subscription
  *     description: >
- *       Generates a new 32-byte random secret. The response includes the
- *       plaintext secret **once** — update your receiver before rotating.
+ *       Generates a new 32-byte random secret and promotes it to primary.
+ *       The prior secret is kept as a secondary key for a 7-day grace period
+ *       so deliveries verified against it don't break mid-rotation, then it
+ *       is pruned automatically. The response includes the new plaintext
+ *       secret **once** — update your receiver promptly.
  *     tags: [Webhooks]
  *     security:
  *       - bearerAuth: []
@@ -324,7 +328,8 @@ webhooksRouter.post(
       const { plaintextSecret } = await rotateSecret(req.params.id);
       res.json({
         secret: plaintextSecret,
-        _warning: "Update your receiver with the new secret before the old one expires.",
+        _warning:
+          "Update your receiver with the new secret. The previous secret keeps validating for a 7-day grace period, then is pruned.",
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to rotate secret";
@@ -485,6 +490,10 @@ webhooksRouter.post(
  *     description: >
  *       Public helper endpoint. Receivers can POST their raw request body,
  *       timestamp, and signature here to confirm the signature is valid.
+ *       Provide either `secret` directly, or `subscriptionId` to verify
+ *       against that subscription's stored keys — which checks the current
+ *       primary key *and*, during the post-rotation grace period, the
+ *       previous key, so verification doesn't break mid-rotation.
  *       This endpoint does NOT require authentication.
  *     tags: [Webhooks]
  *     requestBody:
@@ -493,31 +502,55 @@ webhooksRouter.post(
  *         application/json:
  *           schema:
  *             type: object
- *             required: [secret, timestamp, rawBody, signature]
+ *             required: [timestamp, rawBody, signature]
  *             properties:
- *               secret:    { type: string, description: "Shared HMAC secret" }
+ *               secret:         { type: string, description: "Shared HMAC secret (mutually exclusive with subscriptionId)" }
+ *               subscriptionId: { type: string, description: "Verify against a subscription's primary + previous keys" }
  *               timestamp: { type: string, description: "Value of X-Webhook-Timestamp header" }
  *               rawBody:   { type: string, description: "Raw (unparsed) JSON body string" }
  *               signature: { type: string, description: "Value of X-Webhook-Signature header (sha256=...)" }
  *     responses:
  *       200:
  *         description: Verification result
+ *       400:
+ *         description: Validation error
  */
 webhooksRouter.post(
   "/verify",
   async (req: Request, res: Response): Promise<void> => {
-    const { secret, timestamp, rawBody, signature } = req.body ?? {};
+    const { secret, subscriptionId, timestamp, rawBody, signature } = req.body ?? {};
 
     if (
-      typeof secret !== "string" ||
       typeof timestamp !== "string" ||
       typeof rawBody !== "string" ||
-      typeof signature !== "string"
+      typeof signature !== "string" ||
+      (secret === undefined && subscriptionId === undefined)
     ) {
       res.status(400).json({
         error: "validation",
-        message: "Provide: secret (string), timestamp (string), rawBody (string), signature (string)",
+        message:
+          "Provide timestamp (string), rawBody (string), signature (string), and either secret (string) or subscriptionId (string)",
       });
+      return;
+    }
+
+    if (subscriptionId !== undefined) {
+      if (typeof subscriptionId !== "string") {
+        res.status(400).json({ error: "validation", message: "`subscriptionId` must be a string" });
+        return;
+      }
+      const valid = await verifySubscriptionSignature(subscriptionId, timestamp, rawBody, signature);
+      res.json({
+        valid,
+        message: valid
+          ? "Signature is valid."
+          : "Signature is invalid, the timestamp is outside the 5-minute tolerance window, or no active key on this subscription matches.",
+      });
+      return;
+    }
+
+    if (typeof secret !== "string") {
+      res.status(400).json({ error: "validation", message: "`secret` must be a string" });
       return;
     }
 

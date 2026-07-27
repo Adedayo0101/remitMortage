@@ -207,7 +207,7 @@ fn test_submit_and_get_proposal() {
     let (_account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xAA);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
     let proposal = client.get_proposal(&pid);
     assert_eq!(proposal.state, ProposalState::Pending);
     assert_eq!(proposal.created_at, 1_000_000);
