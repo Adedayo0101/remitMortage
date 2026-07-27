@@ -14,6 +14,7 @@ import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./docs/swagger.js";
 import { healthRouter } from "./routes/health.js";
+import { rpcHealthRouter } from "./routes/rpcHealth.js";
 import { verificationRouter } from "./routes/verification.js";
 import { borrowerRouter } from "./routes/borrower.js";
 import { loanRouter } from "./routes/loan.js";
@@ -41,6 +42,7 @@ import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
 import { startBackupScheduler } from "./jobs/backupScheduler.js";
+import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
 import { initializeRedis } from "./services/redis.js";
@@ -130,6 +132,7 @@ const verificationLimiter = rateLimit({
 // /metrics is unauthenticated at the Express level — the route itself
 // enforces bearer-token auth via metricsAuthMiddleware when METRICS_TOKEN is set.
 app.use("/metrics", metricsRouter);
+app.use("/api/health/rpc", rpcHealthRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
 app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
@@ -165,6 +168,9 @@ app.listen(PORT, () => {
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();
+  // Proactively monitor Soroban RPC node health and alert operators on
+  // degradation, downtime or failover through the existing webhook mechanism.
+  startRpcHealthMonitor();
 });
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────
