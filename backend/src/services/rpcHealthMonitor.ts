@@ -91,15 +91,14 @@ const DEFAULT_TIMEOUT_MS = 3000;
 
 /** Wrap a promise so it rejects if it does not settle within `timeoutMs`. */
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
-  return Promise.race([
-    operation,
-    new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`Probe timed out after ${timeoutMs}ms`)),
-        timeoutMs
-      )
-    ),
-  ]);
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Probe timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+  });
+  return Promise.race([operation, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
