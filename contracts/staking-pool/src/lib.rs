@@ -479,6 +479,37 @@ impl StakingPoolContract {
     pub fn version(_env: Env) -> u32 {
         1
     }
+
+    /// Preview the yield waterfall: returns how a reward of `total_reward`
+    /// would be split across the supported token pools based on their
+    /// proportional deposit weights.
+    pub fn preview_yield_waterfall(env: Env, total_reward: i128) -> Vec<(Address, i128)> {
+        let mut result: Vec<(Address, i128)> = Vec::new(&env);
+        if total_reward <= 0 {
+            return result;
+        }
+
+        let tokens = Self::read_supported_tokens(&env);
+        let mut total_deposits: i128 = 0;
+        for key in tokens.keys() {
+            if let Some(info) = tokens.get(key.clone()) {
+                total_deposits += info.total_deposited;
+            }
+        }
+
+        if total_deposits == 0 {
+            return result;
+        }
+
+        for key in tokens.keys() {
+            if let Some(info) = tokens.get(key.clone()) {
+                let alloc = (total_reward * info.total_deposited) / total_deposits;
+                result.push_back((key.clone(), alloc));
+            }
+        }
+
+        result
+    }
 }
 
 #[cfg(test)]
