@@ -195,6 +195,10 @@ pub enum DataKey {
     Config,
     /// Investor record keyed by investor address.
     Investor(Address),
+    /// Transferable senior/junior principal-claim balance.
+    DebtBalance(Address, Tranche),
+    /// Total debt-share supply for a tranche.
+    DebtTotalSupply(Tranche),
     /// Total available liquidity in the pool.
     TotalLiquidity,
     /// Loan record keyed by a unique loan ID (hash).
@@ -233,6 +237,13 @@ pub enum DataKey {
     /// interest rates during loan requests. Absent until `set_verification_registry`
     /// is called by the admin.
     VerificationRegistry,
+    /// Address of the InsurancePool contract that receives the 5 bps
+    /// disbursement premium. Absent until `set_insurance_pool` is called by
+    /// the admin, in which case no premium is skimmed.
+    InsurancePool,
+    /// Total insurance premiums skimmed from disbursements and routed to the
+    /// insurance fund.
+    TotalInsurancePremiums,
     /// Global daily borrow limit.
     DailyBorrowLimit,
     /// Tracks total amount borrowed in a specific daily window (day_id).

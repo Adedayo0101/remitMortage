@@ -10,6 +10,9 @@ pub use crate::errors::PoolError;
 pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo};
 use soroban_sdk::{contract, contractimpl, symbol_short, IntoVal, Symbol, token, Address, BytesN, Env, Vec};
 use multisig_validator::MultisigValidatorClient;
+pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, Tranche, TrancheInfo};
+use soroban_sdk::{contract, contractimpl, symbol_short, Symbol, token, Address, BytesN, Env};
+use insurance_pool::{premium_for, InsurancePoolContractClient};
 use verification_registry::VerificationRegistryContractClient;
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
@@ -136,6 +139,32 @@ impl LendingPoolContract {
             .set(&DataKey::Investor(investor.clone()), record);
     }
 
+    fn read_debt_balance(env: &Env, owner: &Address, tranche: &Tranche) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DebtBalance(owner.clone(), tranche.clone()))
+            .unwrap_or(0i128)
+    }
+
+    fn set_debt_balance(env: &Env, owner: &Address, tranche: &Tranche, amount: i128) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::DebtBalance(owner.clone(), tranche.clone()), &amount);
+    }
+
+    fn read_debt_total_supply(env: &Env, tranche: &Tranche) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DebtTotalSupply(tranche.clone()))
+            .unwrap_or(0i128)
+    }
+
+    fn set_debt_total_supply(env: &Env, tranche: &Tranche, amount: i128) {
+        env.storage()
+            .instance()
+            .set(&DataKey::DebtTotalSupply(tranche.clone()), &amount);
+    }
+
     fn read_total_liquidity(env: &Env) -> i128 {
         env.storage()
             .instance()
@@ -211,6 +240,14 @@ impl LendingPoolContract {
     /// `do_request_loan` uses the pool's default interest rate.
     fn read_verification_registry(env: &Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::VerificationRegistry)
+    }
+
+    /// Returns the configured InsurancePool address, if one has been set.
+    ///
+    /// `None` means the protocol insurance fund is not wired up yet, in which
+    /// case `disburse` skims no premium.
+    fn read_insurance_pool(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::InsurancePool)
     }
 
     fn set_loan(env: &Env, loan_id: &BytesN<32>, record: &LoanRecord) {
@@ -539,6 +576,22 @@ impl LendingPoolContract {
         (amount * fee_bps as i128) / BPS_SCALE as i128
     }
 
+    fn current_yield_share(env: &Env, amount: i128) -> i128 {
+        let total_dep = Self::read_total_deposited(env);
+        if total_dep == 0 || amount <= 0 {
+            return 0;
+        }
+        (amount * Self::read_total_repaid_interest(env)) / total_dep
+    }
+
+    fn settle_accrued_yield(env: &Env, record: &mut InvestorRecord) {
+        let pending = Self::calculate_pending_yield(env, record);
+        if pending > 0 {
+            record.accrued_yield += pending;
+        }
+        record.claimed_yield = Self::current_yield_share(env, record.deposited);
+    }
+
     /// Map an anchored verification score to the corresponding interest rate tier.
     fn interest_rate_from_score(score: u32) -> u32 {
         if score >= 80 {
@@ -624,6 +677,8 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .set(&DataKey::JuniorTranche, &empty_tranche);
+        Self::set_debt_total_supply(&env, &Tranche::Senior, 0);
+        Self::set_debt_total_supply(&env, &Tranche::Junior, 0);
 
         env.storage().instance().set(&DataKey::TotalRepaidInterest, &0i128);
         env.storage().instance().set(&DataKey::ActiveLoanCommitments, &0i128);
@@ -692,6 +747,11 @@ impl LendingPoolContract {
         record.deposited += amount;
         Self::set_investor(&env, &investor, &record);
 
+        let debt_balance = Self::read_debt_balance(&env, &investor, &tranche) + amount;
+        Self::set_debt_balance(&env, &investor, &tranche, debt_balance);
+        let debt_supply = Self::read_debt_total_supply(&env, &tranche) + amount;
+        Self::set_debt_total_supply(&env, &tranche, debt_supply);
+
         // Update per-tranche aggregate.
         let mut tranche_info = Self::read_tranche_info(&env, &tranche);
         tranche_info.total_deposited += amount;
@@ -715,6 +775,10 @@ impl LendingPoolContract {
         env.events().publish(
             (symbol_short!("deposit"),),
             (investor.clone(), amount, total),
+        );
+        env.events().publish(
+            (symbol_short!("debt_mnt"),),
+            (investor.clone(), tranche.clone(), amount),
         );
 
         Ok(())
@@ -1261,9 +1325,50 @@ impl LendingPoolContract {
             return Err(PoolError::UnauthorizedContractor);
         }
 
-        // Transfer funds to recipient.
+        // Skim the 5 bps protocol insurance premium off the top. The borrower
+        // still owes the full `amount` — the premium is an origination cost
+        // that buys the tranches a secondary loss backstop.
         let token = Self::token_client(&env, &config.token);
-        token.transfer(&env.current_contract_address(), &recipient, &amount);
+        // Only charge a premium once the fund is wired up; otherwise the
+        // contractor receives the full amount as before.
+        let insurance_pool = Self::read_insurance_pool(&env)
+            .filter(|_| premium_for(amount) > 0);
+        let premium = if insurance_pool.is_some() {
+            premium_for(amount)
+        } else {
+            0
+        };
+
+        // Transfer funds to recipient, net of the premium.
+        token.transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &(amount - premium),
+        );
+
+        if let Some(insurance_addr) = insurance_pool {
+            token.transfer(&env.current_contract_address(), &insurance_addr, &premium);
+
+            // Book the premium in the fund. The direct cross-contract call
+            // authorizes this pool's own address for `record_premium`.
+            InsurancePoolContractClient::new(&env, &insurance_addr)
+                .record_premium(&env.current_contract_address(), &premium);
+
+            let total_premiums: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalInsurancePremiums)
+                .unwrap_or(0);
+            env.storage().instance().set(
+                &DataKey::TotalInsurancePremiums,
+                &(total_premiums + premium),
+            );
+
+            env.events().publish(
+                (Symbol::new(&env, "insurance_premium"),),
+                (loan_id.clone(), insurance_addr, premium),
+            );
+        }
 
         // Accrue compound interest on existing outstanding debt, then add disbursed amount.
         Self::accrue_interest(&env, &mut loan);
@@ -1614,11 +1719,11 @@ impl LendingPoolContract {
 
         let mut loan = Self::read_loan(&env, &loan_id)?;
 
-        if loan.status == LoanStatus::Repaid || loan.status == LoanStatus::Cancelled {
+        if loan.status != LoanStatus::Approved {
+            if loan.status == LoanStatus::Defaulted {
+                return Err(PoolError::AlreadyDefaulted);
+            }
             return Err(PoolError::InvalidLoanState);
-        }
-        if loan.status == LoanStatus::Defaulted {
-            return Err(PoolError::AlreadyDefaulted);
         }
 
         if !env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
@@ -1633,47 +1738,50 @@ impl LendingPoolContract {
 
         // Outstanding loss = principal + accrued interest - total repaid, which
         // is tracked as the compounded outstanding debt.
-        let loss = loan.outstanding_debt;
+        let gross_loss = loan.outstanding_debt;
 
         let sched: RepaymentSchedule = env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap();
         if sched.payments_missed < DEFAULT_MISSED_THRESHOLD {
             return Err(PoolError::NotEligibleForDefault);
         }
 
-        // Seize collateral from escrow contract
-        // Invokes: escrow::seize_collateral(borrower, lending_pool_address)
+        // Seize borrower collateral into the pool. The escrow contract returns
+        // the stablecoin value routed to this contract address.
         let seized_amount: i128 = env.invoke_contract(
             &config.escrow,
             &soroban_sdk::Symbol::new(&env, "seize_collateral"),
             soroban_sdk::vec![&env, loan.borrower.into_val(&env), env.current_contract_address().into_val(&env)],
         );
 
-        // Reduce outstanding defaulted loss using the seized savings balance
-        loan.repaid += seized_amount;
-        loan.status = LoanStatus::Defaulted;
-        Self::set_loan(&env, &loan_id, &loan);
+        let net_loss = gross_loss.saturating_sub(seized_amount);
 
-        // Update lending pool total liquidity
-        let mut liquidity = Self::read_total_liquidity(&env);
-        liquidity += seized_amount;
-        env.storage().instance().set(&DataKey::TotalLiquidity, &liquidity);
+        // Collateral increases liquidity; unrecovered debt is removed from
+        // pool liquidity and absorbed by tranches.
+        let mut liquidity = Self::read_total_liquidity(&env).saturating_add(seized_amount);
+        if net_loss > 0 {
+            let mut junior_info = Self::read_tranche_info(&env, &Tranche::Junior);
+            let mut senior_info = Self::read_tranche_info(&env, &Tranche::Senior);
 
-        // Release undisbursed active commitments
-        let undisbursed = loan.principal - loan.disbursed;
-        if undisbursed > 0 {
-            let active_commitments = Self::read_active_commitments(&env);
-            env.storage()
-                .instance()
-                .set(&DataKey::ActiveLoanCommitments, &(active_commitments - undisbursed));
-        }
+            let junior_loss = net_loss.min(junior_info.total_deposited);
+            junior_info.total_deposited -= junior_loss;
+            junior_info.total_loss_absorbed += junior_loss;
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            let senior_loss = (net_loss - junior_loss).min(senior_info.total_deposited);
+            senior_info.total_deposited -= senior_loss;
+            senior_info.total_loss_absorbed += senior_loss;
 
         // Record the realized loss for pool-health accounting.
         let total_loss = Self::read_total_defaulted_loss(&env) + loss;
         Self::set_total_defaulted_loss(&env, total_loss);
+            Self::set_tranche_info(&env, &Tranche::Junior, &junior_info);
+            Self::set_tranche_info(&env, &Tranche::Senior, &senior_info);
+
+            liquidity = liquidity.saturating_sub(net_loss);
+
+            let total_loss = Self::read_total_defaulted_loss(&env) + net_loss;
+            Self::set_total_defaulted_loss(&env, total_loss);
+        }
+        env.storage().instance().set(&DataKey::TotalLiquidity, &liquidity);
 
         // Release the undisbursed portion of this loan's commitment.
         let undisbursed = (loan.principal - loan.disbursed).max(0);
@@ -1692,11 +1800,21 @@ impl LendingPoolContract {
 
         loan.status = LoanStatus::Defaulted;
         loan.defaulted_ledger = env.ledger().sequence();
+        loan.repaid = loan.repaid.saturating_add(seized_amount);
+        loan.outstanding_debt = net_loss;
         Self::set_loan(&env, &loan_id, &loan);
 
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("default"),),
+            (loan_id.clone(), loan.borrower.clone(), seized_amount, net_loss),
+        );
         env.events().publish(
             (Symbol::new(&env, "loan_defaulted"),),
-            (loan_id.clone(), loss),
+            (loan_id.clone(), net_loss),
         );
 
         Ok(())
@@ -1773,6 +1891,69 @@ impl LendingPoolContract {
         Ok(())
     }
 
+    /// Transfer tokenized principal claims without changing any loan maturity
+    /// or repayment schedule. Accrued yield through the transfer ledger remains
+    /// claimable by the seller; future yield follows the recipient.
+    pub fn transfer_debt_shares(
+        env: Env,
+        from: Address,
+        to: Address,
+        tranche: Tranche,
+        amount: i128,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        from.require_auth();
+
+        if amount <= 0 || from == to {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        let from_balance = Self::read_debt_balance(&env, &from, &tranche);
+        if from_balance < amount {
+            return Err(PoolError::InsufficientBalance);
+        }
+
+        let mut from_record = Self::read_investor(&env, &from);
+        if from_record.tranche != tranche || from_record.deposited < amount {
+            return Err(PoolError::InsufficientBalance);
+        }
+        Self::settle_accrued_yield(&env, &mut from_record);
+
+        let mut to_record = Self::read_investor(&env, &to);
+        if to_record.deposited > 0 && to_record.tranche != tranche {
+            return Err(PoolError::TrancheMismatch);
+        }
+        if to_record.deposited == 0 {
+            to_record.start_ledger = env.ledger().sequence();
+            to_record.tranche = tranche.clone();
+        } else {
+            Self::settle_accrued_yield(&env, &mut to_record);
+        }
+
+        from_record.deposited -= amount;
+        from_record.claimed_yield = Self::current_yield_share(&env, from_record.deposited);
+
+        to_record.deposited += amount;
+        to_record.claimed_yield = Self::current_yield_share(&env, to_record.deposited);
+
+        Self::set_investor(&env, &from, &from_record);
+        Self::set_investor(&env, &to, &to_record);
+        Self::set_debt_balance(&env, &from, &tranche, from_balance - amount);
+        let to_balance = Self::read_debt_balance(&env, &to, &tranche);
+        Self::set_debt_balance(&env, &to, &tranche, to_balance + amount);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (symbol_short!("debt_xfer"),),
+            (from.clone(), to.clone(), tranche.clone(), amount),
+        );
+
+        Ok(())
+    }
+
     /// Investor withdraws available capital.
     ///
     /// A dynamic withdrawal fee is applied based on the pool's current utilization rate:
@@ -1818,6 +1999,18 @@ impl LendingPoolContract {
         }
 
         // Update investor state
+        let mut tranche_info = Self::read_tranche_info(&env, &record.tranche);
+        tranche_info.total_deposited = tranche_info.total_deposited.saturating_sub(amount);
+        Self::set_tranche_info(&env, &record.tranche, &tranche_info);
+
+        let debt_balance = Self::read_debt_balance(&env, &investor, &record.tranche);
+        if debt_balance < amount {
+            return Err(PoolError::InsufficientBalance);
+        }
+        Self::set_debt_balance(&env, &investor, &record.tranche, debt_balance - amount);
+        let debt_supply = Self::read_debt_total_supply(&env, &record.tranche);
+        Self::set_debt_total_supply(&env, &record.tranche, debt_supply.saturating_sub(amount));
+
         record.deposited -= amount;
         Self::set_investor(&env, &investor, &record);
 
@@ -1878,7 +2071,9 @@ impl LendingPoolContract {
         let config = Self::read_config(&env)?;
 
         // Update state
-        record.claimed_yield += pending_yield;
+        let spend_accrued = pending_yield.min(record.accrued_yield);
+        record.accrued_yield -= spend_accrued;
+        record.claimed_yield = Self::current_yield_share(&env, record.deposited);
         Self::set_investor(&env, &investor, &record);
 
         let liquidity = Self::read_total_liquidity(&env) - pending_yield;
@@ -1900,21 +2095,12 @@ impl LendingPoolContract {
     // ── Query Functions ──────────────────────────────────────────────────
 
     fn calculate_pending_yield(env: &Env, record: &InvestorRecord) -> i128 {
-        let total_dep = Self::read_total_deposited(env);
-        if total_dep == 0 {
-            return 0;
-        }
-
-        let total_interest = Self::read_total_repaid_interest(env);
-
-        // Math: (investor.deposited * total_interest) / total_deposited
-        // Note: Using point-in-time calculation as accepted in the implementation plan
-        let share = (record.deposited * total_interest) / total_dep;
+        let share = Self::current_yield_share(env, record.deposited);
 
         if share > record.claimed_yield {
-            share - record.claimed_yield
+            record.accrued_yield + (share - record.claimed_yield)
         } else {
-            0
+            record.accrued_yield
         }
     }
 
@@ -1989,6 +2175,16 @@ impl LendingPoolContract {
     /// Returns an investor's record.
     pub fn get_investor_info(env: Env, investor: Address) -> InvestorRecord {
         Self::read_investor(&env, &investor)
+    }
+
+    /// Returns transferable principal-claim balance for an investor/tranche.
+    pub fn debt_balance(env: Env, owner: Address, tranche: Tranche) -> i128 {
+        Self::read_debt_balance(&env, &owner, &tranche)
+    }
+
+    /// Returns total tokenized principal-claim supply for a tranche.
+    pub fn debt_total_supply(env: Env, tranche: Tranche) -> i128 {
+        Self::read_debt_total_supply(&env, &tranche)
     }
 
     /// Returns a loan record by ID.
@@ -2234,12 +2430,19 @@ impl LendingPoolContract {
     /// Set the MultisigValidator contract address used for admin multisig
     /// approval of privileged operations (e.g. restructure approval). Admin-only.
     pub fn set_multisig_validator(env: Env, validator: Address) -> Result<(), PoolError> {
+    /// Set (or update) the InsurancePool contract that receives the 5 bps
+    /// premium skimmed from every disbursement. Admin-only.
+    ///
+    /// Until this is configured, `disburse` routes no premium and the full
+    /// amount reaches the contractor.
+    pub fn set_insurance_pool(env: Env, insurance_pool: Address) -> Result<(), PoolError> {
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
 
         env.storage()
             .instance()
             .set(&DataKey::MultisigValidator, &validator);
+            .set(&DataKey::InsurancePool, &insurance_pool);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -2248,6 +2451,8 @@ impl LendingPoolContract {
             (symbol_short!("set_msig"),),
             (validator,),
         );
+        env.events()
+            .publish((symbol_short!("set_ins"),), (insurance_pool,));
 
         Ok(())
     }
@@ -2258,6 +2463,18 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .get(&DataKey::MultisigValidator)
+    /// Returns the configured InsurancePool address, or `None` if the
+    /// protocol insurance fund is not wired up.
+    pub fn get_insurance_pool(env: Env) -> Option<Address> {
+        Self::read_insurance_pool(&env)
+    }
+
+    /// Total insurance premiums skimmed from disbursements so far.
+    pub fn get_total_insurance_premiums(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalInsurancePremiums)
+            .unwrap_or(0)
     }
 
     /// Set the daily borrow limit. Admin-only.
@@ -4321,6 +4538,139 @@ mod test {
         client.disburse(&loan_id, &contractor, &10_000_0000000i128);
 
         assert_eq!(token.balance(&contractor), 10_000_0000000i128);
+    }
+
+    /// Deploys and initializes an InsurancePool bound to `client`, and wires
+    /// the pool to route its disbursement premium there.
+    fn setup_insurance<'a>(
+        env: &'a Env,
+        token_address: &Address,
+        pool_client: &LendingPoolContractClient<'a>,
+    ) -> insurance_pool::InsurancePoolContractClient<'a> {
+        let insurance_admin = Address::generate(env);
+        let insurance_id = env.register(insurance_pool::InsurancePoolContract, ());
+        let insurance =
+            insurance_pool::InsurancePoolContractClient::new(env, &insurance_id);
+        insurance.initialize(&insurance_admin, token_address, &pool_client.address);
+        pool_client.set_insurance_pool(&insurance_id);
+        insurance
+    }
+
+    #[test]
+    fn test_disburse_routes_insurance_premium() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let contractor = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        let insurance = setup_insurance(&env, &token_address, &client);
+        assert_eq!(client.get_insurance_pool(), Some(insurance.address.clone()));
+
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&contractor);
+
+        let amount = 10_000_0000000i128;
+        client.disburse(&loan_id, &contractor, &amount);
+
+        // 5 bps of 10,000 USDC = 5 USDC.
+        let expected_premium = 5_0000000i128;
+        assert_eq!(token.balance(&insurance.address), expected_premium);
+        assert_eq!(token.balance(&contractor), amount - expected_premium);
+        assert_eq!(insurance.get_reserves(), expected_premium);
+        assert_eq!(client.get_total_insurance_premiums(), expected_premium);
+
+        // The borrower still owes the gross amount — the fee is an
+        // origination cost, not a reduction in debt.
+        let loan = client.get_loan(&loan_id).unwrap();
+        assert_eq!(loan.disbursed, amount);
+        assert_eq!(loan.outstanding_debt, amount);
+    }
+
+    #[test]
+    fn test_insurance_claim_settles_back_to_pool() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let contractor = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        let insurance = setup_insurance(&env, &token_address, &client);
+
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &10_000_0000000i128);
+
+        let pool_balance_before = token.balance(&client.address);
+        let reserves = insurance.get_reserves();
+        assert!(reserves > 0);
+
+        // Admin routes the reserves back to the pool to cover tranche losses.
+        insurance.claim(&client.address, &reserves);
+
+        assert_eq!(insurance.get_reserves(), 0);
+        assert_eq!(insurance.get_total_claimed(), reserves);
+        assert_eq!(token.balance(&client.address), pool_balance_before + reserves);
+    }
+
+    #[test]
+    fn test_disburse_without_insurance_pool_skims_nothing() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let contractor = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &10_000_0000000i128);
+
+        assert_eq!(client.get_insurance_pool(), None);
+        assert_eq!(token.balance(&contractor), 10_000_0000000i128);
+        assert_eq!(client.get_total_insurance_premiums(), 0);
+    }
+
+    #[test]
+    fn test_non_admin_cannot_set_insurance_pool() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let attacker = Address::generate(&env);
+        let insurance_addr = Address::generate(&env);
+
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_insurance_pool",
+                    args: (insurance_addr.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_insurance_pool(&insurance_addr);
+
+        assert!(result.is_err());
+        assert_eq!(client.get_insurance_pool(), None);
     }
 
     #[test]

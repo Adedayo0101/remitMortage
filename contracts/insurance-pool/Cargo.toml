@@ -1,5 +1,5 @@
 [package]
-name = "lending-pool"
+name = "insurance-pool"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,10 +9,6 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
-verification-registry = { path = "../verification-registry" }
-multisig-validator = { path = "../multisig-validator" }
-insurance-pool = { path = "../insurance-pool" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-proptest = "1"

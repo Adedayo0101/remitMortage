@@ -32,6 +32,7 @@ import logger from "../utils/logger.js";
 import { encrypt, decrypt } from "../utils/crypto.js";
 import { queueService, WebhookJobData } from "./queueService.js";
 import { loadConfig } from "../config.js";
+import { correlationHeaders } from "../middleware/correlationId.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -181,7 +182,14 @@ async function attemptPost(
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
+      // Forward the in-flight request's correlation ID so the subscriber's
+      // logs join up with ours. Explicit `headers` still win if a caller
+      // deliberately overrides the value.
+      headers: {
+        "Content-Type": "application/json",
+        ...correlationHeaders(),
+        ...headers,
+      },
       body,
       signal: controller.signal,
     });
