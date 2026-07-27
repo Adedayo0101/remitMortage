@@ -823,12 +823,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 
 [[package]]
+name = "insurance-pool"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "integration-tests"
 version = "0.1.0"
 dependencies = [
  "escrow",
  "lending-pool",
  "soroban-sdk",
+ "yield-vault",
 ]
 
 [[package]]
@@ -882,6 +890,7 @@ dependencies = [
 name = "lending-pool"
 version = "0.1.0"
 dependencies = [
+ "insurance-pool",
  "proptest",
  "soroban-sdk",
  "verification-registry",
@@ -1976,6 +1985,13 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "yield-vault"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
 
 [[package]]
 name = "zerocopy"
