@@ -9,6 +9,7 @@ mod fuzz;
 pub use crate::errors::PoolError;
 pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, Tranche, TrancheInfo};
 use soroban_sdk::{contract, contractimpl, symbol_short, Symbol, token, Address, BytesN, Env};
+use insurance_pool::{premium_for, InsurancePoolContractClient};
 use verification_registry::VerificationRegistryContractClient;
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
@@ -210,6 +211,14 @@ impl LendingPoolContract {
     /// `do_request_loan` uses the pool's default interest rate.
     fn read_verification_registry(env: &Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::VerificationRegistry)
+    }
+
+    /// Returns the configured InsurancePool address, if one has been set.
+    ///
+    /// `None` means the protocol insurance fund is not wired up yet, in which
+    /// case `disburse` skims no premium.
+    fn read_insurance_pool(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::InsurancePool)
     }
 
     fn set_loan(env: &Env, loan_id: &BytesN<32>, record: &LoanRecord) {
@@ -1030,9 +1039,50 @@ impl LendingPoolContract {
             return Err(PoolError::UnauthorizedContractor);
         }
 
-        // Transfer funds to recipient.
+        // Skim the 5 bps protocol insurance premium off the top. The borrower
+        // still owes the full `amount` — the premium is an origination cost
+        // that buys the tranches a secondary loss backstop.
         let token = Self::token_client(&env, &config.token);
-        token.transfer(&env.current_contract_address(), &recipient, &amount);
+        // Only charge a premium once the fund is wired up; otherwise the
+        // contractor receives the full amount as before.
+        let insurance_pool = Self::read_insurance_pool(&env)
+            .filter(|_| premium_for(amount) > 0);
+        let premium = if insurance_pool.is_some() {
+            premium_for(amount)
+        } else {
+            0
+        };
+
+        // Transfer funds to recipient, net of the premium.
+        token.transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &(amount - premium),
+        );
+
+        if let Some(insurance_addr) = insurance_pool {
+            token.transfer(&env.current_contract_address(), &insurance_addr, &premium);
+
+            // Book the premium in the fund. The direct cross-contract call
+            // authorizes this pool's own address for `record_premium`.
+            InsurancePoolContractClient::new(&env, &insurance_addr)
+                .record_premium(&env.current_contract_address(), &premium);
+
+            let total_premiums: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalInsurancePremiums)
+                .unwrap_or(0);
+            env.storage().instance().set(
+                &DataKey::TotalInsurancePremiums,
+                &(total_premiums + premium),
+            );
+
+            env.events().publish(
+                (Symbol::new(&env, "insurance_premium"),),
+                (loan_id.clone(), insurance_addr, premium),
+            );
+        }
 
         // Accrue compound interest on existing outstanding debt, then add disbursed amount.
         Self::accrue_interest(&env, &mut loan);
@@ -2002,6 +2052,42 @@ impl LendingPoolContract {
     /// dynamic interest rate resolution from verification scores is disabled.
     pub fn get_verification_registry(env: Env) -> Option<Address> {
         Self::read_verification_registry(&env)
+    }
+
+    /// Set (or update) the InsurancePool contract that receives the 5 bps
+    /// premium skimmed from every disbursement. Admin-only.
+    ///
+    /// Until this is configured, `disburse` routes no premium and the full
+    /// amount reaches the contractor.
+    pub fn set_insurance_pool(env: Env, insurance_pool: Address) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::InsurancePool, &insurance_pool);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events()
+            .publish((symbol_short!("set_ins"),), (insurance_pool,));
+
+        Ok(())
+    }
+
+    /// Returns the configured InsurancePool address, or `None` if the
+    /// protocol insurance fund is not wired up.
+    pub fn get_insurance_pool(env: Env) -> Option<Address> {
+        Self::read_insurance_pool(&env)
+    }
+
+    /// Total insurance premiums skimmed from disbursements so far.
+    pub fn get_total_insurance_premiums(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalInsurancePremiums)
+            .unwrap_or(0)
     }
 
     /// Set the daily borrow limit. Admin-only.
@@ -4066,6 +4152,139 @@ mod test {
         client.disburse(&loan_id, &contractor, &10_000_0000000i128);
 
         assert_eq!(token.balance(&contractor), 10_000_0000000i128);
+    }
+
+    /// Deploys and initializes an InsurancePool bound to `client`, and wires
+    /// the pool to route its disbursement premium there.
+    fn setup_insurance<'a>(
+        env: &'a Env,
+        token_address: &Address,
+        pool_client: &LendingPoolContractClient<'a>,
+    ) -> insurance_pool::InsurancePoolContractClient<'a> {
+        let insurance_admin = Address::generate(env);
+        let insurance_id = env.register(insurance_pool::InsurancePoolContract, ());
+        let insurance =
+            insurance_pool::InsurancePoolContractClient::new(env, &insurance_id);
+        insurance.initialize(&insurance_admin, token_address, &pool_client.address);
+        pool_client.set_insurance_pool(&insurance_id);
+        insurance
+    }
+
+    #[test]
+    fn test_disburse_routes_insurance_premium() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let contractor = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        let insurance = setup_insurance(&env, &token_address, &client);
+        assert_eq!(client.get_insurance_pool(), Some(insurance.address.clone()));
+
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&contractor);
+
+        let amount = 10_000_0000000i128;
+        client.disburse(&loan_id, &contractor, &amount);
+
+        // 5 bps of 10,000 USDC = 5 USDC.
+        let expected_premium = 5_0000000i128;
+        assert_eq!(token.balance(&insurance.address), expected_premium);
+        assert_eq!(token.balance(&contractor), amount - expected_premium);
+        assert_eq!(insurance.get_reserves(), expected_premium);
+        assert_eq!(client.get_total_insurance_premiums(), expected_premium);
+
+        // The borrower still owes the gross amount — the fee is an
+        // origination cost, not a reduction in debt.
+        let loan = client.get_loan(&loan_id).unwrap();
+        assert_eq!(loan.disbursed, amount);
+        assert_eq!(loan.outstanding_debt, amount);
+    }
+
+    #[test]
+    fn test_insurance_claim_settles_back_to_pool() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let contractor = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        let insurance = setup_insurance(&env, &token_address, &client);
+
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &10_000_0000000i128);
+
+        let pool_balance_before = token.balance(&client.address);
+        let reserves = insurance.get_reserves();
+        assert!(reserves > 0);
+
+        // Admin routes the reserves back to the pool to cover tranche losses.
+        insurance.claim(&client.address, &reserves);
+
+        assert_eq!(insurance.get_reserves(), 0);
+        assert_eq!(insurance.get_total_claimed(), reserves);
+        assert_eq!(token.balance(&client.address), pool_balance_before + reserves);
+    }
+
+    #[test]
+    fn test_disburse_without_insurance_pool_skims_nothing() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let contractor = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &10_000_0000000i128);
+
+        assert_eq!(client.get_insurance_pool(), None);
+        assert_eq!(token.balance(&contractor), 10_000_0000000i128);
+        assert_eq!(client.get_total_insurance_premiums(), 0);
+    }
+
+    #[test]
+    fn test_non_admin_cannot_set_insurance_pool() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let attacker = Address::generate(&env);
+        let insurance_addr = Address::generate(&env);
+
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_insurance_pool",
+                    args: (insurance_addr.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_insurance_pool(&insurance_addr);
+
+        assert!(result.is_err());
+        assert_eq!(client.get_insurance_pool(), None);
     }
 
     #[test]
