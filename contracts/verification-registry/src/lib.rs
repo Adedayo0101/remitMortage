@@ -836,4 +836,147 @@ mod test {
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
         assert!(client.is_verified(&borrower));
     }
+
+    // ── Rate Cap & Floor Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_default_rate_limits() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        assert_eq!(client.get_rate_cap(), 1800);
+        assert_eq!(client.get_rate_floor(), 200);
+    }
+
+    #[test]
+    fn test_set_rate_limits_ok() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        client.set_rate_limits(&1500u32, &300u32);
+        assert_eq!(client.get_rate_cap(), 1500);
+        assert_eq!(client.get_rate_floor(), 300);
+    }
+
+    #[test]
+    fn test_set_rate_limits_floor_greater_than_cap_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let result = client.try_set_rate_limits(&500u32, &1000u32);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidRateLimits)));
+    }
+
+    #[test]
+    fn test_set_rate_limits_cap_over_10000_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let result = client.try_set_rate_limits(&10001u32, &200u32);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidRateLimits)));
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamps_to_floor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        // Set a rate config where the excellent rate is below the default floor (200).
+        // Default floor is 200 bps, so setting excellent to 50 bps should be clamped to 200.
+        client.set_rate_config(&50u32, &600u32, &800u32, &1200u32);
+
+        // The stored config clamps rates on write, so when we read them back:
+        let config = client.get_rate_config();
+        assert_eq!(config.rate_excellent_bps, 200); // clamped to floor
+        assert_eq!(config.rate_good_bps, 600);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamps_to_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        // Set a rate config where the fallback rate exceeds the default cap (1800).
+        client.set_rate_config(&400u32, &600u32, &800u32, &5000u32);
+
+        let config = client.get_rate_config();
+        assert_eq!(config.rate_fallback_bps, 1800); // clamped to cap
+    }
+
+    #[test]
+    fn test_get_borrower_rate_live_clamping() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[10u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Set tight limits: floor 500, cap 700
+        client.set_rate_limits(&700u32, &500u32);
+
+        // Config was stored before we set limits; re-set to trigger clamp.
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        // Borrower score is 95 (Excellent tier). With clamping:
+        // rate_excellent 400 -> floor 500, so borrower rate should be 500.
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 500);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamp_to_cap_live() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[11u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Set cap very low: 300 bps
+        client.set_rate_limits(&300u32, &100u32);
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        // Excellent tier rate 400 clamped to cap 300
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 300);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_floor_below_defaults_unaffected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[12u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Rate limits are wide (1-5000), default rates should pass through.
+        client.set_rate_limits(&5000u32, &1u32);
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 400);
+    }
+
+    #[test]
+    fn test_set_rate_limits_before_initialize_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(VerificationRegistryContract, ());
+        let client = VerificationRegistryContractClient::new(&env, &contract_id);
+
+        let result = client.try_set_rate_limits(&1800u32, &200u32);
+        assert_eq!(result, Err(Ok(RegistryError::NotInitialized)));
+    }
 }

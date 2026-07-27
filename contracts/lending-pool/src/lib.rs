@@ -2535,6 +2535,9 @@ impl LendingPoolContract {
     /// On success the contract transfers the rebate amount (in the pool's
     /// underlying token) to the borrower and marks the loan as claimed so
     /// the rebate cannot be drawn twice.
+    ///
+    /// # Events
+    /// Emits a `maturity_rebate` event with `(borrower, loan_id, amount)`.
     pub fn claim_maturity_rebate(env: Env, loan_id: BytesN<32>) -> Result<i128, PoolError> {
         Self::check_not_paused(&env)?;
 
