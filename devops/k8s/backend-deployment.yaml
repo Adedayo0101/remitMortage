@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remitmortgage-backend
+  labels:
+    app: remitmortgage-backend
+spec:
+  # No static replica count: the HPA owns this field once it takes over.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: remitmortgage-backend
+  template:
+    metadata:
+      labels:
+        app: remitmortgage-backend
+    spec:
+      containers:
+        - name: backend
+          image: remitmortgage/backend:latest
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            - name: PORT
+              value: "4000"
+          # CPU requests are mandatory for the HPA: utilization is computed as
+          # a percentage of the request, not of the node capacity.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20

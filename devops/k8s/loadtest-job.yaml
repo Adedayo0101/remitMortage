@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backend-loadtest
+  labels:
+    app: remitmortgage-backend
+    role: loadtest
+spec:
+  # Ten concurrent generators are enough to push a 250m-request pod past 80%.
+  parallelism: 10
+  completions: 10
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        role: loadtest
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: loadgen
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              end=$(( $(date +%s) + ${DURATION_SECONDS} ))
+              while [ "$(date +%s)" -lt "$end" ]; do
+                wget -q -O /dev/null "${TARGET_URL}" || true
+              done
+          env:
+            - name: TARGET_URL
+              value: "http://remitmortgage-backend/health"
+            - name: DURATION_SECONDS
+              value: "300"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
