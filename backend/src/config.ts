@@ -49,6 +49,12 @@ export interface Config {
   kmsActiveKeyVersion: string;
   /** Signing secret for temporary IAM-style KYC document decryption tokens. */
   kycOperatorSecret: string;
+  /** Secret used to sign output verification proofs. */
+  backendSigningSecret: string;
+  /** Private key for the Irys bundler node to pay for Arweave uploads. */
+  irysPrivateKey: string;
+  /** Network token used for Irys payments (e.g. "matic", "ethereum"). */
+  irysNetworkToken: string;
   /** Lifetime (seconds) of a temporary KYC decryption access token. */
   kycAccessTokenTtlSeconds: number;
   /** Maximum base fee for Stellar transactions (in stroops). */
@@ -153,6 +159,9 @@ export function loadConfig(): Config {
     kmsKeyVersions: parseKmsKeyVersions(process.env.KMS_KEY_VERSIONS),
     kmsActiveKeyVersion: process.env.KMS_ACTIVE_KEY_VERSION || "v1",
     kycOperatorSecret: process.env.KYC_OPERATOR_SECRET || "default_kyc_operator_secret",
+    backendSigningSecret: process.env.BACKEND_SIGNING_SECRET || "default_backend_signing_secret",
+    irysPrivateKey: process.env.IRYS_PRIVATE_KEY || "",
+    irysNetworkToken: process.env.IRYS_NETWORK_TOKEN || "matic",
     kycAccessTokenTtlSeconds: parseInt(process.env.KYC_ACCESS_TOKEN_TTL || "300", 10),
     maxStellarBaseFee: parseInt(process.env.MAX_STELLAR_BASE_FEE || "100000", 10),
     maxEvmBaseFee: parseInt(process.env.MAX_EVM_BASE_FEE || "100000000000", 10),

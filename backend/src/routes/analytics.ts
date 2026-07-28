@@ -6,6 +6,7 @@ import {
   getMonthlyVolume,
 } from "../services/analytics.js";
 import { getLendingPoolRates } from "../services/soroban.js";
+import { feeEstimator } from "../services/feeEstimator.js";
 import { cacheMiddleware } from "../middleware/cache.js";
 import { loadConfig } from "../config.js";
 
@@ -161,5 +162,29 @@ analyticsRouter.get("/pool-rates", cacheMiddleware(60), async (_req, res) => {
       error: "on_chain_unavailable",
       message: "Unable to query the lending pool contract. Please retry shortly.",
     });
+  }
+});
+
+/**
+ * @openapi
+ * /api/analytics/gas:
+ *   get:
+ *     summary: Live gas fee recommendations
+ *     description: >-
+ *       Returns current low, medium, and high fee recommendations (in stroops)
+ *       along with the latest ledger sequence and an update timestamp.
+ *     tags:
+ *       - Analytics
+ *     responses:
+ *       200:
+ *         description: Current gas fee estimates.
+ */
+analyticsRouter.get("/gas", (_req, res) => {
+  try {
+    const recommendation = feeEstimator.getRecommendation();
+    res.json(recommendation);
+  } catch (error) {
+    console.error("Analytics gas error:", error);
+    res.status(500).json({ error: "Failed to fetch gas recommendations" });
   }
 });

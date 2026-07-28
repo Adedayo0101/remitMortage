@@ -19,6 +19,7 @@ import { swaggerSpec } from "./docs/swagger.js";
 import { healthRouter } from "./routes/health.js";
 import { rpcHealthRouter } from "./routes/rpcHealth.js";
 import { verificationRouter } from "./routes/verification.js";
+import { verifyRouter } from "./routes/verify.js";
 import { borrowerRouter } from "./routes/borrower.js";
 import { loanRouter } from "./routes/loan.js";
 import { milestoneRouter } from "./routes/milestone.js";
@@ -53,6 +54,7 @@ import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
 import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
+import { feeEstimator } from "./services/feeEstimator.js";
 import { initializeRedis } from "./services/redis.js";
 import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js";
 import { queueService } from "./services/queueService.js";
@@ -145,6 +147,7 @@ app.use("/metrics", metricsRouter);
 app.use("/api/health/rpc", rpcHealthRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
+app.use("/api/verify", verificationLimiter, verifyRouter);
 app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
 app.use("/api/loan", mutationRateLimiter, authMiddleware, loanRouter);
 app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
@@ -182,6 +185,7 @@ app.listen(PORT, () => {
   // Proactively monitor Soroban RPC node health and alert operators on
   // degradation, downtime or failover through the existing webhook mechanism.
   startRpcHealthMonitor();
+  feeEstimator.start();
 });
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────

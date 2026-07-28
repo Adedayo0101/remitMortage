@@ -9,7 +9,8 @@
     "history": "Journal d’audit",
     "playground": "Bac à sable",
     "connectWallet": "Connecter le portefeuille",
-    "disconnect": "Déconnecter",
+    "disconnect": "Se déconnecter",
+    "gasOptimizer": "Optimiseur de Gaz",
     "language": "Langue"
   },
   "footer": {
