@@ -10,6 +10,7 @@
     "playground": "Playground",
     "connectWallet": "Connect Wallet",
     "disconnect": "Disconnect",
+    "gasOptimizer": "Gas Optimizer",
     "language": "Language"
   },
   "footer": {

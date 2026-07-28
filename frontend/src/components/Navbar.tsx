@@ -18,6 +18,7 @@ const NAV_LINKS = [
   { href: "/repay", labelKey: "repay" },
   { href: "/contractor", labelKey: "contractor" },
   { href: "/governance", labelKey: "governance" },
+  { href: "/gas-optimization", labelKey: "gasOptimizer" },
   { href: "/history", labelKey: "history" },
 ];
 

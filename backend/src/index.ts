@@ -54,6 +54,7 @@ import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
 import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
+import { feeEstimator } from "./services/feeEstimator.js";
 import { initializeRedis } from "./services/redis.js";
 import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js";
 import { queueService } from "./services/queueService.js";
@@ -184,6 +185,7 @@ app.listen(PORT, () => {
   // Proactively monitor Soroban RPC node health and alert operators on
   // degradation, downtime or failover through the existing webhook mechanism.
   startRpcHealthMonitor();
+  feeEstimator.start();
 });
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────
