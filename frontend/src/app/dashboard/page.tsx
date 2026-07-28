@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 import React, { useEffect, useState } from "react";
 import loadDynamic from "next/dynamic";
+import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useWallet } from "../../context/WalletContext";
 import SavingsProgressCard from "../../components/SavingsProgressCard";
@@ -11,6 +12,8 @@ import LoanStatusCard from "../../components/LoanStatusCard";
 import DepositModal from "../../components/DepositModal";
 import WithdrawModal from "../../components/WithdrawModal";
 import MilestoneTimeline, { type MilestoneNode } from "../../components/MilestoneTimeline";
+import YieldEstimatorCalculator from "../../components/YieldEstimatorCalculator";
+import VerificationBadge from "../../components/VerificationBadge";
 import {
   consumeTxSuccessFeedback,
   shortenAddress,
@@ -21,6 +24,8 @@ import {
   downloadStatementPdf,
   type StatementRow,
 } from "@/lib/statementExport";
+
+import MaturityAlertOverlay from "../../components/MaturityAlertOverlay";
 
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -95,6 +100,7 @@ const SAMPLE_MILESTONES: MilestoneNode[] = [
 ];
 
 export default function DashboardPage() {
+  const t = useTranslations("dashboard");
   const router = useRouter();
   const { publicKey, isConnected } = useWallet();
   const [status, setStatus] = useState<BorrowerStatus | null>(null);
@@ -195,13 +201,13 @@ export default function DashboardPage() {
                 Soroban Escrow Protocol
               </span>
               <span className="text-xs text-slate-400 font-mono">Stellar Testnet</span>
+              <VerificationBadge />
             </div>
             <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white">
-              Borrower <span className="gradient-text">Dashboard</span>
+              <span className="gradient-text">{t("title")}</span>
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              Track your 30% down-payment escrow savings, accrued protocol yield, and mortgage
-              milestone disbursements.
+              {t("description")}
             </p>
           </div>
 
@@ -211,7 +217,7 @@ export default function DashboardPage() {
               disabled={!status}
               className="btn-outline-blue disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              Download Statement
+              {t("downloadStatement")}
             </button>
             <button onClick={() => setShowDeposit(true)} className="btn-cta shadow-cyan-500/20">
               <svg
@@ -224,10 +230,10 @@ export default function DashboardPage() {
               >
                 <path d="M12 5v14M5 12h14" />
               </svg>
-              Deposit USDC
+              {t("depositUsdc")}
             </button>
             <button onClick={() => setShowWithdraw(true)} className="btn-outline-blue">
-              Early Exit
+              {t("earlyExit")}
             </button>
           </div>
         </div>
@@ -285,6 +291,13 @@ export default function DashboardPage() {
         {/* Loaded Content */}
         {!loading && !error && status && (
           <div className="space-y-8">
+            {/* Dynamic Escrow Maturity & Milestone Alerts Overlay */}
+            <MaturityAlertOverlay
+              escrow={status.escrow}
+              loan={status.loan}
+              onOpenDeposit={() => setShowDeposit(true)}
+            />
+
             {/* Quick Metrics Bar */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-2xl">
@@ -321,6 +334,11 @@ export default function DashboardPage() {
               </div>
             </div>
 
+            {/* Yield & APY Estimator */}
+            <YieldEstimatorCalculator
+              initialAmount={Number(status.escrow.deposited) || undefined}
+            />
+
             {/* Savings & Loan Cards Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl">
@@ -328,6 +346,7 @@ export default function DashboardPage() {
                   deposited={status.escrow.deposited}
                   target={status.escrow.target}
                   progress={status.escrow.progress}
+                  shareId={publicKey ?? undefined}
                 />
               </div>
               <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl flex flex-col justify-between">

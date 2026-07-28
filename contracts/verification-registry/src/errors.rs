@@ -24,4 +24,6 @@ pub enum RegistryError {
     UnauthorizedPool = 9,
     /// Referral or risk state update would create an invalid cycle.
     InvalidRiskTransition = 10,
+    /// Rate cap/floor values are invalid (floor > cap or cap > 10000).
+    InvalidRateLimits = 11,
 }

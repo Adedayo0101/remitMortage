@@ -240,4 +240,36 @@ describe("Notification Services and Dispatcher Tests", () => {
       expect(nextRetryAt.getTime()).toBeGreaterThan(Date.now());
     });
   });
+
+  describe("Dynamic Maturity Alerts & Preferences Integration", () => {
+    it("dispatches SMS and Email notifications when escrow maturity alert triggers and user preferences are enabled", async () => {
+      const mockPrefs = {
+        email: "borrower@example.com",
+        phone: "+15550001111",
+        emailAlerts: true,
+        smsAlerts: true,
+        escrowApproaching: true,
+        escrowReached: true,
+        paymentMissed: true,
+        loanMilestones: true,
+        webhookUrl: "https://partner.example.com/webhook",
+      };
+
+      const { getNotificationPreference } = require("../services/db.js");
+      jest.spyOn(require("../services/db.js"), "getNotificationPreference").mockResolvedValue(mockPrefs);
+
+      const { dispatchMaturityAlerts } = require("../services/notification.js");
+
+      await dispatchMaturityAlerts("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", {
+        type: "ESCROW_REACHED",
+        deposited: "3000",
+        target: "3000",
+        progress: 100,
+      });
+
+      // Verify notification create was called for email, sms, and webhook
+      expect(prisma.notification.create).toHaveBeenCalled();
+    });
+  });
 });
+

@@ -16,6 +16,7 @@ import {
   indexerBatchSize,
 } from "./metrics.js";
 import { dispatchEvent, type EventTopic } from "./webhook.js";
+import { dispatchLedgerAlert } from "./emailAlerts.js";
 
 /** Soroban testnet RPC endpoint. */
 export const SOROBAN_TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
@@ -343,6 +344,27 @@ export class SorobanEventListener {
         contractId: event.contractId,
       },
     });
+
+    // ── Fan-out to email alert subscribers ────────────────────────────
+    // dispatchLedgerAlert is fire-and-forget and swallows its own errors, so a
+    // SendGrid outage can never stall the poll loop.
+    if (kind === "deposit" || kind === "repay") {
+      dispatchLedgerAlert({
+        kind,
+        borrower: event.borrower,
+        amount: event.amount,
+        ledger: event.ledger,
+        contractId: event.contractId,
+      });
+    } else if (kind === "release") {
+      dispatchLedgerAlert({
+        kind: "milestone_approved",
+        borrower: event.borrower,
+        amount: event.amount,
+        ledger: event.ledger,
+        contractId: event.contractId,
+      });
+    }
 
     // ── Fan-out to webhook subscribers ────────────────────────────────
     // dispatchEvent is fire-and-forget: it queues the delivery in the

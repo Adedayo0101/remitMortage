@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import { useTranslations } from "next-intl";
 import toast, { Toaster } from "react-hot-toast";
 import { useWallet, WalletProvider } from "@/context/WalletContext";
 import { isValidStellarAddress, VerificationResult, VerificationStats } from "@/lib/verification";
@@ -17,6 +18,7 @@ export default function VerifyPage() {
 }
 
 function VerifyPageInner() {
+  const t = useTranslations("verify");
   const { publicKey } = useWallet();
 
   const [senderAddress, setSenderAddress] = useState("");
@@ -34,15 +36,15 @@ function VerifyPageInner() {
     event.preventDefault();
 
     if (!isValidStellarAddress(senderAddress)) {
-      toast.error("Enter a valid sender Stellar address (starts with G).");
+      toast.error(t("toastInvalidSender"));
       return;
     }
     if (!isValidStellarAddress(recipientAddress)) {
-      toast.error("Enter a valid recipient Stellar address (starts with G).");
+      toast.error(t("toastInvalidRecipient"));
       return;
     }
     if (senderAddress === recipientAddress) {
-      toast.error("Sender and recipient addresses must be different.");
+      toast.error(t("toastDifferent"));
       return;
     }
 
@@ -60,7 +62,7 @@ function VerifyPageInner() {
         throw new Error(data?.error ?? "Verification failed.");
       }
       setResult(data as VerificationResult);
-      toast.success("Horizon payment scan completed!");
+      toast.success(t("toastSuccess"));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Verification failed.");
     } finally {
@@ -88,14 +90,13 @@ function VerifyPageInner() {
         <div className="mb-10 text-center md:text-left">
           <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-4 border border-cyan-500/20">
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-            Horizon Ledger Verification Protocol
+            {t("eyebrow")}
           </span>
           <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white mb-3">
-            Verify Remittance <span className="gradient-text">Credit Reputation</span>
+            {t("title")}
           </h1>
           <p className="text-slate-400 max-w-2xl text-sm md:text-base leading-relaxed">
-            Audit your historical cross-border USDC remittance transfers directly on the Stellar
-            Horizon API. Your proof of capacity unlocks low-interest Soroban escrow terms.
+            {t("description")}
           </p>
         </div>
 
@@ -109,7 +110,7 @@ function VerifyPageInner() {
                   htmlFor="sender-address"
                   className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2"
                 >
-                  Sender Wallet (Your Account)
+                  {t("senderLabel")}
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
@@ -139,7 +140,7 @@ function VerifyPageInner() {
                   </p>
                 ) : (
                   <p className="text-[11px] text-slate-500 mt-2">
-                    Address used to originate USDC transfers.
+                    {t("senderHint")}
                   </p>
                 )}
               </div>
@@ -150,7 +151,7 @@ function VerifyPageInner() {
                   htmlFor="recipient-address"
                   className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2"
                 >
-                  Recipient Wallet (Family Member)
+                  {t("recipientLabel")}
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
@@ -177,7 +178,7 @@ function VerifyPageInner() {
                   />
                 </div>
                 <p className="text-[11px] text-slate-500 mt-2">
-                  Address receiving monthly family remittances.
+                  {t("recipientHint")}
                 </p>
               </div>
             </div>
@@ -205,11 +206,11 @@ function VerifyPageInner() {
                       d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                     />
                   </svg>
-                  Auditing Horizon Payment Ledger...
+                  {t("loading")}
                 </span>
               ) : (
                 <>
-                  Audit Remittance Ledger
+                  {t("submit")}
                   <svg
                     width="18"
                     height="18"
@@ -251,7 +252,7 @@ function VerifyPageInner() {
                 />
               </svg>
               <p className="text-sm">
-                Enter your wallet details above to run an instant Horizon payment history audit.
+                {t("emptyState")}
               </p>
             </div>
           )}

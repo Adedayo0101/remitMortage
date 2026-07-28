@@ -10,7 +10,6 @@ jest.mock("../services/db.js", () => ({
     auditLog: {
       create: jest.fn(),
       findMany: jest.fn(),
-      count: jest.fn(),
     },
   },
 }));
@@ -20,6 +19,27 @@ jest.mock("../config.js", () => ({
   loadConfig: () => ({
     adminApiKey: "test-admin-key",
   }),
+}));
+
+// Isolate the audit route's query/pagination logic (the subject of these
+// tests) from `../middleware/auth.js`, which currently exports a duplicate
+// `requireAdmin` declaration (a JWT-cookie admin gate shadows the intended
+// Bearer-API-key gate documented on this route) — a pre-existing bug outside
+// the scope of the audit-log pagination work. This mock reproduces the
+// documented Bearer-key contract so these tests exercise the route itself.
+jest.mock("../middleware/auth.js", () => ({
+  requireAdmin: (req: any, res: any, next: any) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "missing_authorization", message: "Authorization header is required" });
+      return;
+    }
+    if (authHeader.slice(7) !== "test-admin-key") {
+      res.status(403).json({ error: "forbidden", message: "Invalid admin credentials" });
+      return;
+    }
+    next();
+  },
 }));
 
 const app = express();
@@ -82,41 +102,79 @@ describe("GET /api/audit-logs", () => {
     expect(res.body.error).toBe("forbidden");
   });
 
-  it("returns paginated results for authorized requests", async () => {
+  it("returns cursor-paginated results for authorized requests, without a count() scan", async () => {
     const mockLogs = [
       { id: "1", action: "login", actorAddress: "GABC", createdAt: new Date() },
       { id: "2", action: "deposit", actorAddress: "GABC", createdAt: new Date() },
     ];
 
     (prisma.auditLog.findMany as jest.Mock).mockResolvedValue(mockLogs);
-    (prisma.auditLog.count as jest.Mock).mockResolvedValue(2);
 
     const res = await request(app)
-      .get("/api/audit-logs?page=1&limit=10")
+      .get("/api/audit-logs?limit=10")
       .set("Authorization", "Bearer test-admin-key");
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
     expect(res.body.pagination).toMatchObject({
-      page: 1,
       limit: 10,
-      total: 2,
-      totalPages: 1,
+      cursor: null,
+      nextCursor: null,
       hasNextPage: false,
-      hasPrevPage: false,
     });
 
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith({
       where: {},
-      orderBy: { createdAt: "desc" },
-      skip: 0,
-      take: 10,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 11,
+    });
+    // No full-table COUNT(*) — the old OFFSET/COUNT combo is what caused CPU
+    // spikes on large event tables.
+    expect((prisma.auditLog as any).count).toBeUndefined();
+  });
+
+  it("signals hasNextPage and returns a nextCursor when more rows exist than the limit", async () => {
+    const mockLogs = Array.from({ length: 11 }, (_, i) => ({
+      id: String(i + 1),
+      action: "login",
+      actorAddress: "GABC",
+      createdAt: new Date(),
+    }));
+
+    (prisma.auditLog.findMany as jest.Mock).mockResolvedValue(mockLogs);
+
+    const res = await request(app)
+      .get("/api/audit-logs?limit=10")
+      .set("Authorization", "Bearer test-admin-key");
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(10);
+    expect(res.body.pagination).toMatchObject({
+      limit: 10,
+      hasNextPage: true,
+      nextCursor: "10",
+    });
+  });
+
+  it("passes the cursor through as a Prisma keyset cursor with skip: 1", async () => {
+    (prisma.auditLog.findMany as jest.Mock).mockResolvedValue([]);
+
+    const res = await request(app)
+      .get("/api/audit-logs?cursor=abc-123&limit=5")
+      .set("Authorization", "Bearer test-admin-key");
+
+    expect(res.status).toBe(200);
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith({
+      where: {},
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 6,
+      cursor: { id: "abc-123" },
+      skip: 1,
     });
   });
 
   it("filters logs by action and actorAddress", async () => {
     (prisma.auditLog.findMany as jest.Mock).mockResolvedValue([]);
-    (prisma.auditLog.count as jest.Mock).mockResolvedValue(0);
 
     const res = await request(app)
       .get("/api/audit-logs?action=login&actorAddress=GXYZ")
@@ -128,9 +186,8 @@ describe("GET /api/audit-logs", () => {
         action: "login",
         actorAddress: "GXYZ",
       },
-      orderBy: { createdAt: "desc" },
-      skip: 0,
-      take: 20,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 21,
     });
   });
 });

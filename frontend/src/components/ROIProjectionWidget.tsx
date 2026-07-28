@@ -14,6 +14,10 @@ import { Loader2 } from "lucide-react";
 
 type TimeRange = "1m" | "6m" | "1y" | "Max";
 
+const MIN_PROJECTION_MONTHS = 1;
+const MAX_PROJECTION_MONTHS = 36;
+const DEFAULT_PROJECTION_MONTHS = 12;
+
 interface HistoricalYield {
   date: string;
   yieldUsdc: number;
@@ -37,6 +41,9 @@ export default function ROIProjectionWidget({
   apyBps,
 }: ROIProjectionWidgetProps) {
   const [timeRange, setTimeRange] = useState<TimeRange>("1y");
+  // How many months of future repayment-driven yield to project — configurable
+  // via the slider below the chart, independent of the historical view window.
+  const [projectionMonths, setProjectionMonths] = useState(DEFAULT_PROJECTION_MONTHS);
   const [historicalData, setHistoricalData] = useState<HistoricalYield[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -83,13 +90,13 @@ export default function ROIProjectionWidget({
     // Generate projections
     const rate = apyBps / 10000;
     
-    // We project 12 months into the future
+    // Project `projectionMonths` months into the future (slider-controlled).
     let projectedBalance = currentPrincipal;
     const [yearStr, monthStr] = lastData.date.split("-");
     let currentYear = parseInt(yearStr, 10);
     let currentMonth = parseInt(monthStr, 10); // 1-indexed
 
-    for (let i = 1; i <= 12; i++) {
+    for (let i = 1; i <= projectionMonths; i++) {
       currentMonth++;
       if (currentMonth > 12) {
         currentMonth = 1;
@@ -125,7 +132,7 @@ export default function ROIProjectionWidget({
     }
 
     return data.slice(startIndex, endIndex);
-  }, [historicalData, depositedAmount, apyBps, timeRange]);
+  }, [historicalData, depositedAmount, apyBps, timeRange, projectionMonths]);
 
   const formatCurrency = (val: number) => {
     return "$" + val.toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -156,6 +163,26 @@ export default function ROIProjectionWidget({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="flex items-center gap-4 mb-6">
+        <label htmlFor="projection-months" className="text-xs font-semibold text-slate-300 whitespace-nowrap">
+          Repayment Timeline
+        </label>
+        <input
+          id="projection-months"
+          type="range"
+          min={MIN_PROJECTION_MONTHS}
+          max={MAX_PROJECTION_MONTHS}
+          step={1}
+          value={projectionMonths}
+          onChange={(e) => setProjectionMonths(Number(e.target.value))}
+          className="flex-1 accent-indigo-500"
+          aria-label="Projected months of future repayment-driven yield"
+        />
+        <span className="text-xs font-mono text-indigo-400 w-20 text-right shrink-0">
+          {projectionMonths} {projectionMonths === 1 ? "month" : "months"}
+        </span>
       </div>
 
       <div className="h-[280px] w-full relative">

@@ -1,22 +1,24 @@
 "use client";
 
 import React, { useState } from "react";
+import { useTranslations } from "next-intl";
 import { useWallet } from "../context/WalletContext";
 import { useNotifications } from "@/context/NotificationContext";
 import { describeNetworkMismatch } from "../lib/wallet-errors";
+import { LocaleSwitcher } from "@/i18n/LocaleSwitcher";
 
 function shorten(pk: string) {
   return `${pk.slice(0, 6)}...${pk.slice(-4)}`;
 }
 
 const NAV_LINKS = [
-  { href: "/verify", label: "Verify" },
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/invest", label: "Invest Pool" },
-  { href: "/repay", label: "Repay" },
-  { href: "/contractor", label: "Contractor" },
-  { href: "/governance", label: "Governance" },
-  { href: "/history", label: "Audit Log" },
+  { href: "/verify", labelKey: "verify" },
+  { href: "/dashboard", labelKey: "dashboard" },
+  { href: "/invest", labelKey: "invest" },
+  { href: "/repay", labelKey: "repay" },
+  { href: "/contractor", labelKey: "contractor" },
+  { href: "/governance", labelKey: "governance" },
+  { href: "/history", labelKey: "history" },
 ];
 
 function InnerNavbar() {
@@ -34,6 +36,7 @@ function InnerNavbar() {
     isConnecting,
   } = useWallet();
   const { unreadCount, togglePanel } = useNotifications();
+  const t = useTranslations("nav");
   const [menuOpen, setMenuOpen] = useState(false);
 
   // A disconnect detected by the wallet watcher clears publicKey and balance,
@@ -71,22 +74,23 @@ function InnerNavbar() {
                 href="/developer-playground"
                 className="text-amber-400 hover:text-amber-300 font-semibold px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-xs transition-colors"
               >
-                Playground
+                {t("playground")}
               </a>
             )}
-            {NAV_LINKS.map(({ href, label }) => (
+            {NAV_LINKS.map(({ href, labelKey }) => (
               <a
                 key={href}
                 href={href}
                 className="text-slate-300 font-medium tracking-wide hover:text-cyan-400 transition-colors"
               >
-                {label}
+                {t(labelKey)}
               </a>
             ))}
           </nav>
 
           {/* Desktop Wallet */}
           <div className="hidden lg:flex items-center gap-3">
+            <LocaleSwitcher />
             <NotificationButton unreadCount={unreadCount} onClick={togglePanel} />
             <WalletButton
               isConnected={isConnected}
@@ -101,6 +105,7 @@ function InnerNavbar() {
 
           {/* Mobile hamburger */}
           <div className="flex lg:hidden items-center gap-3">
+            <LocaleSwitcher />
             <NotificationButton unreadCount={unreadCount} onClick={togglePanel} compact />
             <WalletButton
               isConnected={isConnected}
@@ -176,17 +181,17 @@ function InnerNavbar() {
               onClick={() => setMenuOpen(false)}
               className="py-3 px-3 rounded-lg text-amber-400 bg-amber-500/10 border border-amber-500/20 text-sm font-semibold"
             >
-              Playground
+              {t("playground")}
             </a>
           )}
-          {NAV_LINKS.map(({ href, label }) => (
+          {NAV_LINKS.map(({ href, labelKey }) => (
             <a
               key={href}
               href={href}
               onClick={() => setMenuOpen(false)}
               className="py-3 px-4 rounded-xl text-slate-200 hover:text-cyan-400 hover:bg-slate-800/60 transition-colors text-base font-medium"
             >
-              {label}
+              {t(labelKey)}
             </a>
           ))}
         </nav>
@@ -234,7 +239,7 @@ interface WalletButtonProps {
   publicKey: string | null;
   usdcBalance: string | null;
   /** Type of active wallet, used to show the correct badge. */
-  walletType: "stellar" | "evm" | "solana" | null;
+  walletType: "stellar" | "evm" | "solana" | "ledger" | null;
   isConnecting: boolean;
   connect: () => Promise<string | null>;
   disconnect: () => void;
@@ -249,6 +254,7 @@ function WalletButton({
   connect,
   disconnect,
 }: WalletButtonProps) {
+  const t = useTranslations("nav");
   if (!isConnected) {
     return (
       <button
@@ -256,7 +262,7 @@ function WalletButton({
         disabled={isConnecting}
         className="btn-cta !py-2.5 !px-4 !text-xs md:!text-sm shadow-cyan-500/20 disabled:opacity-50"
       >
-        {isConnecting ? "Connecting…" : "Connect Wallet"}
+        {isConnecting ? "Connecting…" : t("connectWallet")}
         <svg
           xmlns="http://www.w3.org/2000/svg"
           width="14"
@@ -299,7 +305,7 @@ function WalletButton({
         {publicKey ? shorten(publicKey) : "Connected"}
       </span>
       <button onClick={disconnect} className="btn-ghost text-xs hover:text-red-400">
-        Disconnect
+        {t("disconnect")}
       </button>
     </div>
   );
