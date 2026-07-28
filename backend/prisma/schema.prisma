@@ -1,3 +1,206 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum NotificationStatus {
+  Pending
+  Sent
+  Failed
+}
+
+enum LoanStatus {
+  Pending
+  Approved
+  Rejected
+  Disbursing
+  Repaying
+  Completed
+}
+
+model Notification {
+  id          String             @id @default(uuid())
+  recipient   String
+  type        String // "EMAIL" or "WEBHOOK"
+  content     String // HTML for emails or JSON payload for webhooks
+  status      NotificationStatus @default(Pending)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  attempts    Int                @default(0)
+  lastError   String?
+  nextRetryAt DateTime?
+
+  // Index backing the notification scheduler's retry sweep: WHERE status = 'Pending'
+  @@index([status])
+  // Index for retry-at queries: WHERE status = 'Pending' AND nextRetryAt <= now()
+  @@index([status, nextRetryAt])
+}
+
+model UnpinnedCid {
+  id           String   @id @default(uuid())
+  cid          String
+  proposalId   String?
+  success      Boolean
+  pinataStatus Int?
+  error        String?
+  createdAt    DateTime @default(now())
+}
+
+enum VerificationStatus {
+  PENDING
+  ELIGIBLE
+  INELIGIBLE
+}
+
+
+
+enum WorkspaceRole {
+  OWNER
+  BUILDER
+  VIEWER
+}
+
+enum WorkspaceInvitationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+model Workspace {
+  id           String                   @id @default(uuid())
+  name         String
+  slug         String                   @unique
+  createdBy    String
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  members      WorkspaceMember[]
+  invitations  WorkspaceInvitation[]
+}
+
+model WorkspaceMember {
+  id            String        @id @default(uuid())
+  workspaceId   String
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  walletAddress String
+  role          WorkspaceRole @default(VIEWER)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([workspaceId, walletAddress])
+  @@index([walletAddress])
+}
+
+model WorkspaceInvitation {
+  id              String                     @id @default(uuid())
+  workspaceId     String
+  workspace       Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  inviteeAddress  String
+  invitedBy       String
+  role            WorkspaceRole              @default(VIEWER)
+  status          WorkspaceInvitationStatus  @default(PENDING)
+  expiresAt       DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  @@index([inviteeAddress])
+  @@index([status])
+}
+
+model Applicant {
+  id                 String             @id @default(uuid())
+  stellarAddress     String             @unique
+  verificationStatus VerificationStatus @default(PENDING)
+  creditScore        Int?
+  taxId              String?
+  monthlyIncome      String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  verificationResults VerificationResult[]
+  loanApplications    LoanApplication[]
+  borrowerCredentials BorrowerCredential[]
+}
+
+model VerificationResult {
+  id             String    @id @default(uuid())
+  applicantId    String
+  applicant      Applicant @relation(fields: [applicantId], references: [id])
+  reportHash     String
+  totalPayments  Int
+  totalVolume    Float
+  spanMonths     Float
+  eligible       Boolean
+  analyzedAt     DateTime  @default(now())
+
+  // Index backing getApplicant() which orders verificationResults by analyzedAt desc
+  @@index([applicantId, analyzedAt])
+  // Supports eligibility-filtered queries and analytics scans
+  @@index([eligible])
+}
+
+model LoanApplication {
+  id                 String     @id @default(uuid())
+  applicantId        String
+  applicant          Applicant  @relation(fields: [applicantId], references: [id])
+  escrowContractId   String?
+  loanId             String?
+  principal          Float
+  status             LoanStatus @default(Pending)
+  createdAt          DateTime   @default(now())
+
+  // New fields for repayment tracking
+  dueDate            DateTime?
+  missedPayments     Int        @default(0)
+  lateFeeBalance     Float      @default(0)
+  gracePeriodEndsAt  DateTime?
+
+  // Index backing getApplicationsByBorrower(): filter by applicant then sort by createdAt
+  @@index([applicantId, createdAt])
+  // Index backing getPendingApplications(): WHERE status = 'Pending' — avoids full table scan
+  @@index([status])
+  // Composite index for queries that filter by both applicant and status
+  @@index([applicantId, status])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  action       String
+  actorAddress String?
+  ipAddress    String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([action])
+  @@index([actorAddress])
+  @@index([createdAt])
+  // Composite index backing the audit-log query path: filter by event type
+  // (action) then keyset-paginate by createdAt without a table scan.
+  @@index([action, createdAt])
+}
+
+model BorrowerCredential {
+  id             String   @id @default(uuid())
+  applicantId    String
+  applicant      Applicant @relation(fields: [applicantId], references: [id])
+  did            String   @unique
+  didHash        String   @unique
+  verificationMethod     String
+  challenge      String?
+  issuer         String?
+  verifiedAt     DateTime @default(now())
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  isRevoked      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([applicantId])
+  @@index([did])
+}
+
 model WebhookDLQ {
   id              String   @id @default(uuid())
   url             String
@@ -39,8 +242,17 @@ model WebhookSubscription {
   label       String
   /// The HTTPS endpoint that will receive POST requests.
   url         String
-  /// Per-subscription HMAC-SHA256 secret (stored encrypted at rest).
+  /// Active/primary HMAC-SHA256 signing key (stored encrypted at rest).
+  /// Every outbound delivery is signed with this key.
   secret      String
+  /// Prior signing key, kept for a grace period immediately after rotation so
+  /// signatures verified against the old key during the transition window
+  /// still validate. Cleared once `previousSecretExpiresAt` has passed.
+  previousSecret String?
+  /// When `previousSecret` stops being accepted and is pruned.
+  previousSecretExpiresAt DateTime?
+  /// When `secret` was last (re)generated — drives the 90-day auto-rotation sweep.
+  secretRotatedAt DateTime               @default(now())
   /// Comma-separated list of event topics this subscription listens for,
   /// or a single "all" entry to receive everything.
   topics      WebhookEventTopic[]
@@ -54,6 +266,7 @@ model WebhookSubscription {
 
   @@index([status])
   @@index([ownerAddress])
+  @@index([secretRotatedAt])
 }
 
 /// Immutable delivery attempt record — one row per HTTP attempt.

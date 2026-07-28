@@ -1,12 +1,67 @@
 const { PrismaClient } = require("@prisma/client") as {
-  PrismaClient: new () => any;
+  PrismaClient: new (options?: Record<string, unknown>) => any;
 };
 
 import { encrypt, decrypt } from "../utils/crypto.js";
 
 export type VerificationStatus = "PENDING" | "ELIGIBLE" | "INELIGIBLE";
 
-export const prisma = new PrismaClient();
+// ── Connection pool configuration ────────────────────────────────────────────
+//
+// Prisma uses its own built-in connection pool on top of the pg driver.
+// Under sustained concurrent load the default pool (num_cpus*2+1 connections,
+// 10 s acquire timeout) runs out quickly, causing P2024 "connection pool
+// timeout" errors. We override three knobs here:
+//
+//   connection_limit   – maximum open connections to PostgreSQL.
+//                        Rule of thumb: (num_cpus * 4), capped at 100 so a
+//                        single service instance never exhausts the server's
+//                        pg max_connections (default 100).  Override via
+//                        DB_CONNECTION_LIMIT env var for multi-instance
+//                        deployments where the budget must be shared.
+//
+//   pool_timeout       – seconds to wait for a free connection before Prisma
+//                        throws P2024.  15 s gives queue spikes room to drain
+//                        without hanging requests indefinitely.
+//
+//   connect_timeout    – seconds for the initial TCP handshake to pg.
+//                        30 s covers cold-start DNS resolution in cloud envs.
+//
+// The values are appended to DATABASE_URL as query-string parameters so they
+// work with both a plain url (postgres://…) and one that already carries a
+// query string.
+//
+function buildDatabaseUrl(): string | undefined {
+  const base = process.env.DATABASE_URL;
+  if (!base) return undefined;
+
+  const connectionLimit = parseInt(
+    process.env.DB_CONNECTION_LIMIT || "20",
+    10
+  );
+  const poolTimeout = parseInt(process.env.DB_POOL_TIMEOUT || "15", 10);
+  const connectTimeout = parseInt(process.env.DB_CONNECT_TIMEOUT || "30", 10);
+
+  const separator = base.includes("?") ? "&" : "?";
+  return (
+    `${base}${separator}` +
+    `connection_limit=${connectionLimit}` +
+    `&pool_timeout=${poolTimeout}` +
+    `&connect_timeout=${connectTimeout}`
+  );
+}
+
+const dbUrl = buildDatabaseUrl();
+
+export const prisma = new PrismaClient(
+  dbUrl
+    ? {
+        datasources: {
+          db: { url: dbUrl },
+        },
+      }
+    : undefined
+);
 
 export async function disconnect(): Promise<void> {
   await prisma.$disconnect();

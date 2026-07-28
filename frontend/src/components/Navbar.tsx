@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { useWallet } from "../context/WalletContext";
 import { useNotifications } from "@/context/NotificationContext";
+import { describeNetworkMismatch } from "../lib/wallet-errors";
 
 function shorten(pk: string) {
   return `${pk.slice(0, 6)}...${pk.slice(-4)}`;
@@ -19,10 +20,25 @@ const NAV_LINKS = [
 ];
 
 function InnerNavbar() {
-  const { publicKey, isConnected, usdcBalance, connect, disconnect, wrongNetwork } = useWallet();
+  const {
+    publicKey,
+    isConnected,
+    usdcBalance,
+    connect,
+    disconnect,
+    wrongNetwork,
+    network,
+    walletType,
+    walletError,
+    clearError,
+    isConnecting,
+  } = useWallet();
   const { unreadCount, togglePanel } = useNotifications();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [walletModalOpen, setWalletModalOpen] = useState(false);
+
+  // A disconnect detected by the wallet watcher clears publicKey and balance,
+  // so the button below falls back to the Connect Wallet CTA on its own.
+  const showDisconnectNotice = !!walletError && !isConnected;
 
   return (
     <>
@@ -76,6 +92,8 @@ function InnerNavbar() {
               isConnected={isConnected}
               publicKey={publicKey}
               usdcBalance={usdcBalance}
+              walletType={walletType}
+              isConnecting={isConnecting}
               connect={connect}
               disconnect={disconnect}
             />
@@ -88,6 +106,8 @@ function InnerNavbar() {
               isConnected={isConnected}
               publicKey={publicKey}
               usdcBalance={usdcBalance}
+              walletType={walletType}
+              isConnecting={isConnecting}
               connect={connect}
               disconnect={disconnect}
             />
@@ -173,17 +193,38 @@ function InnerNavbar() {
       </div>
 
       {wrongNetwork && (
-        <div className="fixed top-20 left-0 right-0 z-40 bg-amber-500/20 text-amber-300 border-b border-amber-500/30 text-center py-2 text-xs font-semibold backdrop-blur-md">
-          ⚠️ Connected to non-testnet account. Please switch your Stellar wallet to Stellar Testnet.
+        <div
+          role="alert"
+          className="fixed top-20 left-0 right-0 z-40 bg-amber-500/20 text-amber-300 border-b border-amber-500/30 text-center py-2 text-xs font-semibold backdrop-blur-md"
+        >
+          ⚠️ {describeNetworkMismatch(network)}
         </div>
       )}
 
-      {/* Stellar wallet picker — Freighter or Ledger */}
-      <WalletSelectModal
-        isOpen={walletModalOpen}
-        onClose={() => setWalletModalOpen(false)}
-        onConnected={() => setWalletModalOpen(false)}
-      />
+      {showDisconnectNotice && (
+        <div
+          role="alert"
+          className="fixed left-0 right-0 z-40 flex flex-wrap items-center justify-center gap-3 border-b border-red-500/30 bg-red-500/15 py-2 text-xs font-semibold text-red-200 backdrop-blur-md"
+          style={{ top: wrongNetwork ? "5.75rem" : "5rem" }}
+        >
+          <span>{walletError?.message}</span>
+          <button
+            type="button"
+            onClick={() => connect()}
+            className="rounded-md border border-red-400/40 px-2.5 py-1 text-[11px] uppercase tracking-wider text-red-100 transition-colors hover:border-cyan-400/60 hover:text-cyan-200"
+          >
+            Reconnect
+          </button>
+          <button
+            type="button"
+            onClick={clearError}
+            aria-label="Dismiss wallet notice"
+            className="text-red-300/70 transition-colors hover:text-red-100"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -192,10 +233,10 @@ interface WalletButtonProps {
   isConnected: boolean;
   publicKey: string | null;
   usdcBalance: string | null;
-  /** Type of active Stellar wallet, used to show the correct badge. */
-  walletType: "stellar" | "ledger" | "evm" | "solana" | null;
-  /** Opens the WalletSelectModal to choose Freighter or Ledger. */
-  openModal: () => void;
+  /** Type of active wallet, used to show the correct badge. */
+  walletType: "stellar" | "evm" | "solana" | "ledger" | null;
+  isConnecting: boolean;
+  connect: () => Promise<string | null>;
   disconnect: () => void;
 }
 
@@ -203,16 +244,19 @@ function WalletButton({
   isConnected,
   publicKey,
   usdcBalance,
+  walletType,
+  isConnecting,
   connect,
   disconnect,
 }: WalletButtonProps) {
   if (!isConnected) {
     return (
       <button
-        onClick={connect}
-        className="btn-cta !py-2.5 !px-4 !text-xs md:!text-sm shadow-cyan-500/20"
+        onClick={() => connect()}
+        disabled={isConnecting}
+        className="btn-cta !py-2.5 !px-4 !text-xs md:!text-sm shadow-cyan-500/20 disabled:opacity-50"
       >
-        Connect Wallet
+        {isConnecting ? "Connecting…" : "Connect Wallet"}
         <svg
           xmlns="http://www.w3.org/2000/svg"
           width="14"
@@ -233,20 +277,7 @@ function WalletButton({
   }
   return (
     <div className="flex items-center gap-2">
-      {/* Wallet-type badge — amber for Ledger, cyan for Freighter */}
-      {walletType === "ledger" ? (
-        <span
-          title="Connected via Ledger hardware wallet"
-          className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 uppercase tracking-wider px-2 py-1 bg-amber-500/10 border border-amber-500/20 rounded-md"
-        >
-          {/* Ledger chip icon */}
-          <svg viewBox="0 0 14 14" fill="none" className="w-3 h-3" aria-hidden="true">
-            <rect x="1" y="3" width="12" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
-            <rect x="3" y="5" width="3" height="4" rx="0.4" fill="currentColor" />
-          </svg>
-          Ledger
-        </span>
-      ) : walletType === "stellar" ? (
+      {walletType === "stellar" ? (
         <span
           title="Connected via Freighter"
           className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold text-cyan-400 uppercase tracking-wider px-2 py-1 bg-cyan-500/10 border border-cyan-500/20 rounded-md"
@@ -261,13 +292,12 @@ function WalletButton({
       <div className="text-xs md:text-sm text-cyan-400 font-semibold px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
         {usdcBalance != null ? `${usdcBalance} USDC` : "—"}
       </div>
-      <button
-        onClick={openModal}
-        title="Manage wallet"
-        className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs font-semibold text-slate-200 font-mono hover:border-cyan-500/50 transition-colors"
+      <span
+        title={publicKey ?? "Connected"}
+        className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs font-semibold text-slate-200 font-mono"
       >
         {publicKey ? shorten(publicKey) : "Connected"}
-      </button>
+      </span>
       <button onClick={disconnect} className="btn-ghost text-xs hover:text-red-400">
         Disconnect
       </button>

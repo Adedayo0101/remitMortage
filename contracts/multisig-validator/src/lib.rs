@@ -8,10 +8,18 @@ pub use crate::types::{
     AdminMultisigConfig, DataKey, MultisigConfig, Proposal, ProposalState, Signer, TimelockConfig,
 };
 
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, Vec};
 
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
+
+/// Default proposal lifetime in ledgers when the caller passes 0 at submission.
+/// At ~5 seconds per ledger this is approximately 30 days.
+#[cfg(not(test))]
+const DEFAULT_PROPOSAL_EXPIRY_LEDGERS: u32 = 518_400;
+/// Compact default used in tests so expiry can be crossed with small ledger advances.
+#[cfg(test)]
+const DEFAULT_PROPOSAL_EXPIRY_LEDGERS: u32 = 1_000;
 
 /// Multisig Threshold Validator
 ///
@@ -76,6 +84,18 @@ impl MultisigValidator {
             }
         }
         None
+    }
+
+    /// Return `true` when the current ledger sequence has passed the proposal's
+    /// `expiration_ledger`.
+    ///
+    /// A value of `0` means the field was not set (legacy record) — treated as
+    /// non-expiring to preserve backwards compatibility.
+    fn is_expired(env: &Env, proposal: &Proposal) -> bool {
+        if proposal.expiration_ledger == 0 {
+            return false; // legacy / no-expiry
+        }
+        env.ledger().sequence() > proposal.expiration_ledger
     }
 }
 
@@ -209,19 +229,42 @@ impl MultisigValidator {
 
     /// Submit a new action proposal. `proposal_id` should be a unique 32-byte
     /// value (e.g. a hash of the action details). Anyone may submit.
+    ///
+    /// # Arguments
+    /// - `proposal_id`       — Unique 32-byte identifier (e.g. SHA-256 of action details).
+    /// - `expiration_ledger` — Ledger sequence number after which the proposal is
+    ///   considered expired and eligible for pruning.  Pass `0` to use the
+    ///   protocol default (`DEFAULT_PROPOSAL_EXPIRY_LEDGERS` from the current
+    ///   ledger sequence).
     pub fn submit_action(
         env: Env,
         proposal_id: BytesN<32>,
+        expiration_ledger: u32,
     ) -> Result<(), ValidatorError> {
         let now = env.ledger().timestamp();
+        let current_seq = env.ledger().sequence();
+
+        let effective_expiry = if expiration_ledger == 0 {
+            current_seq.saturating_add(DEFAULT_PROPOSAL_EXPIRY_LEDGERS)
+        } else {
+            expiration_ledger
+        };
+
         let proposal = Proposal {
             state: ProposalState::Pending,
             ready_at: 0,
             created_at: now,
+            expiration_ledger: effective_expiry,
         };
         env.storage()
             .persistent()
-            .set(&DataKey::ActionProposal(proposal_id), &proposal);
+            .set(&DataKey::ActionProposal(proposal_id.clone()), &proposal);
+
+        env.events().publish(
+            (symbol_short!("submitted"),),
+            (proposal_id, effective_expiry),
+        );
+
         Self::bump_instance(&env);
         Ok(())
     }
@@ -229,6 +272,9 @@ impl MultisigValidator {
     /// Approve a proposal with the given `signing_keys`. Once the cumulative
     /// weight meets the account's threshold, the proposal transitions from
     /// `Pending` to `Locked` and the timelock countdown begins.
+    ///
+    /// Returns `ProposalExpired` when the current ledger sequence has passed
+    /// the proposal's `expiration_ledger`.
     pub fn approve_action(
         env: Env,
         account: Address,
@@ -243,6 +289,11 @@ impl MultisigValidator {
 
         if proposal.state == ProposalState::Executed {
             return Err(ValidatorError::ProposalAlreadyExecuted);
+        }
+
+        // Reject votes on expired proposals before any other state check.
+        if Self::is_expired(&env, &proposal) {
+            return Err(ValidatorError::ProposalExpired);
         }
 
         // Already locked — no-op.
@@ -283,8 +334,8 @@ impl MultisigValidator {
         }
     }
 
-    /// Execute a timelocked proposal. Fails if not Locked, or if the timelock
-    /// delay has not yet elapsed.
+    /// Execute a timelocked proposal. Fails if not Locked, if the timelock
+    /// delay has not yet elapsed, or if the proposal has expired.
     pub fn execute_action(
         env: Env,
         proposal_id: BytesN<32>,
@@ -300,6 +351,12 @@ impl MultisigValidator {
         }
         if proposal.state != ProposalState::Locked {
             return Err(ValidatorError::NotYetApproved);
+        }
+
+        // A Locked proposal that somehow crosses its expiry without being
+        // executed is also blocked — the approval window has closed.
+        if Self::is_expired(&env, &proposal) {
+            return Err(ValidatorError::ProposalExpired);
         }
 
         let now = env.ledger().timestamp();

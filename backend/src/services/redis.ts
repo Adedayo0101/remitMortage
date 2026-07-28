@@ -6,16 +6,19 @@ let redisClient: Redis | null = null;
 /**
  * Initialize and connect to Redis.
  * If REDIS_URL is not set, returns null (graceful degradation).
+ * Configures connection pooling suitable for both cache and event-queue usage.
  */
 export async function initializeRedis(): Promise<Redis | null> {
-  const redisUrl = process.env.REDIS_URL;
+  const redisUrl =
+    process.env.REDIS_EVENT_QUEUE_URL || process.env.REDIS_URL;
 
   if (!redisUrl) {
-    logger.warn("REDIS_URL not configured; caching will be disabled");
+    logger.warn("REDIS_URL not configured; caching and event queue will be disabled");
     return null;
   }
 
   try {
+    const poolSize = parseInt(process.env.REDIS_POOL_SIZE || "10", 10);
     const options = {
       lazyConnect: true,
       retryStrategy: (times: number) => {
@@ -25,6 +28,10 @@ export async function initializeRedis(): Promise<Redis | null> {
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       enableOfflineQueue: true,
+      // Connection pool sizing
+      connectionName: `remitmortage-${process.env.NODE_ENV || "development"}`,
+      keepAlive: 30000,
+      family: 4,
     };
 
     redisClient = new Redis(redisUrl, options);

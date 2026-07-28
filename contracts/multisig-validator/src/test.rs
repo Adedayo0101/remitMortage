@@ -207,10 +207,12 @@ fn test_submit_and_get_proposal() {
     let (_account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xAA);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
     let proposal = client.get_proposal(&pid);
     assert_eq!(proposal.state, ProposalState::Pending);
     assert_eq!(proposal.created_at, 1_000_000);
+    // Default expiry should be set (non-zero in test = 1_000 ledgers from seq 0)
+    assert!(proposal.expiration_ledger > 0);
 }
 
 #[test]
@@ -220,7 +222,7 @@ fn test_approve_transitions_to_locked() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xAA);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     // A(2) + B(1) = 3 >= threshold 3
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
@@ -238,7 +240,7 @@ fn test_execute_after_timelock_elapsed() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xBB);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -259,7 +261,7 @@ fn test_execute_before_timelock_fails() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xCC);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -278,7 +280,7 @@ fn test_cannot_execute_twice() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xDD);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -297,7 +299,7 @@ fn test_cannot_approve_executed_proposal() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xEE);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -315,7 +317,7 @@ fn test_execute_without_approval_fails() {
     let (_account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xFF);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
     // Never approved.
 
     env.ledger().set_timestamp(1_000_011);
@@ -330,7 +332,7 @@ fn test_can_execute_returns_correctly() {
     let (account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0x11);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     // Pending → can_execute false.
     assert!(!client.can_execute(&pid));
@@ -359,7 +361,7 @@ fn test_zero_delay_timelock_allows_immediate_execution() {
 
     client.configure_timelock(&account, &0u64); // No delay.
     let pid = proposal_id(&env, 0x22);
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &keys);
@@ -376,7 +378,7 @@ fn test_approve_action_without_timelock_fails() {
     env.mock_all_auths();
     let (account, client) = setup(&env); // No timelock configured.
     let pid = proposal_id(&env, 0x33);
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
 
     let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     let res = client.try_approve_action(&account, &pid, &keys);
@@ -577,4 +579,76 @@ fn test_count_valid_signers_ignores_duplicates_and_unknowns() {
         Address::generate(&env),    // unknown -> ignored
     ];
     assert_eq!(client.count_valid_signers(&presented), 1u32);
+}
+
+#[test]
+fn test_set_quorum_threshold_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    
+    // Initial config has threshold 2 with 3 signers
+    let config = client.get_signer_config();
+    assert_eq!(config.threshold, 2u32);
+    
+    // Update threshold to 3
+    client.set_quorum_threshold(&3u32);
+    let updated = client.get_signer_config();
+    assert_eq!(updated.threshold, 3u32);
+}
+
+#[test]
+fn test_set_quorum_threshold_blocks_below_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    
+    // Set threshold to 3 (max with 3 signers)
+    client.set_quorum_threshold(&3u32);
+    
+    // Try to present only 2 signatures -> should fail
+    let presented: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    assert!(!client.verify_signatures(&presented));
+}
+
+#[test]
+fn test_set_quorum_threshold_rejects_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let res = client.try_set_quorum_threshold(&0u32);
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_set_quorum_threshold_rejects_exceeds_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let res = client.try_set_quorum_threshold(&4u32); // only 3 signers
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_quorum_threshold_update_enforces_new_requirement() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    
+    // Initial: 2-of-3 signers, 2 signatures should pass
+    let two_sigs: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    assert!(client.verify_signatures(&two_sigs));
+    
+    // Change to 3-of-3 (quorum threshold update)
+    client.set_quorum_threshold(&3u32);
+    
+    // Same 2 signatures should now fail
+    assert!(!client.verify_signatures(&two_sigs));
+    
+    // But all 3 should pass
+    let three_sigs: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1), signers.get_unchecked(2)];
+    assert!(client.verify_signatures(&three_sigs));
 }

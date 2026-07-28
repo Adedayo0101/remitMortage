@@ -115,7 +115,7 @@ export async function openLedgerConnection(): Promise<LedgerConnection> {
   }
 
   const { default: Str } = await import("@ledgerhq/hw-app-str");
-  const stellar = new (Str as new (t: LedgerTransport) => LedgerStr)(transport);
+  const stellar = new (Str as unknown as new (t: LedgerTransport) => LedgerStr)(transport);
 
   return {
     transport,

@@ -7,6 +7,11 @@
  *   3. Dispatch with exponential-backoff retry — up to MAX_ATTEMPTS per delivery
  *   4. Delivery persistence — every attempt is written to WebhookDelivery
  *   5. Dead-letter queue   — permanently-failed deliveries also land in WebhookDLQ
+ *   6. Key rotation        — signing keys auto-rotate every ROTATION_INTERVAL_DAYS;
+ *      the previous key keeps validating for ROTATION_GRACE_PERIOD_DAYS so
+ *      rotation never interrupts delivery verification (see
+ *      `rotateDueSecrets`, `verifySubscriptionSignature`, and
+ *      `jobs/webhookKeyRotation.ts` for the scheduled sweep).
  *
  * Signature scheme (compatible with Stripe / GitHub conventions):
  *
@@ -30,6 +35,9 @@ import crypto from "crypto";
 import { prisma } from "./db.js";
 import logger from "../utils/logger.js";
 import { encrypt, decrypt } from "../utils/crypto.js";
+import { queueService, WebhookJobData } from "./queueService.js";
+import { loadConfig } from "../config.js";
+import { correlationHeaders } from "../middleware/correlationId.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -37,6 +45,16 @@ import { encrypt, decrypt } from "../utils/crypto.js";
 
 /** Maximum delivery attempts before a delivery is moved to the DLQ. */
 export const MAX_ATTEMPTS = 5;
+
+/** How often a subscription's HMAC signing key is auto-rotated. */
+export const ROTATION_INTERVAL_DAYS = 90;
+
+/**
+ * How long the previous signing key keeps validating after a rotation.
+ * Gives subscribers a window to pick up the new secret before the old one
+ * is pruned, so in-flight verification never breaks mid-rotation.
+ */
+export const ROTATION_GRACE_PERIOD_DAYS = 7;
 
 /** Base delay for exponential backoff in milliseconds. */
 const BASE_BACKOFF_MS = 1_000;
@@ -179,7 +197,14 @@ async function attemptPost(
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
+      // Forward the in-flight request's correlation ID so the subscriber's
+      // logs join up with ours. Explicit `headers` still win if a caller
+      // deliberately overrides the value.
+      headers: {
+        "Content-Type": "application/json",
+        ...correlationHeaders(),
+        ...headers,
+      },
       body,
       signal: controller.signal,
     });
@@ -245,6 +270,10 @@ export async function listSubscriptions(ownerAddress?: string): Promise<any[]> {
       ownerAddress: true,
       createdAt: true,
       updatedAt: true,
+      // Rotation status is safe to expose (unlike the keys themselves) and
+      // lets admin tooling confirm rotations are landing on schedule.
+      secretRotatedAt: true,
+      previousSecretExpiresAt: true,
     },
   });
   return rows;
@@ -263,6 +292,10 @@ export async function getSubscription(id: string): Promise<any | null> {
       ownerAddress: true,
       createdAt: true,
       updatedAt: true,
+      // Rotation status is safe to expose (unlike the keys themselves) and
+      // lets admin tooling confirm rotations are landing on schedule.
+      secretRotatedAt: true,
+      previousSecretExpiresAt: true,
     },
   });
 }
@@ -280,20 +313,131 @@ export async function updateSubscriptionStatus(
 
 /**
  * Rotate the HMAC secret for a subscription.
+ *
+ * The current secret is demoted to `previousSecret` rather than discarded —
+ * it keeps validating for {@link ROTATION_GRACE_PERIOD_DAYS} so a subscriber
+ * mid-transition doesn't see valid deliveries rejected. A brand-new secret
+ * becomes the primary signing key immediately.
+ *
  * Returns the new plaintext secret (shown once).
  */
 export async function rotateSecret(
   id: string
 ): Promise<{ plaintextSecret: string }> {
+  const existing = await prisma.webhookSubscription.findUnique({
+    where: { id },
+    select: { secret: true },
+  });
+  if (!existing) {
+    throw new Error(`Subscription ${id} not found`);
+  }
+
   const plaintextSecret = crypto.randomBytes(32).toString("hex");
   const encryptedSecret = encrypt(plaintextSecret);
+  const now = new Date();
+  const previousSecretExpiresAt = new Date(
+    now.getTime() + ROTATION_GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000
+  );
 
   await prisma.webhookSubscription.update({
     where: { id },
-    data: { secret: encryptedSecret, updatedAt: new Date() },
+    data: {
+      previousSecret: existing.secret,
+      previousSecretExpiresAt,
+      secret: encryptedSecret,
+      secretRotatedAt: now,
+      updatedAt: now,
+    },
   });
 
   return { plaintextSecret };
+}
+
+/**
+ * Verifies a signature against a subscription's stored keys, accepting
+ * either the current primary secret or — while still inside its grace
+ * period — the previous one. This is what lets a rotation happen without
+ * interrupting delivery verification for subscribers who haven't yet picked
+ * up the new secret.
+ */
+export async function verifySubscriptionSignature(
+  subscriptionId: string,
+  timestamp: string,
+  rawBody: string,
+  signature: string
+): Promise<boolean> {
+  const sub = await prisma.webhookSubscription.findUnique({
+    where: { id: subscriptionId },
+    select: { secret: true, previousSecret: true, previousSecretExpiresAt: true },
+  });
+  if (!sub) return false;
+
+  if (verifySignature(decrypt(sub.secret), timestamp, rawBody, signature)) {
+    return true;
+  }
+
+  const previousStillValid =
+    !!sub.previousSecret &&
+    (!sub.previousSecretExpiresAt || sub.previousSecretExpiresAt > new Date());
+
+  if (previousStillValid) {
+    return verifySignature(decrypt(sub.previousSecret as string), timestamp, rawBody, signature);
+  }
+
+  return false;
+}
+
+/**
+ * Clears `previousSecret` on every subscription whose grace period has
+ * elapsed, so an outdated key never validates indefinitely. Returns the
+ * number of subscriptions pruned.
+ */
+export async function pruneExpiredPreviousSecrets(): Promise<number> {
+  const { count } = await prisma.webhookSubscription.updateMany({
+    where: {
+      previousSecret: { not: null },
+      previousSecretExpiresAt: { lte: new Date() },
+    },
+    data: { previousSecret: null, previousSecretExpiresAt: null },
+  });
+  return count;
+}
+
+/**
+ * Finds every non-revoked subscription whose signing key is due for
+ * rotation (older than {@link ROTATION_INTERVAL_DAYS}) and rotates it.
+ * Intended to be run on a recurring schedule; see `jobs/webhookKeyRotation.ts`.
+ *
+ * Returns the freshly-generated plaintext secret for each rotated
+ * subscription, keyed by subscription id, so the caller can deliver it to an
+ * operator immediately — it is never persisted or logged in plaintext, and
+ * this is the only opportunity to retrieve it for an unattended rotation.
+ */
+export async function rotateDueSecrets(): Promise<{
+  rotatedIds: string[];
+  secrets: Record<string, string>;
+}> {
+  const cutoff = new Date(
+    Date.now() - ROTATION_INTERVAL_DAYS * 24 * 60 * 60 * 1000
+  );
+
+  const due = await prisma.webhookSubscription.findMany({
+    where: {
+      status: { not: "revoked" },
+      secretRotatedAt: { lte: cutoff },
+    },
+    select: { id: true },
+  });
+
+  const rotatedIds: string[] = [];
+  const secrets: Record<string, string> = {};
+  for (const sub of due) {
+    const { plaintextSecret } = await rotateSecret(sub.id);
+    rotatedIds.push(sub.id);
+    secrets[sub.id] = plaintextSecret;
+  }
+
+  return { rotatedIds, secrets };
 }
 
 // ---------------------------------------------------------------------------
@@ -303,9 +447,8 @@ export async function rotateSecret(
 /**
  * Dispatch a contract event to all active subscriptions that match its topic.
  *
- * Each dispatch is fire-and-forget from the caller's perspective — delivery
- * is retried internally up to MAX_ATTEMPTS times with exponential backoff.
- * The function returns immediately after spawning the background work.
+ * Each dispatch adds BullMQ jobs for load-balanced processing by webhook workers.
+ * The function returns immediately — retries and failover are handled by the queue.
  */
 export function dispatchEvent(
   topic: EventTopic,
@@ -333,10 +476,31 @@ async function _dispatchEventAsync(
 
   if (subscriptions.length === 0) return;
 
-  // Fan-out: dispatch to every matching subscriber concurrently.
-  await Promise.allSettled(
-    subscriptions.map((sub: any) => _deliverToSubscription(sub, topic, data))
+  // Enqueue a BullMQ job per subscription for load-balanced delivery
+  const results = await Promise.allSettled(
+    subscriptions.map((sub: any) =>
+      queueService.addWebhookJob({
+        subscriptionId: sub.id,
+        url: sub.url,
+        encryptedSecret: sub.secret,
+        topic,
+        data,
+      } as WebhookJobData, {
+        attempts: MAX_ATTEMPTS,
+        backoff: { type: "exponential", delay: BASE_BACKOFF_MS },
+      })
+    )
   );
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === "rejected") {
+      logger.error("[webhook] failed to enqueue job", {
+        subscriptionId: subscriptions[i]?.id,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    }
+  }
 }
 
 /**
@@ -550,7 +714,6 @@ export async function sendWebhook(
   url: string,
   payload: unknown
 ): Promise<WebhookResult> {
-  const { loadConfig } = await import("../config.js");
   const secret = loadConfig().webhookSecret;
   const timestamp = String(Date.now());
   const body = JSON.stringify(payload);

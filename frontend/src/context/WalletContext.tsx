@@ -1,8 +1,15 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { Horizon } from "@stellar/stellar-sdk";
 import { BrowserProvider } from "ethers";
+import {
+  classifyWalletError,
+  isNetworkMismatch,
+  WALLET_ERROR_MESSAGES,
+  type WalletError,
+} from "../lib/wallet-errors";
+import { DEFAULT_LEDGER_PATH, getLedgerPublicKey } from "../lib/ledger";
 
 type BalanceLine = {
   asset_code?: string;
@@ -14,7 +21,17 @@ type FreighterClient = {
   getPublicKey?: () => string | Promise<string>;
   getAccount?: () => string | Promise<string>;
   getNetwork?: () => string | Promise<string>;
+  isConnected?: () => boolean | Promise<boolean>;
+  isAllowed?: () => boolean | Promise<boolean>;
 };
+
+/**
+ * Freighter (v1.x) exposes no disconnect event, so the provider polls the
+ * extension while a Stellar wallet is connected and tears the session down as
+ * soon as access is revoked, the extension disappears, or the active account
+ * changes.
+ */
+const WALLET_POLL_INTERVAL_MS = 3000;
 
 type EthereumProvider = ConstructorParameters<typeof BrowserProvider>[0];
 
@@ -33,7 +50,7 @@ type WalletWindow = Window & {
   };
 };
 
-type WalletType = "stellar" | "evm" | "solana" | null;
+type WalletType = "stellar" | "evm" | "solana" | "ledger" | null;
 
 type WalletContextType = {
   publicKey: string | null;
@@ -46,9 +63,15 @@ type WalletContextType = {
   network: string | null;
   wrongNetwork: boolean;
   error: string | null;
+  /** Classified form of `error`, for UIs that branch on the failure kind. */
+  walletError: WalletError | null;
+  clearError: () => void;
   connect: () => Promise<string | null>;
   connectEVM: () => Promise<string | null>;
   connectSolana: () => Promise<string | null>;
+  connectLedger: () => Promise<string | null>;
+  ledgerPath: string;
+  setLedgerPath: React.Dispatch<React.SetStateAction<string>>;
   disconnect: () => void;
   disconnectAll: () => void;
   signMessage: (message: string) => Promise<string | null>;
@@ -58,12 +81,31 @@ const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
 const HORIZON_TESTNET = "https://horizon-testnet.stellar.org";
 
-function getErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback;
-}
-
 function getWalletWindow(): WalletWindow {
   return window as WalletWindow;
+}
+
+/** Resolve the Freighter client from the injected global or the npm package. */
+async function loadFreighter(): Promise<FreighterClient | null> {
+  if (typeof window === "undefined") return null;
+  const injected = getWalletWindow().freighterApi;
+  if (injected) return injected;
+
+  return import("@stellar/freighter-api")
+    .then((module) => module as FreighterClient)
+    .catch(() => null);
+}
+
+async function readFreighterPublicKey(
+  freighter: FreighterClient
+): Promise<string | null> {
+  if (typeof freighter.getPublicKey === "function") {
+    return (await freighter.getPublicKey()) || null;
+  }
+  if (typeof freighter.getAccount === "function") {
+    return (await freighter.getAccount()) || null;
+  }
+  return getWalletWindow().freighter?.publicKey ?? null;
 }
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
@@ -75,9 +117,23 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
   const [network, setNetwork] = useState<string | null>(null);
   const [wrongNetwork, setWrongNetwork] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const [walletError, setWalletError] = useState<WalletError | null>(null);
+  const [ledgerPath, setLedgerPath] = useState<string>(DEFAULT_LEDGER_PATH);
+  // Mirrors `publicKey` for the polling loop, which must not re-subscribe on
+  // every render just to know the currently connected account.
+  const publicKeyRef = useRef<string | null>(null);
 
   const server = new Horizon.Server(HORIZON_TESTNET);
+
+  function reportError(err: unknown) {
+    const classified = classifyWalletError(err);
+    setWalletError(classified);
+    return classified;
+  }
+
+  function clearError() {
+    setWalletError(null);
+  }
 
   async function fetchBalances(pk: string) {
     try {
@@ -93,45 +149,48 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   function clearWalletState() {
     setPublicKey(null);
+    publicKeyRef.current = null;
     setEvmAddress(null);
     setSolanaAddress(null);
     setWalletType(null);
     setUsdcBalance(null);
     setNetwork(null);
     setWrongNetwork(false);
-    setError(null);
+    setWalletError(null);
     setIsConnecting(false);
+  }
+
+  /**
+   * Drop the Stellar session without clearing EVM/Solana state, and explain why.
+   * Used by the disconnect watcher when Freighter goes away on its own.
+   */
+  function handleStellarDisconnect(reason: WalletError) {
+    setPublicKey(null);
+    publicKeyRef.current = null;
+    setUsdcBalance(null);
+    setNetwork(null);
+    setWrongNetwork(false);
+    setWalletType((current) => (current === "stellar" ? null : current));
+    setWalletError(reason);
   }
 
   async function connect(): Promise<string | null> {
     setIsConnecting(true);
-    setError(null);
+    setWalletError(null);
 
     try {
-      const win = getWalletWindow();
-      const freighter = (win.freighterApi ??
-        (await import("@stellar/freighter-api")
-          .then((module) => module as FreighterClient)
-          .catch(() => null))) as FreighterClient | null;
-
-      if (!freighter) throw new Error("Freighter not available");
+      const freighter = await loadFreighter();
+      if (!freighter) throw new Error("Freighter is not available");
 
       if (typeof freighter.requestAccess === "function") {
         await freighter.requestAccess();
       }
 
-      let pk: string | null = null;
-      if (typeof freighter.getPublicKey === "function") {
-        pk = await freighter.getPublicKey();
-      } else if (typeof freighter.getAccount === "function") {
-        pk = await freighter.getAccount();
-      } else if (win.freighter?.publicKey) {
-        pk = win.freighter.publicKey;
-      }
-
+      const pk = await readFreighterPublicKey(freighter);
       if (!pk) throw new Error("Could not get public key from Freighter");
 
       setPublicKey(pk);
+      publicKeyRef.current = pk;
       setWalletType("stellar");
 
       let net: string | null = null;
@@ -144,14 +203,36 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       }
 
       setNetwork(net);
-      setWrongNetwork(net ? net.toLowerCase().includes("test") === false : false);
+      setWrongNetwork(isNetworkMismatch(net));
       await fetchBalances(pk);
       return pk;
     } catch (err) {
-      const message = getErrorMessage(err, "Failed to connect Stellar wallet");
-      setError(message);
+      reportError(err);
       setPublicKey(null);
+      publicKeyRef.current = null;
       setWalletType((current) => (current === "stellar" ? null : current));
+      return null;
+    } finally {
+      setIsConnecting(false);
+    }
+  }
+
+  async function connectLedger(): Promise<string | null> {
+    setIsConnecting(true);
+    setWalletError(null);
+
+    try {
+      const result = await getLedgerPublicKey(ledgerPath);
+      const publicKeyFromLedger = result.publicKey;
+      setPublicKey(publicKeyFromLedger);
+      publicKeyRef.current = publicKeyFromLedger;
+      setWalletType("ledger");
+      setNetwork(null);
+      setWrongNetwork(false);
+      await fetchBalances(publicKeyFromLedger);
+      return publicKeyFromLedger;
+    } catch (err) {
+      reportError(err);
       return null;
     } finally {
       setIsConnecting(false);
@@ -160,7 +241,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   async function connectEVM(): Promise<string | null> {
     setIsConnecting(true);
-    setError(null);
+    setWalletError(null);
 
     try {
       const { ethereum } = getWalletWindow();
@@ -177,8 +258,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setWalletType("evm");
       return address;
     } catch (err) {
-      const message = getErrorMessage(err, "Failed to connect EVM wallet");
-      setError(message);
+      reportError(err);
       return null;
     } finally {
       setIsConnecting(false);
@@ -187,7 +267,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   async function connectSolana(): Promise<string | null> {
     setIsConnecting(true);
-    setError(null);
+    setWalletError(null);
 
     try {
       const { solana } = getWalletWindow();
@@ -201,8 +281,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setWalletType("solana");
       return address;
     } catch (err) {
-      const message = getErrorMessage(err, "Failed to connect Solana wallet");
-      setError(message);
+      reportError(err);
       return null;
     } finally {
       setIsConnecting(false);
@@ -241,18 +320,110 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
       return null;
     } catch (err) {
-      const messageText = getErrorMessage(
-        err,
-        "Message signing failed or was rejected by the user"
-      );
-      setError(messageText);
+      reportError(err);
       return null;
     }
   }
 
+  // Watch the extension while a Stellar wallet is connected. Freighter has no
+  // disconnect event, so revoked access, a removed extension, or an account
+  // switch is detected by polling and tears the session down here.
   useEffect(() => {
-    // no-op for now; avoid automatic permission prompts
-  }, []);
+    if (!publicKey) return;
+
+    let cancelled = false;
+
+    async function checkConnection() {
+      const freighter = await loadFreighter();
+      if (cancelled) return;
+
+      if (!freighter) {
+        handleStellarDisconnect({
+          kind: "not_installed",
+          message: WALLET_ERROR_MESSAGES.not_installed,
+          recoverable: false,
+        });
+        return;
+      }
+
+      try {
+        if (typeof freighter.isConnected === "function") {
+          const connected = await freighter.isConnected();
+          if (cancelled) return;
+          if (!connected) {
+            handleStellarDisconnect({
+              kind: "disconnected",
+              message: WALLET_ERROR_MESSAGES.disconnected,
+              recoverable: true,
+            });
+            return;
+          }
+        }
+
+        if (typeof freighter.isAllowed === "function") {
+          const allowed = await freighter.isAllowed();
+          if (cancelled) return;
+          if (!allowed) {
+            handleStellarDisconnect({
+              kind: "disconnected",
+              message: WALLET_ERROR_MESSAGES.disconnected,
+              recoverable: true,
+            });
+            return;
+          }
+        }
+
+        const currentKey = await readFreighterPublicKey(freighter);
+        if (cancelled) return;
+
+        if (!currentKey) {
+          handleStellarDisconnect({
+            kind: "disconnected",
+            message: WALLET_ERROR_MESSAGES.disconnected,
+            recoverable: true,
+          });
+          return;
+        }
+
+        if (currentKey !== publicKeyRef.current) {
+          // Account switched inside Freighter — adopt it and refresh balances.
+          publicKeyRef.current = currentKey;
+          setPublicKey(currentKey);
+          setWalletError(null);
+          await fetchBalances(currentKey);
+          if (cancelled) return;
+        }
+
+        if (typeof freighter.getNetwork === "function") {
+          const net = (await freighter.getNetwork()) as string;
+          if (cancelled) return;
+          setNetwork(net);
+          setWrongNetwork(isNetworkMismatch(net));
+        }
+      } catch (err) {
+        if (cancelled) return;
+        const classified = classifyWalletError(err);
+        if (classified.kind === "disconnected" || classified.kind === "not_installed") {
+          handleStellarDisconnect(classified);
+        }
+      }
+    }
+
+    checkConnection();
+    const timer = setInterval(checkConnection, WALLET_POLL_INTERVAL_MS);
+
+    // A wallet extension being installed/removed reloads its injected global;
+    // re-check immediately when the tab regains focus.
+    window.addEventListener("focus", checkConnection);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", checkConnection);
+    };
+    // `publicKey` gates the watcher; the live account lives in publicKeyRef.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicKey]);
 
   const value: WalletContextType = {
     publicKey,
@@ -264,10 +435,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     usdcBalance,
     network,
     wrongNetwork,
-    error,
+    error: walletError?.message ?? null,
+    walletError,
+    clearError,
     connect,
     connectEVM,
     connectSolana,
+    connectLedger,
+    ledgerPath,
+    setLedgerPath,
     disconnect,
     disconnectAll,
     signMessage,

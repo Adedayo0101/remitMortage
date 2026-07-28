@@ -5,7 +5,9 @@ import {
   getDisbursementProgress,
   getMonthlyVolume,
 } from "../services/analytics.js";
+import { getLendingPoolRates } from "../services/soroban.js";
 import { cacheMiddleware } from "../middleware/cache.js";
+import { loadConfig } from "../config.js";
 
 export const analyticsRouter = Router();
 
@@ -116,5 +118,48 @@ analyticsRouter.get("/volume", cacheMiddleware(60), (req, res) => {
   } catch (error) {
     console.error("Analytics volume error:", error);
     res.status(500).json({ error: "Failed to compute monthly volume" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/analytics/pool-rates:
+ *   get:
+ *     summary: Live lending-pool interest rates
+ *     description: >-
+ *       Reads the deployed lending-pool contract's on-chain configuration
+ *       (the protocol's rate registry) and derives the current senior and
+ *       junior tranche APYs from it, rather than a static estimate. Cached
+ *       for 60 seconds to limit RPC traffic.
+ *     tags:
+ *       - Analytics
+ *     responses:
+ *       200:
+ *         description: Live pool/senior/junior APY figures (basis points) and tranche liquidity.
+ *       502:
+ *         description: Unable to query the lending-pool contract.
+ *       503:
+ *         description: Lending pool contract is not configured.
+ */
+analyticsRouter.get("/pool-rates", cacheMiddleware(60), async (_req, res) => {
+  const { lendingPoolContractId } = loadConfig();
+
+  if (!lendingPoolContractId) {
+    res.status(503).json({
+      error: "not_configured",
+      message: "LENDING_POOL_CONTRACT_ID is not configured",
+    });
+    return;
+  }
+
+  try {
+    const rates = await getLendingPoolRates(lendingPoolContractId);
+    res.json(rates);
+  } catch (error) {
+    console.error("Analytics pool-rates error:", error);
+    res.status(502).json({
+      error: "on_chain_unavailable",
+      message: "Unable to query the lending pool contract. Please retry shortly.",
+    });
   }
 });

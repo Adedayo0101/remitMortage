@@ -2,6 +2,7 @@ import { prisma, getNotificationPreference } from "./db.js";
 import logger from "../utils/logger.js";
 import { sendEmail, sendDepositReceipt, sendRepaymentReminder, sendLoanStatusUpdate } from "./email.js";
 import { sendWebhook } from "./webhook.js";
+import { queueService } from "./queueService.js";
 
 export type NotificationType = "EMAIL" | "WEBHOOK" | "SMS";
 
@@ -9,7 +10,7 @@ const MAX_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 60 * 1000; // 1 minute base backoff
 
 /**
- * Queues a notification in the Postgres database and triggers an asynchronous dispatch.
+ * Queues a notification in the Postgres database and dispatches via BullMQ.
  */
 export async function queueNotification(
   recipient: string,
@@ -26,9 +27,15 @@ export async function queueNotification(
     },
   });
 
-  // Trigger dispatch in background (fire-and-forget)
-  dispatchNotification(notification.id).catch((err) => {
-    logger.error(`[NotificationService] Async dispatch failed for ${notification.id}`, { err });
+  // Dispatch via BullMQ queue (load-balanced across workers)
+  await queueService.addNotificationJob({
+    notificationId: notification.id,
+    recipient,
+    type,
+    content,
+  }, {
+    attempts: MAX_ATTEMPTS,
+    backoff: { type: "exponential", delay: BASE_BACKOFF_MS },
   });
 
   return notification;
@@ -292,15 +299,16 @@ export async function processRetries(): Promise<number> {
   return processedCount;
 }
 
-// Start active polling/scheduler in the background
+/**
+ * @deprecated BullMQ workers now handle retry scheduling.
+ * Kept as a no-op for backward compatibility.
+ */
 let pollingInterval: NodeJS.Timeout | null = null;
-export function startNotificationScheduler(intervalMs = 30000) {
+export function startNotificationScheduler(_intervalMs = 30000) {
   if (pollingInterval) return;
-  pollingInterval = setInterval(() => {
-    processRetries().catch((err) => {
-      logger.error("[NotificationScheduler] Error running retry process", { err });
-    });
-  }, intervalMs);
+  logger.info("[NotificationScheduler] replaced by BullMQ notification worker; polling disabled");
+  // Mark as started to prevent repeated warnings
+  pollingInterval = { ref: () => {} } as unknown as NodeJS.Timeout;
 }
 
 export function stopNotificationScheduler() {

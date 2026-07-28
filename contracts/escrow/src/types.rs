@@ -32,6 +32,16 @@ pub struct EscrowConfig {
     pub grace_period_ledgers: u32,
     /// Penalty applied on forced default removal, in basis points.
     pub default_penalty_bps: u32,
+    /// Ledgers added to the instance TTL on every state-changing call.
+    /// Set per network (Testnet vs Pubnet) at initialization.
+    pub instance_bump_amount: u32,
+    /// Remaining instance TTL that triggers a bump. The bump is skipped while
+    /// the entry still has more than this many ledgers left.
+    pub instance_lifetime_threshold: u32,
+    /// Ledgers added to a persistent entry's TTL when it is written.
+    pub persistent_bump_amount: u32,
+    /// Remaining persistent TTL that triggers a bump.
+    pub persistent_lifetime_threshold: u32,
     /// Optional lending protocol vault address for yield routing.
     pub yield_vault: Option<Address>,
 }

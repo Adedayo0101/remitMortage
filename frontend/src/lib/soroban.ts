@@ -8,6 +8,12 @@ import {
   rpc as SorobanRpc,
 } from "@stellar/stellar-sdk";
 import { getRpcServer } from "./soroban-rpc";
+import {
+  buildSimulationCacheKey,
+  readCachedSimulation,
+  writeCachedSimulation,
+} from "./simulation-cache";
+import { classifyWalletError } from "./wallet-errors";
 
 const DEFAULT_NETWORK = Networks.TESTNET;
 const DEFAULT_GOAL = "savings";
@@ -69,6 +75,25 @@ export interface BuildResult {
   estimate: SimulationEstimate;
 }
 
+/**
+ * Estimate served straight from the session cache, without an RPC roundtrip.
+ * Lets a modal render fee options while the real simulation is still in flight.
+ */
+export function peekCachedEstimate(
+  method: string,
+  account: string,
+  args: Array<string | number | bigint> = []
+): SimulationEstimate | null {
+  return readCachedSimulation(
+    buildSimulationCacheKey({
+      contractId: escrowContractId(),
+      method,
+      account,
+      args,
+    })
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -98,7 +123,7 @@ function extractEstimate(
   // The simulation type narrows to SimulateTransactionSuccessResponse only
   // when it has a `result` field.  We access the raw `minResourceFee` and
   // the transaction data footprint defensively.
-  const raw = sim as Record<string, unknown>;
+  const raw = sim as unknown as Record<string, unknown>;
 
   const minResourceFeeStroops =
     typeof raw.minResourceFee === "string"
@@ -302,6 +327,16 @@ export async function buildDepositTx(
   }
 
   const estimate = extractEstimate(simulated);
+  writeCachedSimulation(
+    buildSimulationCacheKey({
+      contractId: escrowContractId(),
+      method: "deposit",
+      account: borrower,
+      args: [amountStroops.toString()],
+    }),
+    estimate
+  );
+
   let xdr = SorobanRpc.assembleTransaction(tx, simulated).build().toXDR();
   xdr = applyGasOverrides(xdr, gas);
 
@@ -344,21 +379,68 @@ export async function buildWithdrawTx(
   }
 
   const estimate = extractEstimate(simulated);
+  writeCachedSimulation(
+    buildSimulationCacheKey({
+      contractId: escrowContractId(),
+      method: "withdraw",
+      account: borrower,
+    }),
+    estimate
+  );
+
   let xdr = SorobanRpc.assembleTransaction(tx, simulated).build().toXDR();
   xdr = applyGasOverrides(xdr, gas);
 
   return { xdr, estimate };
 }
 
-export async function signAndSubmit(txXdr: string): Promise<string> {
-  const freighter = await import("@stellar/freighter-api");
-  if (typeof freighter.signTransaction !== "function") {
-    throw new Error("Freighter signing API is unavailable");
-  }
+/**
+ * Error thrown when the wallet itself fails the request — a declined signature,
+ * a network mismatch, a locked or missing extension. Carries the classified
+ * `WalletError` so modals can offer the right recovery action.
+ */
+export class WalletSignatureError extends Error {
+  readonly wallet: ReturnType<typeof classifyWalletError>;
 
-  const signedXdr = await freighter.signTransaction(txXdr, {
-    networkPassphrase: networkPassphrase(),
-  });
+  constructor(cause: unknown) {
+    const wallet = classifyWalletError(cause);
+    super(wallet.message);
+    this.name = "WalletSignatureError";
+    this.wallet = wallet;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Sign with Freighter and submit. Wallet-side failures (rejection, wrong
+ * network, locked extension) are rethrown as `WalletSignatureError`; network
+ * and submission failures keep their plain messages.
+ */
+export async function signAndSubmit(txXdr: string): Promise<string> {
+  let signedXdr: string;
+
+  try {
+    const freighter = await import("@stellar/freighter-api");
+    if (typeof freighter.signTransaction !== "function") {
+      throw new Error("Freighter signing API is unavailable");
+    }
+
+    const signed: unknown = await freighter.signTransaction(txXdr, {
+      networkPassphrase: networkPassphrase(),
+    });
+
+    // Newer Freighter builds resolve with an error payload instead of throwing.
+    if (signed && typeof signed === "object" && "error" in signed) {
+      throw signed;
+    }
+    if (typeof signed !== "string" || signed.length === 0) {
+      throw new Error("Freighter returned no signed transaction");
+    }
+
+    signedXdr = signed;
+  } catch (error) {
+    throw new WalletSignatureError(error);
+  }
 
   const server = getRpcServer();
   const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase());
