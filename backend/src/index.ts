@@ -25,6 +25,7 @@ import { milestoneRouter } from "./routes/milestone.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
+import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
 import { workspaceRouter } from "./routes/workspace.js";
@@ -149,10 +150,10 @@ app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/did", sensitiveRateLimiter, didRouter);
 app.use("/api/audit-logs", auditRouter);
-app.use("/api/workspaces", workspaceRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
+app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely

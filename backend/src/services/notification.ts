@@ -1,10 +1,10 @@
-import { prisma } from "./db.js";
+import { prisma, getNotificationPreference } from "./db.js";
 import logger from "../utils/logger.js";
 import { sendEmail, sendDepositReceipt, sendRepaymentReminder, sendLoanStatusUpdate } from "./email.js";
 import { sendWebhook } from "./webhook.js";
 import { queueService } from "./queueService.js";
 
-export type NotificationType = "EMAIL" | "WEBHOOK";
+export type NotificationType = "EMAIL" | "WEBHOOK" | "SMS";
 
 const MAX_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 60 * 1000; // 1 minute base backoff
@@ -68,6 +68,8 @@ export async function dispatchNotification(id: string): Promise<boolean> {
   try {
     if (notification.type === "EMAIL") {
       success = await handleEmailDispatch(notification.recipient, notification.content);
+    } else if (notification.type === "SMS") {
+      success = await handleSmsDispatch(notification.recipient, notification.content);
     } else if (notification.type === "WEBHOOK") {
       let payload = {};
       try {
@@ -153,6 +155,15 @@ export async function dispatchNotification(id: string): Promise<boolean> {
 }
 
 /**
+ * Internal helper to dispatch SMS messages.
+ */
+async function handleSmsDispatch(recipient: string, content: string): Promise<boolean> {
+  logger.info(`[SMS Dispatcher] Sending SMS to ${recipient}: "${content}"`);
+  // Simulated SMS provider integration (e.g. Twilio / MessageBird)
+  return true;
+}
+
+/**
  * Internal helper to send correct email format depending on whether content is JSON-structured.
  */
 async function handleEmailDispatch(recipient: string, content: string): Promise<boolean> {
@@ -176,6 +187,88 @@ async function handleEmailDispatch(recipient: string, content: string): Promise<
 
   // Fallback: send as general styled email
   return await sendEmail(recipient, "Notification Alert - RemitMortgage", content);
+}
+
+/**
+ * Evaluates dynamic escrow maturity & missed payment triggers and dispatches alerts according to user preferences.
+ */
+export async function dispatchMaturityAlerts(
+  applicantAddress: string,
+  event: {
+    type: "ESCROW_APPROACHING" | "ESCROW_REACHED" | "PAYMENT_MISSED" | "MILESTONE_UPDATE";
+    progress?: number;
+    deposited?: string;
+    target?: string;
+    milestoneName?: string;
+    message?: string;
+  }
+) {
+  const preferences = await getNotificationPreference(applicantAddress);
+  if (!preferences) {
+    logger.info(`[NotificationService] No notification preferences found for ${applicantAddress}`);
+    return;
+  }
+
+  const {
+    email,
+    phone,
+    emailAlerts,
+    smsAlerts,
+    escrowApproaching,
+    escrowReached,
+    paymentMissed,
+    loanMilestones,
+    webhookUrl,
+  } = preferences;
+
+  let shouldSend = false;
+  let subject = "RemitMortgage Alert";
+  let text = event.message || "";
+
+  switch (event.type) {
+    case "ESCROW_APPROACHING":
+      shouldSend = Boolean(escrowApproaching);
+      subject = "⚡ Escrow Target Approaching!";
+      text = text || `You have reached ${event.progress}% of your escrow down payment goal ($${event.deposited} / $${event.target} USDC). Keep going!`;
+      break;
+    case "ESCROW_REACHED":
+      shouldSend = Boolean(escrowReached);
+      subject = "🎉 Down Payment Target Reached!";
+      text = text || `Congratulations! You have completed 100% of your 30% down payment target ($${event.deposited} USDC). You are now eligible to apply for property financing!`;
+      break;
+    case "PAYMENT_MISSED":
+      shouldSend = Boolean(paymentMissed);
+      subject = "⚠️ Missed Payment Alert";
+      text = text || "A payment on your RemitMortgage schedule was missed. Please review your account to stay on track and avoid late fees.";
+      break;
+    case "MILESTONE_UPDATE":
+      shouldSend = Boolean(loanMilestones);
+      subject = "🏗️ Construction Milestone Update";
+      text = text || `Milestone update: ${event.milestoneName || "Construction phase"} has been updated on IPFS & Soroban multisig.`;
+      break;
+  }
+
+  if (!shouldSend) {
+    logger.info(`[NotificationService] Alert ${event.type} disabled by user settings for ${applicantAddress}`);
+    return;
+  }
+
+  const dispatches: Promise<any>[] = [];
+
+  if (emailAlerts && email) {
+    dispatches.push(queueNotification(email, "EMAIL", `${subject}: ${text}`));
+  }
+
+  if (smsAlerts && phone) {
+    dispatches.push(queueNotification(phone, "SMS", `${subject}: ${text}`));
+  }
+
+  if (webhookUrl) {
+    const payload = JSON.stringify({ event: event.type, subject, message: text, address: applicantAddress });
+    dispatches.push(queueNotification(webhookUrl, "WEBHOOK", payload));
+  }
+
+  await Promise.allSettled(dispatches);
 }
 
 /**
@@ -224,3 +317,4 @@ export function stopNotificationScheduler() {
     pollingInterval = null;
   }
 }
+

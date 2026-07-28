@@ -24,6 +24,8 @@ import {
   type StatementRow,
 } from "@/lib/statementExport";
 
+import MaturityAlertOverlay from "../../components/MaturityAlertOverlay";
+
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
 
 type BorrowerStatus = {
@@ -288,6 +290,13 @@ export default function DashboardPage() {
         {/* Loaded Content */}
         {!loading && !error && status && (
           <div className="space-y-8">
+            {/* Dynamic Escrow Maturity & Milestone Alerts Overlay */}
+            <MaturityAlertOverlay
+              escrow={status.escrow}
+              loan={status.loan}
+              onOpenDeposit={() => setShowDeposit(true)}
+            />
+
             {/* Quick Metrics Bar */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-2xl">
