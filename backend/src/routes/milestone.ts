@@ -2,6 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import logger from "../utils/logger.js";
 import { pinFileToIPFS, unpinFileFromIPFS } from "../services/ipfs.js";
+import { uploadToArweave } from "../services/arweave.js";
 import { logUnpinnedCid } from "../services/ipfsAudit.js";
 import { unpinEvidenceCid } from "../services/ipfsCleanup.js";
 import {
@@ -143,13 +144,22 @@ milestoneRouter.post("/upload", (req, res, next) => {
       });
     }
 
-    // Pin the file to IPFS
-    const cid = await pinFileToIPFS(file.buffer, file.originalname);
+    // Pin the file to IPFS and Arweave concurrently
+    const [cid, arweaveTxId] = await Promise.all([
+      pinFileToIPFS(file.buffer, file.originalname),
+      uploadToArweave(file.buffer, file.mimetype).catch((err) => {
+        logger.warn("[MilestoneUpload] Arweave upload failed, continuing with IPFS only", { err });
+        return null;
+      }),
+    ]);
     const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${cid}`;
+    const arweaveUrl = arweaveTxId ? `https://arweave.net/${arweaveTxId}` : undefined;
 
     return res.status(201).json({
       cid,
       ipfsUrl,
+      arweaveTxId,
+      arweaveUrl,
       size: file.size,
     });
   } catch (error: any) {
@@ -221,7 +231,7 @@ milestoneRouter.delete("/unpin/:cid", async (req, res) => {
  *       - Milestone
  */
 milestoneRouter.post("/proposals", async (req, res) => {
-  const { milestoneId, evidenceCid } = req.body ?? {};
+  const { milestoneId, evidenceCid, arweaveTxId } = req.body ?? {};
 
   if (!milestoneId || !evidenceCid) {
     return res.status(400).json({
@@ -230,7 +240,7 @@ milestoneRouter.post("/proposals", async (req, res) => {
     });
   }
 
-  const proposal = createProposal(String(milestoneId), String(evidenceCid));
+  const proposal = createProposal(String(milestoneId), String(evidenceCid), arweaveTxId ? String(arweaveTxId) : undefined);
 
   await logAudit({
     action: "milestone.proposal_created",
