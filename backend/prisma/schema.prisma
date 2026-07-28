@@ -32,6 +32,11 @@ model Notification {
   attempts    Int                @default(0)
   lastError   String?
   nextRetryAt DateTime?
+
+  // Index backing the notification scheduler's retry sweep: WHERE status = 'Pending'
+  @@index([status])
+  // Index for retry-at queries: WHERE status = 'Pending' AND nextRetryAt <= now()
+  @@index([status, nextRetryAt])
 }
 
 model UnpinnedCid {
@@ -129,6 +134,11 @@ model VerificationResult {
   spanMonths     Float
   eligible       Boolean
   analyzedAt     DateTime  @default(now())
+
+  // Index backing getApplicant() which orders verificationResults by analyzedAt desc
+  @@index([applicantId, analyzedAt])
+  // Supports eligibility-filtered queries and analytics scans
+  @@index([eligible])
 }
 
 model LoanApplication {
@@ -146,6 +156,13 @@ model LoanApplication {
   missedPayments     Int        @default(0)
   lateFeeBalance     Float      @default(0)
   gracePeriodEndsAt  DateTime?
+
+  // Index backing getApplicationsByBorrower(): filter by applicant then sort by createdAt
+  @@index([applicantId, createdAt])
+  // Index backing getPendingApplications(): WHERE status = 'Pending' — avoids full table scan
+  @@index([status])
+  // Composite index for queries that filter by both applicant and status
+  @@index([applicantId, status])
 }
 
 model AuditLog {
@@ -158,6 +175,10 @@ model AuditLog {
 
   @@index([action])
   @@index([actorAddress])
+  @@index([createdAt])
+  // Composite index backing the audit-log query path: filter by event type
+  // (action) then keyset-paginate by createdAt without a table scan.
+  @@index([action, createdAt])
 }
 
 model BorrowerCredential {
@@ -221,8 +242,17 @@ model WebhookSubscription {
   label       String
   /// The HTTPS endpoint that will receive POST requests.
   url         String
-  /// Per-subscription HMAC-SHA256 secret (stored encrypted at rest).
+  /// Active/primary HMAC-SHA256 signing key (stored encrypted at rest).
+  /// Every outbound delivery is signed with this key.
   secret      String
+  /// Prior signing key, kept for a grace period immediately after rotation so
+  /// signatures verified against the old key during the transition window
+  /// still validate. Cleared once `previousSecretExpiresAt` has passed.
+  previousSecret String?
+  /// When `previousSecret` stops being accepted and is pruned.
+  previousSecretExpiresAt DateTime?
+  /// When `secret` was last (re)generated — drives the 90-day auto-rotation sweep.
+  secretRotatedAt DateTime               @default(now())
   /// Comma-separated list of event topics this subscription listens for,
   /// or a single "all" entry to receive everything.
   topics      WebhookEventTopic[]
@@ -236,6 +266,7 @@ model WebhookSubscription {
 
   @@index([status])
   @@index([ownerAddress])
+  @@index([secretRotatedAt])
 }
 
 /// Immutable delivery attempt record — one row per HTTP attempt.

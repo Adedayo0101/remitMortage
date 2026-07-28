@@ -890,7 +890,7 @@ dependencies = [
 name = "lending-pool"
 version = "0.1.0"
 dependencies = [
- "insurance-pool",
+ "multisig-validator",
  "proptest",
  "soroban-sdk",
  "verification-registry",

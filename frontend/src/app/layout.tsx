@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { WalletProvider } from "../context/WalletContext";
 import "./globals.css";
+import { ContractRegistryProvider } from "@/context/ContractRegistryContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { NotificationProvider } from "@/context/NotificationContext";
@@ -90,6 +91,7 @@ export default function RootLayout({
       <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
         <ThemeProvider>
           <WalletProvider>
+            <ContractRegistryProvider>
             <AuthProvider>
             <NotificationProvider>
               <ToastProvider>
@@ -101,6 +103,7 @@ export default function RootLayout({
               </ToastProvider>
               </NotificationProvider>
             </AuthProvider>
+            </ContractRegistryProvider>
           </WalletProvider>
         </ThemeProvider>
       </body>

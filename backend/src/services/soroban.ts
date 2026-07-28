@@ -265,12 +265,114 @@ export interface InvestorInfo {
   absorbed_loss: string;
 }
 
+/** On-chain lending-pool configuration — the authoritative rate registry. */
+export interface PoolConfig {
+  admin: string;
+  token: string;
+  escrow: string;
+  /** Annual borrower interest rate in basis points (e.g. 800 = 8%). */
+  interest_rate_bps: number;
+  /** Fixed annual yield paid to the senior tranche, in basis points. */
+  senior_rate_bps: number;
+  treasury_address: string;
+}
+
 /** Returns the lending pool's currently available liquidity. */
 export async function getPoolLiquidity(contractId: string): Promise<string> {
   return withCache(`pool:liquidity:${contractId}`, async () => {
     const liquidity = await simulateRead(contractId, "get_liquidity");
     return String(liquidity);
   });
+}
+
+/** Returns the lending pool's on-chain configuration (rates, admin, token). */
+export async function getPoolConfig(contractId: string): Promise<PoolConfig> {
+  return withCache(`pool:config:${contractId}`, async () => {
+    const raw = (await simulateRead(contractId, "get_pool_config")) as Record<
+      string,
+      unknown
+    >;
+    return normalizeBigInts(raw) as PoolConfig;
+  });
+}
+
+/** Returns total capital currently deposited into the senior tranche. */
+export async function getSeniorLiquidity(contractId: string): Promise<string> {
+  return withCache(`pool:senior_liquidity:${contractId}`, async () => {
+    const liquidity = await simulateRead(contractId, "get_senior_liquidity");
+    return String(liquidity);
+  });
+}
+
+/** Returns total capital currently deposited into the junior tranche. */
+export async function getJuniorLiquidity(contractId: string): Promise<string> {
+  return withCache(`pool:junior_liquidity:${contractId}`, async () => {
+    const liquidity = await simulateRead(contractId, "get_junior_liquidity");
+    return String(liquidity);
+  });
+}
+
+export interface LendingPoolRates {
+  /** Base annual borrower rate from the pool config (bps). */
+  poolApyBps: number;
+  /** Fixed annual senior-tranche yield straight from the pool config (bps). */
+  seniorApyBps: number;
+  /**
+   * Estimated annual junior-tranche yield (bps): the residual interest budget
+   * left over after paying the senior tranche its fixed rate, spread across
+   * junior liquidity. Mirrors the pool contract's own residual-yield split
+   * (see `lending-pool/src/lib.rs`, senior/junior yield distribution).
+   */
+  juniorApyBps: number;
+  seniorLiquidity: string;
+  juniorLiquidity: string;
+}
+
+/**
+ * Pure calculation: the junior tranche absorbs whatever annual interest is
+ * left over after the senior tranche is paid its fixed rate, spread across
+ * junior liquidity. Mirrors the pool contract's own residual-yield split
+ * (see `lending-pool/src/lib.rs`, senior/junior yield distribution).
+ * Exported standalone so the formula is unit-testable without an RPC round-trip.
+ */
+export function computeJuniorApyBps(
+  poolApyBps: number,
+  seniorApyBps: number,
+  seniorLiquidity: number,
+  juniorLiquidity: number
+): number {
+  const totalDeposited = seniorLiquidity + juniorLiquidity;
+  if (juniorLiquidity <= 0 || totalDeposited <= 0) return 0;
+
+  const totalInterestBudget = poolApyBps * totalDeposited;
+  const seniorCost = seniorApyBps * seniorLiquidity;
+  return Math.max(0, Math.round((totalInterestBudget - seniorCost) / juniorLiquidity));
+}
+
+/**
+ * Computes live senior/junior APY figures from the deployed lending-pool
+ * contract — the "active registry" of protocol interest rates — instead of
+ * a hardcoded estimate.
+ */
+export async function getLendingPoolRates(
+  contractId: string
+): Promise<LendingPoolRates> {
+  const [config, seniorLiquidity, juniorLiquidity] = await Promise.all([
+    getPoolConfig(contractId),
+    getSeniorLiquidity(contractId),
+    getJuniorLiquidity(contractId),
+  ]);
+
+  const poolApyBps = config.interest_rate_bps;
+  const seniorApyBps = config.senior_rate_bps;
+  const juniorApyBps = computeJuniorApyBps(
+    poolApyBps,
+    seniorApyBps,
+    Number(seniorLiquidity),
+    Number(juniorLiquidity)
+  );
+
+  return { poolApyBps, seniorApyBps, juniorApyBps, seniorLiquidity, juniorLiquidity };
 }
 
 /**

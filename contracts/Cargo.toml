@@ -8,6 +8,7 @@ members = [
     "lending-pool",
     "milestone",
     "multisig-validator",
+    "staking-pool",
     "verification-registry",
     "yield-vault",
 ]

@@ -26,6 +26,14 @@ interface InvestorPosition {
   startLedger: number;
 }
 
+interface PoolRates {
+  poolApyBps: number;
+  seniorApyBps: number;
+  juniorApyBps: number;
+  /** Whether these figures came from a live lending-pool contract read. */
+  live: boolean;
+}
+
 function formatUSDC(raw: string | number): string {
   const n = typeof raw === "string" ? parseFloat(raw) : raw;
   if (isNaN(n)) return "0.00";
@@ -94,6 +102,9 @@ function InvestPageInner() {
   const [position, setPosition] = useState<InvestorPosition | null>(null);
   const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [metricsError, setMetricsError] = useState<string | null>(null);
+  // Rate feed sourced from the lending-pool contract's on-chain config
+  // (falls back to a static estimate if the contract read is unavailable).
+  const [poolRates, setPoolRates] = useState<PoolRates | null>(null);
 
   const [depositAmount, setDepositAmount] = useState("");
   const [selectedTranche, setSelectedTranche] = useState<Tranche>("Senior");
@@ -117,7 +128,15 @@ function InvestPageInner() {
         estimatedApyBps: 620,
         defaultRate: 0.0,
       };
-      setMetrics(placeholder);
+
+      // Rates come from the deployed lending-pool contract's config rather
+      // than a hardcoded estimate; the route degrades to a static fallback
+      // if the contract read is unavailable, so this never throws.
+      const ratesRes = await fetch("/api/investor/pool-rate");
+      const rates: PoolRates = await ratesRes.json();
+      setPoolRates(rates);
+
+      setMetrics({ ...placeholder, estimatedApyBps: rates.poolApyBps });
 
       if (publicKey) {
         const investorPlaceholder: InvestorPosition = {
@@ -216,10 +235,11 @@ function InvestPageInner() {
     }
   }
 
-  const seniorApyBps = 400;
-  const juniorApyBps = metrics
-    ? Math.max(0, Math.round(metrics.estimatedApyBps * 2 - seniorApyBps))
-    : 0;
+  // Fall back to a static estimate until the live rate feed resolves.
+  const seniorApyBps = poolRates?.seniorApyBps ?? 400;
+  const juniorApyBps =
+    poolRates?.juniorApyBps ??
+    (metrics ? Math.max(0, Math.round(metrics.estimatedApyBps * 2 - seniorApyBps)) : 0);
 
   return (
     <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
@@ -271,7 +291,7 @@ function InvestPageInner() {
                 <MetricCard
                   label="Estimated Pool APY"
                   value={bpsToPercent(metrics.estimatedApyBps)}
-                  sub="weighted avg"
+                  sub={poolRates?.live ? "live · on-chain" : "weighted avg"}
                   accent="#38bdf8"
                 />
                 <MetricCard

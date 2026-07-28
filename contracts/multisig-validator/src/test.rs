@@ -207,7 +207,7 @@ fn test_submit_and_get_proposal() {
     let (_account, client) = setup_with_timelock(&env);
     let pid = proposal_id(&env, 0xAA);
 
-    client.submit_action(&pid);
+    client.submit_action(&pid, &0u32);
     let proposal = client.get_proposal(&pid);
     assert_eq!(proposal.state, ProposalState::Pending);
     assert_eq!(proposal.created_at, 1_000_000);
@@ -579,4 +579,76 @@ fn test_count_valid_signers_ignores_duplicates_and_unknowns() {
         Address::generate(&env),    // unknown -> ignored
     ];
     assert_eq!(client.count_valid_signers(&presented), 1u32);
+}
+
+#[test]
+fn test_set_quorum_threshold_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    
+    // Initial config has threshold 2 with 3 signers
+    let config = client.get_signer_config();
+    assert_eq!(config.threshold, 2u32);
+    
+    // Update threshold to 3
+    client.set_quorum_threshold(&3u32);
+    let updated = client.get_signer_config();
+    assert_eq!(updated.threshold, 3u32);
+}
+
+#[test]
+fn test_set_quorum_threshold_blocks_below_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    
+    // Set threshold to 3 (max with 3 signers)
+    client.set_quorum_threshold(&3u32);
+    
+    // Try to present only 2 signatures -> should fail
+    let presented: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    assert!(!client.verify_signatures(&presented));
+}
+
+#[test]
+fn test_set_quorum_threshold_rejects_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let res = client.try_set_quorum_threshold(&0u32);
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_set_quorum_threshold_rejects_exceeds_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+    let res = client.try_set_quorum_threshold(&4u32); // only 3 signers
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_quorum_threshold_update_enforces_new_requirement() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+    
+    // Initial: 2-of-3 signers, 2 signatures should pass
+    let two_sigs: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    assert!(client.verify_signatures(&two_sigs));
+    
+    // Change to 3-of-3 (quorum threshold update)
+    client.set_quorum_threshold(&3u32);
+    
+    // Same 2 signatures should now fail
+    assert!(!client.verify_signatures(&two_sigs));
+    
+    // But all 3 should pass
+    let three_sigs: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1), signers.get_unchecked(2)];
+    assert!(client.verify_signatures(&three_sigs));
 }

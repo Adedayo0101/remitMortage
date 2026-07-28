@@ -177,6 +177,16 @@ pub struct HalvingInfo {
     pub next_halving_ledger: u32,
 }
 
+/// A pending debt restructuring proposal for a loan, submitted by the borrower
+/// and awaiting admin multisig approval. Once approved, the loan's repayment
+/// schedule is replaced with the proposed schedule and penalty counters reset.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestructureProposal {
+    pub new_schedule: RepaymentSchedule,
+    pub proposed_at_ledger: u32,
+}
+
 /// Storage keys for the lending pool contract.
 #[contracttype]
 #[derive(Clone)]
@@ -238,9 +248,22 @@ pub enum DataKey {
     DailyBorrowLimit,
     /// Tracks total amount borrowed in a specific daily window (day_id).
     DailyBorrowed(u32),
+    /// Configurable grace period (in ledgers) after an installment's due date
+    /// before late penalties accrue.
+    GracePeriodLedgers,
+    /// Per-day late-payment penalty rate in basis points.
+    DailyPenaltyBps,
     /// Whitelist flag for a contractor address. Present and `true` means the
     /// address is a vetted recipient eligible to receive disbursements.
     Whitelist(Address),
+    /// Reentrancy guard flag. Present and `true` when a reentrancy-sensitive
+    /// operation is in progress.
+    ReentrancyGuard,
+    /// A pending debt restructuring proposal, keyed by loan ID.
+    RestructureProposal(BytesN<32>),
+    /// Address of the MultisigValidator contract used for admin multisig
+    /// approval of restructuring and other privileged operations.
+    MultisigValidator,
     // ── Reward Halving ──────────────────────────────────────────────────
     /// Number of ledgers between each halving epoch. Set once during
     /// `initialize` and never mutated (immutable schedule parameter).
@@ -250,4 +273,8 @@ pub enum DataKey {
     LastHalvingLedger,
     /// Zero-based epoch counter. Incremented on every halving event.
     HalvingEpoch,
+    /// Lifetime interest paid by a borrower, keyed by borrower address.
+    BorrowerLifetimeInterest(Address),
+    /// Tracks whether a loan's maturity rebate has been claimed.
+    LoanRebateClaimed(BytesN<32>),
 }

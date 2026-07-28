@@ -79,4 +79,8 @@ pub enum DataKey {
     LendingPool,
     /// Dynamic borrower risk profile keyed by borrower address.
     Risk(Address),
+    /// Maximum allowable interest rate in basis points (cap).
+    RateCap,
+    /// Minimum allowable interest rate in basis points (floor).
+    RateFloor,
 }
