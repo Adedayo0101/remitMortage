@@ -32,6 +32,7 @@ import { metricsRouter } from "./routes/metrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { logMasker } from "./middleware/logMasker.js";
 import { correlationId } from "./middleware/correlationId.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
@@ -45,7 +46,7 @@ import { issueCsrfToken, csrfProtection, CSRF_COOKIE } from "./middleware/csrf.j
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
-import { startBackupScheduler } from "./jobs/backupScheduler.js";
+import { startBackupScheduler, startBackupCleanupScheduler } from "./jobs/backupScheduler.js";
 import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
 import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
@@ -104,6 +105,7 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
+app.use(logMasker);
 app.use(cookieParser());
 
 // Global rate limiter — caps naive request floods across the whole API before
@@ -174,6 +176,7 @@ app.listen(PORT, () => {
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();
+  startBackupCleanupScheduler();
   startWebhookKeyRotationScheduler();
   // Proactively monitor Soroban RPC node health and alert operators on
   // degradation, downtime or failover through the existing webhook mechanism.

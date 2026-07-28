@@ -71,3 +71,46 @@ export async function executeImmediateBackup(): Promise<void> {
     sizeMB: (result.size / (1024 * 1024)).toFixed(2),
   });
 }
+
+/**
+ * Weekly cleanup of backups older than 30 days. Archives them to cold
+ * storage (AWS Glacier / GCS Archive) and removes from hot storage.
+ * Runs every Sunday at 3:00 AM UTC by default.
+ */
+export function startBackupCleanupScheduler(): void {
+  const schedule = process.env.BACKUP_CLEANUP_CRON_SCHEDULE || "0 3 * * 0";
+  const retentionDays = Number(process.env.BACKUP_RETENTION_DAYS) || 30;
+
+  const enabled = process.env.ENABLE_BACKUP_CLEANUP !== "false";
+
+  if (!enabled) {
+    logger.info("Automated backup cleanup is disabled");
+    return;
+  }
+
+  logger.info("Starting backup cleanup scheduler", { schedule, retentionDays });
+
+  cron.schedule(
+    schedule,
+    async () => {
+      logger.info("Executing scheduled backup cleanup");
+
+      try {
+        const backupService = createBackupService();
+        const result = await backupService.cleanupOldBackups(retentionDays);
+
+        logger.info("Backup cleanup completed", {
+          archived: result.archived,
+          failed: result.failed,
+        });
+      } catch (error) {
+        logger.error("Backup cleanup failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    { timezone: "UTC" },
+  );
+
+  logger.info("Backup cleanup scheduler started successfully");
+}
