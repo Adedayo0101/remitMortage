@@ -1,19 +1,8 @@
 import { Router } from "express";
-import logger from "../utils/logger.js";
 import { validateBorrowerParams } from "../middleware/validate.js";
-import { loadConfig } from "../config.js";
-import {
-  getBorrowerBalance,
-  getEscrowConfig,
-  getLoanInfo,
-  getPoolLiquidity,
-  DEFAULT_GOAL_ID,
-} from "../services/soroban.js";
-import { getApplicant } from "../services/db.js";
+import { getApplicant, getBorrowerStatus } from "../services/db.js";
 
 export const borrowerRouter = Router();
-
-const config = loadConfig();
 
 /**
  * @openapi
@@ -70,6 +59,9 @@ const config = loadConfig();
 borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) => {
   const address = Array.isArray(req.params.address)
     ? req.params.address[0]
+    : req.params.address;
+
+  try {
     : String(req.params.address);
   const goalId = typeof req.query.goal === "string" ? req.query.goal : DEFAULT_GOAL_ID;
   const loanId = typeof req.query.loanId === "string" ? req.query.loanId : undefined;
@@ -110,11 +102,15 @@ borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) 
     const target = borrower?.target_amount ?? escrowConfig?.savings_target ?? "0";
     const progress = computeProgress(deposited, target);
 
+    const borrower = await getBorrowerStatus(address);
     const applicant = await getApplicant(address).catch((err) => {
       console.error("DB read error (non-fatal):", err);
       return null;
     });
 
+    const deposited = borrower?.escrowBalance ?? "0";
+    const target = "0";
+    const progress = computeProgress(deposited, target);
     const latestVerification = applicant?.verificationResults[0] ?? null;
     const latestLoan = applicant?.loanApplications[0] ?? null;
 
@@ -124,26 +120,21 @@ borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) 
         deposited,
         target,
         progress,
-        startLedger: borrower?.start_ledger ?? null,
-        released: borrower?.released ?? false,
-        withdrawn: borrower?.withdrawn ?? false,
+        startLedger: null,
+        released: false,
+        withdrawn: false,
       },
+      loan: latestLoan
       loanSummary: loan
         ? {
-            status: loan.status,
-            principal: loan.principal,
-            disbursed: loan.disbursed,
-            repaid: loan.repaid,
-            outstandingDebt: loan.outstanding_debt,
+            status: latestLoan.status,
+            principal: String(latestLoan.principal),
+            escrowContractId: latestLoan.escrowContractId ?? null,
+            loanId: latestLoan.loanId ?? null,
           }
-        : {
-            status: "none",
-            principal: "0",
-            disbursed: "0",
-            repaid: "0",
-          },
+        : { status: "none", principal: "0" },
       pool: {
-        availableLiquidity: liquidity ?? "0",
+        availableLiquidity: "0",
       },
       verificationStatus: applicant?.verificationStatus ?? "PENDING",
       creditScore: applicant?.creditScore ?? null,

@@ -38,6 +38,7 @@ import { correlationId } from "./middleware/correlationId.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { startEventIndexer } from "./services/eventIndexer.js";
 import {
   globalRateLimiter,
   sensitiveRateLimiter,
@@ -170,10 +171,9 @@ app.listen(PORT, () => {
     environment: process.env.NODE_ENV || "development",
   });
 
-  // Start the Soroban contract event listener alongside the HTTP server. It
-  // runs in the background and self-heals via exponential backoff, so a failing
-  // RPC node never takes down the API process.
-  startEventListener();
+  // Start the Soroban contract event indexer alongside the HTTP server. It
+  // polls /getEvents and persists borrower activity into PostgreSQL.
+  startEventIndexer();
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();

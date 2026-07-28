@@ -181,6 +181,86 @@ model AuditLog {
   @@index([action, createdAt])
 }
 
+model Borrower {
+  id              String              @id @default(uuid())
+  stellarAddress  String              @unique
+  escrowBalance   String              @default("0")
+  loanOutstanding String              @default("0")
+  totalDeposited  String              @default("0")
+  totalDisbursed  String              @default("0")
+  totalRepaid     String              @default("0")
+  lastEventLedger Int                 @default(0)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  deposits        EscrowDeposit[]
+  withdrawals     EscrowWithdrawal[]
+  disbursements   LoanDisbursement[]
+  repayments      LoanRepayment[]
+}
+
+model EscrowDeposit {
+  id          String   @id @default(uuid())
+  borrower    Borrower @relation(fields: [borrowerId], references: [id])
+  borrowerId  String
+  contractId  String
+  amount      String
+  ledger      Int
+  eventHash   String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([borrowerId])
+  @@index([ledger])
+}
+
+model EscrowWithdrawal {
+  id          String   @id @default(uuid())
+  borrower    Borrower @relation(fields: [borrowerId], references: [id])
+  borrowerId  String
+  contractId  String
+  amount      String
+  ledger      Int
+  eventHash   String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([borrowerId])
+  @@index([ledger])
+}
+
+model LoanDisbursement {
+  id          String   @id @default(uuid())
+  borrower    Borrower @relation(fields: [borrowerId], references: [id])
+  borrowerId  String
+  contractId  String
+  amount      String
+  ledger      Int
+  eventHash   String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([borrowerId])
+  @@index([ledger])
+}
+
+model LoanRepayment {
+  id          String   @id @default(uuid())
+  borrower    Borrower @relation(fields: [borrowerId], references: [id])
+  borrowerId  String
+  contractId  String
+  amount      String
+  ledger      Int
+  eventHash   String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([borrowerId])
+  @@index([ledger])
+}
+
+model EventIndexerState {
+  id                 String   @id @default(uuid())
+  key                String   @unique
+  lastProcessedLedger Int      @default(0)
+  cursor             String?
+  updatedAt          DateTime @updatedAt
 model BorrowerCredential {
   id             String   @id @default(uuid())
   applicantId    String
