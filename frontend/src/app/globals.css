@@ -55,6 +55,33 @@
   --shadow-cyan-glow: 0 0 30px rgba(56, 189, 248, 0.15);
   --shadow-emerald-glow: 0 0 30px rgba(16, 185, 129, 0.15);
 
+  /* Glassmorphism Tokens
+     Each glass-* class below draws its background, border, blur, and
+     radius from these tokens instead of hardcoded values, so panel/card/
+     modal/overlay styling stays consistent and themeable in one place. */
+  --glass-card-bg: rgba(15, 23, 42, 0.7);
+  --glass-card-border: rgba(255, 255, 255, 0.08);
+  --glass-card-border-hover: rgba(56, 189, 248, 0.25);
+  --glass-card-blur: 16px;
+  --glass-card-radius: var(--r-lg);
+  --glass-card-shadow-hover:
+    0 10px 30px -10px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(56, 189, 248, 0.08);
+
+  --glass-panel-bg: rgba(15, 23, 42, 0.85);
+  --glass-panel-border: rgba(255, 255, 255, 0.1);
+  --glass-panel-blur: 20px;
+  --glass-panel-radius: var(--r-xl);
+
+  --glass-modal-bg: rgba(11, 15, 29, 0.95);
+  --glass-modal-border: rgba(255, 255, 255, 0.12);
+  --glass-modal-blur: 24px;
+  --glass-modal-radius: var(--r-xl);
+  --glass-modal-shadow: var(--shadow-xl);
+
+  --glass-overlay-bg: rgba(4, 7, 15, 0.8);
+  --glass-overlay-blur: 12px;
+
   /* Backward Compatibility Tokens */
   --bg-primary: var(--color-bg);
   --bg-secondary: var(--color-bg-alt);
@@ -107,6 +134,15 @@
   --text-primary: #0f172a;
   --text-secondary: #475569;
   --text-muted: #94a3b8;
+
+  --glass-card-bg: rgba(255, 255, 255, 0.7);
+  --glass-card-border: rgba(0, 0, 0, 0.08);
+  --glass-card-border-hover: rgba(2, 132, 199, 0.25);
+  --glass-panel-bg: rgba(255, 255, 255, 0.85);
+  --glass-panel-border: rgba(0, 0, 0, 0.1);
+  --glass-modal-bg: rgba(255, 255, 255, 0.95);
+  --glass-modal-border: rgba(0, 0, 0, 0.12);
+  --glass-overlay-bg: rgba(15, 23, 42, 0.4);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -247,41 +283,39 @@ body {
    GLASSMORPHISM & UI CONTAINERS
    ══════════════════════════════════════════════════════════════════════ */
 .glass-card {
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--r-lg);
+  background: var(--glass-card-bg);
+  backdrop-filter: blur(var(--glass-card-blur));
+  -webkit-backdrop-filter: blur(var(--glass-card-blur));
+  border: 1px solid var(--glass-card-border);
+  border-radius: var(--glass-card-radius);
   transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .glass-card:hover {
-  border-color: rgba(56, 189, 248, 0.25);
-  box-shadow:
-    0 10px 30px -10px rgba(0, 0, 0, 0.5),
-    0 0 20px rgba(56, 189, 248, 0.08);
+  border-color: var(--glass-card-border-hover);
+  box-shadow: var(--glass-card-shadow-hover);
 }
 
 .glass-panel {
-  background: rgba(15, 23, 42, 0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: var(--r-xl);
+  background: var(--glass-panel-bg);
+  backdrop-filter: blur(var(--glass-panel-blur));
+  -webkit-backdrop-filter: blur(var(--glass-panel-blur));
+  border: 1px solid var(--glass-panel-border);
+  border-radius: var(--glass-panel-radius);
 }
 
 .glass-modal {
-  background: rgba(11, 15, 29, 0.95);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: var(--shadow-xl);
-  border-radius: var(--r-xl);
+  background: var(--glass-modal-bg);
+  backdrop-filter: blur(var(--glass-modal-blur));
+  -webkit-backdrop-filter: blur(var(--glass-modal-blur));
+  border: 1px solid var(--glass-modal-border);
+  box-shadow: var(--glass-modal-shadow);
+  border-radius: var(--glass-modal-radius);
 }
 
 .glass-overlay {
-  background: rgba(4, 7, 15, 0.8);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: var(--glass-overlay-bg);
+  backdrop-filter: blur(var(--glass-overlay-blur));
+  -webkit-backdrop-filter: blur(var(--glass-overlay-blur));
 }
 
 .gradient-text {

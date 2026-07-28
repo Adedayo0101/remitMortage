@@ -385,7 +385,15 @@ export default function GasConfigPanel({
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" aria-hidden="true" />
               <p className="text-xs text-amber-300 leading-snug">
                 One or more overrides are below the simulation estimates.
-                The transaction may be rejected by the network or revert on-chain.
+                The transaction may be rejected by the network or revert on-chain.{" "}
+                <a
+                  href="/docs/gas-optimization"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-2 hover:text-amber-200"
+                >
+                  Gas optimization guide
+                </a>
               </p>
             </div>
           )}

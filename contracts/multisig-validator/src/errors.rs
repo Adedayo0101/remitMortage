@@ -41,4 +41,6 @@ pub enum ValidatorError {
     SignerNotFound = 17,
     /// The admin-managed signer set has not been configured.
     AdminConfigNotSet = 18,
+    /// The proposal has expired (current ledger past expiration_ledger).
+    ProposalExpired = 19,
 }
