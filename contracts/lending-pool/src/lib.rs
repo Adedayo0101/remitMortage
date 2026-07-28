@@ -2079,7 +2079,6 @@ impl LendingPoolContract {
         );
 
         Ok(())
-        }) // non_reentrant
     }
 
     /// Investor claims their proportional share of repaid interest.
@@ -4086,6 +4085,13 @@ mod test {
         // Advance ledger past the delay.
         env.ledger().with_mut(|l| l.sequence_number = pending.execute_after);
 
+        // Executing here would call `update_current_contract_wasm` with a
+        // dummy hash that was never uploaded to the test host, which panics.
+        // This test's scope is the timelock guard (delay enforcement); the
+        // actual WASM swap + version bump is exercised by
+        // `test_state_preserved_across_upgrade_flow` up to the point of
+        // execution, with real-WASM execution left to integration tests.
+
         // Reset to no delay so re-calling upgrade does not re-trigger a proposal
         // (the pending record was the one we just verified above).
         client.set_upgrade_delay(&0u32);
@@ -4134,6 +4140,38 @@ mod test {
         let (_admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
 
         // No delay set → get_pending_upgrade returns None before any call.
+        assert!(client.get_pending_upgrade().is_none());
+    }
+
+    #[test]
+    fn test_non_admin_cannot_call_upgrade() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
+        let non_admin = Address::generate(&env);
+        let dummy_hash = BytesN::from_array(&env, &[9u8; 32]);
+
+        // Only the non-admin signs; the contract requires `config.admin`'s
+        // authorization, so the call must fail with an auth error rather
+        // than proposing or executing the upgrade.
+        env.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "upgrade",
+                args: (dummy_hash.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_upgrade(&dummy_hash);
+        assert!(result.is_err());
+
+        // No proposal should have been stored as a side effect of the
+        // rejected call.
         assert!(client.get_pending_upgrade().is_none());
     }
 
