@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 import React, { useEffect, useState } from "react";
 import loadDynamic from "next/dynamic";
+import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useWallet } from "../../context/WalletContext";
 import SavingsProgressCard from "../../components/SavingsProgressCard";
@@ -99,6 +100,7 @@ const SAMPLE_MILESTONES: MilestoneNode[] = [
 ];
 
 export default function DashboardPage() {
+  const t = useTranslations("dashboard");
   const router = useRouter();
   const { publicKey, isConnected } = useWallet();
   const [status, setStatus] = useState<BorrowerStatus | null>(null);
@@ -202,11 +204,10 @@ export default function DashboardPage() {
               <VerificationBadge />
             </div>
             <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white">
-              Borrower <span className="gradient-text">Dashboard</span>
+              <span className="gradient-text">{t("title")}</span>
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              Track your 30% down-payment escrow savings, accrued protocol yield, and mortgage
-              milestone disbursements.
+              {t("description")}
             </p>
           </div>
 
@@ -216,7 +217,7 @@ export default function DashboardPage() {
               disabled={!status}
               className="btn-outline-blue disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              Download Statement
+              {t("downloadStatement")}
             </button>
             <button onClick={() => setShowDeposit(true)} className="btn-cta shadow-cyan-500/20">
               <svg
@@ -229,10 +230,10 @@ export default function DashboardPage() {
               >
                 <path d="M12 5v14M5 12h14" />
               </svg>
-              Deposit USDC
+              {t("depositUsdc")}
             </button>
             <button onClick={() => setShowWithdraw(true)} className="btn-outline-blue">
-              Early Exit
+              {t("earlyExit")}
             </button>
           </div>
         </div>

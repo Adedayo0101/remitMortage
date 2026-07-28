@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import dynamic from "next/dynamic";
 import OnboardingWizard from "@/components/onboarding/OnboardingWizard";
 import CreditCalculator from "@/components/CreditCalculator";
@@ -248,6 +249,7 @@ function FAQItem({ q, a }: { q: string; a: string }) {
 }
 
 export default function LandingPage() {
+  const t = useTranslations("landing");
   const [activeTab, setActiveTab] = useState<"calculator" | "onboarding">("calculator");
 
   return (
@@ -259,19 +261,15 @@ export default function LandingPage() {
         <div className="hero__inner animate-fade-in-up">
           <div className="hero__badge">
             <span className="hero__badge-dot" />
-            Remittance-Backed Credit Reputation on Stellar
+            {t("heroBadge")}
           </div>
 
           <h1 className="hero__title">
-            Convert Your Remittances
-            <br />
-            Into A <span className="hero__highlight">Home Mortgage</span>
+            {t("heroTitle")}
           </h1>
 
           <p className="hero__subtitle">
-            Stop letting cross-border payments go uncredited. Prove your financial capacity
-            on-chain, accumulate your 30% down payment in Soroban escrow, and unlock low-interest
-            property loans.
+            {t("heroSubtitle")}
           </p>
 
           <div className="hero__actions">
@@ -298,7 +296,7 @@ export default function LandingPage() {
               </svg>
             </button>
             <a href="/verify" className="btn-outline-blue">
-              Verify Remittance Wallet
+              {t("heroPrimaryCta")}
               <svg
                 width="18"
                 height="18"
@@ -339,7 +337,7 @@ export default function LandingPage() {
       <section id="features" className="section section--alt">
         <div className="section__inner">
           <div className="section__header">
-            <h2 className="section__title">Built for the Global Diaspora</h2>
+            <h2 className="section__title">{t("sectionTitle")}</h2>
             <p className="section__subtitle">
               Direct, non-custodial property financing backed by transparent Stellar payment rails.
             </p>
@@ -368,7 +366,7 @@ export default function LandingPage() {
       <section id="analytics" className="section">
         <div className="section__inner">
           <div className="section__header">
-            <h2 className="section__title">Protocol Analytics</h2>
+            <h2 className="section__title">{t("footer.protocol")}</h2>
             <p className="section__subtitle">Transparent historical growth of Total Value Locked and average Yield metrics.</p>
           </div>
           
@@ -380,7 +378,7 @@ export default function LandingPage() {
       <section id="how-it-works" className="section section--dark">
         <div className="section__inner">
           <div className="section__header">
-            <h2 className="section__title">How The Protocol Works</h2>
+            <h2 className="section__title">{t("sectionTitle")}</h2>
             <p className="section__subtitle">
               Three automated phases that turn historical payments into property ownership.
             </p>

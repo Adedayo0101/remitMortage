@@ -67,6 +67,7 @@ type WalletContextType = {
   walletError: WalletError | null;
   clearError: () => void;
   connect: () => Promise<string | null>;
+  connectLedger: () => Promise<string | null>;
   connectEVM: () => Promise<string | null>;
   connectSolana: () => Promise<string | null>;
   connectLedger: () => Promise<string | null>;
@@ -115,6 +116,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [walletType, setWalletType] = useState<WalletType>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
+  const [ledgerPath, setLedgerPath] = useState(DEFAULT_LEDGER_PATH);
   const [network, setNetwork] = useState<string | null>(null);
   const [wrongNetwork, setWrongNetwork] = useState<boolean>(false);
   const [walletError, setWalletError] = useState<WalletError | null>(null);
@@ -439,6 +441,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     walletError,
     clearError,
     connect,
+    connectLedger,
     connectEVM,
     connectSolana,
     connectLedger,
