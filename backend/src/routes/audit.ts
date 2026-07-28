@@ -1,27 +1,33 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { prisma } from "../services/db.js";
+import logger from "../utils/logger.js";
 
 export const auditRouter = Router();
+
+/** Query durations above this are logged so slow-query regressions surface under load. */
+const SLOW_QUERY_THRESHOLD_MS = 50;
 
 /**
  * @openapi
  * /api/audit-logs:
  *   get:
  *     summary: Query historical transaction logs
- *     description: Returns paginated and filtered audit logs. Admin access only.
+ *     description: >-
+ *       Returns keyset (cursor) paginated audit logs, filterable by event type
+ *       and actor. Cursor pagination is used instead of OFFSET/COUNT so deep
+ *       pages over large event tables stay fast and don't hold read locks
+ *       during concurrent write spikes. Admin access only.
  *     tags:
  *       - Audit
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
- *         name: page
+ *         name: cursor
  *         schema:
- *           type: integer
- *           minimum: 1
- *           default: 1
- *         description: Page number for pagination
+ *           type: string
+ *         description: Id of the last record from the previous page. Omit for the first page.
  *       - in: query
  *         name: limit
  *         schema:
@@ -34,7 +40,7 @@ export const auditRouter = Router();
  *         name: action
  *         schema:
  *           type: string
- *         description: Filter by action name
+ *         description: Filter by action name (event type)
  *       - in: query
  *         name: actorAddress
  *         schema:
@@ -42,7 +48,7 @@ export const auditRouter = Router();
  *         description: Filter by actor wallet address
  *     responses:
  *       200:
- *         description: A paginated list of audit logs
+ *         description: A cursor-paginated list of audit logs
  *       401:
  *         description: Unauthorized
  *       403:
@@ -52,9 +58,8 @@ export const auditRouter = Router();
  */
 auditRouter.get("/", requireAdmin, async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit as string) || 20));
-    const skip = (page - 1) * limit;
+    const cursor = typeof req.query.cursor === "string" && req.query.cursor ? req.query.cursor : undefined;
 
     const action = req.query.action as string | undefined;
     const actorAddress = req.query.actorAddress as string | undefined;
@@ -63,27 +68,41 @@ auditRouter.get("/", requireAdmin, async (req, res) => {
     if (action) where.action = action;
     if (actorAddress) where.actorAddress = actorAddress;
 
-    const [logs, total] = await Promise.all([
-      prisma.auditLog.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: limit,
-      }),
-      prisma.auditLog.count({ where }),
-    ]);
+    const startedAt = process.hrtime.bigint();
 
-    const totalPages = Math.ceil(total / limit);
+    // Keyset (cursor) pagination on the (action, createdAt) index: no OFFSET
+    // scan and no COUNT(*) over the full result set, which is what caused CPU
+    // spikes/lock contention on large transaction histories. One extra row is
+    // fetched to cheaply detect whether a next page exists.
+    const rows = await prisma.auditLog.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
+      logger.warn("Audit log query exceeded latency budget", {
+        durationMs,
+        limit,
+        action,
+        actorAddress,
+        cursor,
+      });
+    }
+
+    const hasNextPage = rows.length > limit;
+    const data = hasNextPage ? rows.slice(0, limit) : rows;
+    const nextCursor = hasNextPage ? data[data.length - 1].id : null;
 
     return res.json({
-      data: logs,
+      data,
       pagination: {
-        page,
         limit,
-        total,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPrevPage: page > 1,
+        cursor: cursor ?? null,
+        nextCursor,
+        hasNextPage,
       },
     });
   } catch (error) {

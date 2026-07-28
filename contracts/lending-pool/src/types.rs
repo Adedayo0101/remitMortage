@@ -159,6 +159,34 @@ pub struct PoolHealth {
     pub loss_ratio_bps: u32,
 }
 
+/// Snapshot of the halving state, returned by `get_halving_info`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HalvingInfo {
+    /// Number of ledgers between each halving epoch (e.g. 5_000_000).
+    pub halving_interval: u32,
+    /// Ledger sequence at which the most recent halving occurred (or the
+    /// pool initialisation ledger for the very first epoch).
+    pub last_halving_ledger: u32,
+    /// Current epoch index (0 = genesis, 1 = after first halving, …).
+    pub epoch: u32,
+    /// Current reward multiplier in basis points
+    /// (10_000 = 100 %, 5_000 = 50 %, 2_500 = 25 %, …).
+    pub reward_multiplier_bps: u32,
+    /// Ledger sequence at which the *next* halving will fire.
+    pub next_halving_ledger: u32,
+}
+
+/// A pending debt restructuring proposal for a loan, submitted by the borrower
+/// and awaiting admin multisig approval. Once approved, the loan's repayment
+/// schedule is replaced with the proposed schedule and penalty counters reset.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestructureProposal {
+    pub new_schedule: RepaymentSchedule,
+    pub proposed_at_ledger: u32,
+}
+
 /// Storage keys for the lending pool contract.
 #[contracttype]
 #[derive(Clone)]
@@ -167,6 +195,10 @@ pub enum DataKey {
     Config,
     /// Investor record keyed by investor address.
     Investor(Address),
+    /// Transferable senior/junior principal-claim balance.
+    DebtBalance(Address, Tranche),
+    /// Total debt-share supply for a tranche.
+    DebtTotalSupply(Tranche),
     /// Total available liquidity in the pool.
     TotalLiquidity,
     /// Loan record keyed by a unique loan ID (hash).
@@ -205,11 +237,44 @@ pub enum DataKey {
     /// interest rates during loan requests. Absent until `set_verification_registry`
     /// is called by the admin.
     VerificationRegistry,
+    /// Address of the InsurancePool contract that receives the 5 bps
+    /// disbursement premium. Absent until `set_insurance_pool` is called by
+    /// the admin, in which case no premium is skimmed.
+    InsurancePool,
+    /// Total insurance premiums skimmed from disbursements and routed to the
+    /// insurance fund.
+    TotalInsurancePremiums,
     /// Global daily borrow limit.
     DailyBorrowLimit,
     /// Tracks total amount borrowed in a specific daily window (day_id).
     DailyBorrowed(u32),
+    /// Configurable grace period (in ledgers) after an installment's due date
+    /// before late penalties accrue.
+    GracePeriodLedgers,
+    /// Per-day late-payment penalty rate in basis points.
+    DailyPenaltyBps,
     /// Whitelist flag for a contractor address. Present and `true` means the
     /// address is a vetted recipient eligible to receive disbursements.
     Whitelist(Address),
+    /// Reentrancy guard flag. Present and `true` when a reentrancy-sensitive
+    /// operation is in progress.
+    ReentrancyGuard,
+    /// A pending debt restructuring proposal, keyed by loan ID.
+    RestructureProposal(BytesN<32>),
+    /// Address of the MultisigValidator contract used for admin multisig
+    /// approval of restructuring and other privileged operations.
+    MultisigValidator,
+    // ── Reward Halving ──────────────────────────────────────────────────
+    /// Number of ledgers between each halving epoch. Set once during
+    /// `initialize` and never mutated (immutable schedule parameter).
+    HalvingInterval,
+    /// Ledger sequence at which the most recent epoch transition occurred.
+    /// Seeded to the pool's initialisation ledger; updated on each halving.
+    LastHalvingLedger,
+    /// Zero-based epoch counter. Incremented on every halving event.
+    HalvingEpoch,
+    /// Lifetime interest paid by a borrower, keyed by borrower address.
+    BorrowerLifetimeInterest(Address),
+    /// Tracks whether a loan's maturity rebate has been claimed.
+    LoanRebateClaimed(BytesN<32>),
 }

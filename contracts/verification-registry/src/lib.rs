@@ -4,14 +4,20 @@ mod errors;
 mod types;
 
 use crate::errors::RegistryError;
-use crate::types::{DataKey, RateConfig, VerificationRecord};
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env};
+use crate::types::{DataKey, RateConfig, RiskRecord, RiskTier, VerificationRecord};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env};
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 
 const PERSISTENT_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
+
+// ── Rate Cap & Floor Constants ────────────────────────────────────────────
+/// Maximum interest rate cap: 18% APR (1800 basis points).
+const RATE_CAP_BPS: u32 = 1800;
+/// Minimum interest rate floor: 2% APR (200 basis points).
+const RATE_FLOOR_BPS: u32 = 200;
 
 /// Verification Registry Contract
 ///
@@ -40,7 +46,6 @@ impl VerificationRegistryContract {
         let key = Self::record_key(borrower);
         let record: Option<VerificationRecord> = env.storage().persistent().get(&key);
         if record.is_some() {
-            // Keep the anchor alive for as long as it is actively read.
             env.storage().persistent().extend_ttl(
                 &key,
                 PERSISTENT_LIFETIME_THRESHOLD,
@@ -58,6 +63,73 @@ impl VerificationRegistryContract {
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
+    }
+
+    fn risk_key(borrower: &Address) -> DataKey {
+        DataKey::Risk(borrower.clone())
+    }
+
+    fn tier_from_score(score: u32) -> RiskTier {
+        if score >= 80 {
+            RiskTier::Excellent
+        } else if score >= 60 {
+            RiskTier::Good
+        } else if score >= 40 {
+            RiskTier::Fair
+        } else {
+            RiskTier::Poor
+        }
+    }
+
+    fn read_risk_record(env: &Env, borrower: &Address) -> Option<RiskRecord> {
+        let key = Self::risk_key(borrower);
+        let record: Option<RiskRecord> = env.storage().persistent().get(&key);
+        if record.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+        record
+    }
+
+    fn set_risk_record(env: &Env, borrower: &Address, record: &RiskRecord) {
+        let key = Self::risk_key(borrower);
+        env.storage().persistent().set(&key, record);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+    }
+
+    fn seed_risk_from_score(score: u32) -> RiskRecord {
+        RiskRecord {
+            score,
+            tier: Self::tier_from_score(score),
+            consecutive_late: 0,
+            on_time_payments: 0,
+            late_payments: 0,
+        }
+    }
+
+    fn read_lending_pool(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::LendingPool)
+    }
+
+    fn read_rate_cap(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RateCap)
+            .unwrap_or(RATE_CAP_BPS)
+    }
+
+    fn read_rate_floor(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RateFloor)
+            .unwrap_or(RATE_FLOOR_BPS)
     }
 
     fn bump_instance(env: &Env) {
@@ -80,12 +152,17 @@ impl VerificationRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         Self::bump_instance(&env);
 
+        env.events().publish(
+            (symbol_short!("init"),),
+            (admin,),
+        );
+
         Ok(())
     }
 
     /// Anchor a borrower eligibility report hash on-chain.
     ///
-    /// Admin-only. The record expires `duration_ledgers` after the current
+    /// Admin-only. The record expires duration_ledgers after the current
     /// ledger; registering again for the same borrower overwrites the
     /// previous record.
     pub fn register_verification(
@@ -121,13 +198,19 @@ impl VerificationRegistryContract {
         };
 
         Self::set_record(&env, &borrower, &record);
+        Self::set_risk_record(&env, &borrower, &Self::seed_risk_from_score(score));
         Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("vreg"),),
+            (admin, borrower, score, verified_ledger, record.expiration_ledger),
+        );
 
         Ok(())
     }
 
-    /// Returns `true` if the borrower has a valid, non-expired verification
-    /// record anchored on-chain, and `false` otherwise.
+    /// Returns 	rue if the borrower has a valid, non-expired verification
+    /// record anchored on-chain, and alse otherwise.
     pub fn is_verified(env: Env, borrower: Address) -> bool {
         match Self::read_record(&env, &borrower) {
             Some(record) => env.ledger().sequence() <= record.expiration_ledger,
@@ -157,7 +240,7 @@ impl VerificationRegistryContract {
     ///
     /// Admin-only. This is the first step of a secure two-step admin
     /// transfer: the proposed admin is recorded but does not gain any
-    /// authority until they explicitly call [`Self::accept_admin`]. Calling
+    /// authority until they explicitly call [Self::accept_admin]. Calling
     /// this again overwrites any previously proposed admin, allowing the
     /// current admin to correct a mistake before acceptance.
     pub fn propose_new_admin(env: Env, new_admin: Address) -> Result<(), RegistryError> {
@@ -169,13 +252,18 @@ impl VerificationRegistryContract {
             .set(&DataKey::ProposedAdmin, &new_admin);
         Self::bump_instance(&env);
 
+        env.events().publish(
+            (symbol_short!("prop_adm"),),
+            (admin, new_admin),
+        );
+
         Ok(())
     }
 
     /// Accept a pending admin proposal, completing the two-step transfer.
     ///
     /// Can only be called by the address previously set via
-    /// [`Self::propose_new_admin`]. On success the caller becomes the new
+    /// [Self::propose_new_admin]. On success the caller becomes the new
     /// admin and the pending proposal is cleared, stripping the old admin of
     /// all authority.
     pub fn accept_admin(env: Env) -> Result<(), RegistryError> {
@@ -189,6 +277,11 @@ impl VerificationRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &proposed);
         env.storage().instance().remove(&DataKey::ProposedAdmin);
         Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("acc_adm"),),
+            (proposed,),
+        );
 
         Ok(())
     }
@@ -213,15 +306,26 @@ impl VerificationRegistryContract {
         let admin = Self::read_admin(&env)?;
         admin.require_auth();
 
+        let cap = Self::read_rate_cap(&env);
+        let floor = Self::read_rate_floor(&env);
+
+        // Clamp each tier rate within the configured boundaries.
+        let clamp = |r: u32| -> u32 { r.max(floor).min(cap) };
+
         let config = RateConfig {
-            rate_excellent_bps,
-            rate_good_bps,
-            rate_fair_bps,
-            rate_fallback_bps,
+            rate_excellent_bps: clamp(rate_excellent_bps),
+            rate_good_bps: clamp(rate_good_bps),
+            rate_fair_bps: clamp(rate_fair_bps),
+            rate_fallback_bps: clamp(rate_fallback_bps),
         };
 
         env.storage().instance().set(&DataKey::RateConfig, &config);
         Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("rate_cfg"),),
+            (admin, rate_excellent_bps, rate_good_bps, rate_fair_bps, rate_fallback_bps),
+        );
 
         Ok(())
     }
@@ -229,6 +333,8 @@ impl VerificationRegistryContract {
     /// Get the current dynamic interest rate configuration.
     ///
     /// Returns the rate config if set, or defaults if not yet configured.
+    /// Individual rates are clamped to the configured cap and floor before
+    /// being returned.
     pub fn get_rate_config(env: Env) -> RateConfig {
         env.storage()
             .instance()
@@ -241,14 +347,78 @@ impl VerificationRegistryContract {
             })
     }
 
+    /// Set the interest rate cap and floor limits in basis points.
+    ///
+    /// Admin-only. The floor must be less than or equal to the cap, and both
+    /// must be in the range 0–10000 bps. These limits are enforced in
+    /// `set_rate_config` and `get_borrower_rate` so that no computed rate
+    /// exceeds the configured boundaries.
+    pub fn set_rate_limits(
+        env: Env,
+        cap_bps: u32,
+        floor_bps: u32,
+    ) -> Result<(), RegistryError> {
+        let admin = Self::read_admin(&env)?;
+        admin.require_auth();
+
+        if floor_bps > cap_bps {
+            return Err(RegistryError::InvalidRateLimits);
+        }
+
+        if cap_bps > 10_000 {
+            return Err(RegistryError::InvalidRateLimits);
+        }
+
+        env.storage().instance().set(&DataKey::RateCap, &cap_bps);
+        env.storage().instance().set(&DataKey::RateFloor, &floor_bps);
+        Self::bump_instance(&env);
+
+        Ok(())
+    }
+
+    /// Returns the current rate cap in basis points.
+    pub fn get_rate_cap(env: Env) -> u32 {
+        Self::read_rate_cap(&env)
+    }
+
+    /// Returns the current rate floor in basis points.
+    pub fn get_rate_floor(env: Env) -> u32 {
+        Self::read_rate_floor(&env)
+    }
+
     /// Resolve the interest rate for a borrower based on their credit score.
     ///
     /// Uses the current rate configuration and the borrower's verification
     /// record. Returns the fallback rate if no valid verification exists.
     pub fn get_borrower_rate(env: Env, borrower: Address) -> u32 {
         let config = Self::get_rate_config(env.clone());
+        let cap = Self::read_rate_cap(&env);
+        let floor = Self::read_rate_floor(&env);
 
-        // Check if borrower has valid, non-expired verification
+        let rate = if let Some(risk) = Self::read_risk_record(&env, &borrower) {
+            match Self::tier_from_score(risk.score) {
+                RiskTier::Excellent => config.rate_excellent_bps,
+                RiskTier::Good => config.rate_good_bps,
+                RiskTier::Fair => config.rate_fair_bps,
+                RiskTier::Poor => config.rate_fallback_bps,
+            }
+        } else {
+            // Check if borrower has valid, non-expired verification
+            match Self::read_record(&env, &borrower) {
+                Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
+                    let score = record.score;
+                    if score >= 80 {
+                        config.rate_excellent_bps
+                    } else if score >= 60 {
+                        config.rate_good_bps
+                    } else if score >= 40 {
+                        config.rate_fair_bps
+                    } else {
+                        config.rate_fallback_bps
+                    }
+            };
+        }
+
         match Self::read_record(&env, &borrower) {
             Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
                 let score = record.score;
@@ -261,17 +431,79 @@ impl VerificationRegistryContract {
                 } else {
                     config.rate_fallback_bps
                 }
+                _ => config.rate_fallback_bps,
             }
-            _ => config.rate_fallback_bps,
+        };
+
+        // Clamp the resolved rate within the configured boundaries.
+        rate.max(floor).min(cap)
+    }
+
+    /// Configure the lending pool contract that is allowed to push repayment
+    /// callbacks into the registry.
+    pub fn set_lending_pool(env: Env, lending_pool: Address) -> Result<(), RegistryError> {
+        let admin = Self::read_admin(&env)?;
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::LendingPool, &lending_pool);
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("set_lp"),),
+            (admin, lending_pool),
+        );
+
+        Ok(())
+    }
+
+    /// Receive a repayment-status callback from the lending pool and update
+    /// the borrower's dynamic risk profile.
+    pub fn record_repayment_status(
+        env: Env,
+        borrower: Address,
+        was_on_time: bool,
+    ) -> Result<RiskRecord, RegistryError> {
+        let mut profile = Self::read_risk_record(&env, &borrower)
+            .unwrap_or_else(|| Self::seed_risk_from_score(70));
+
+        let old_score = profile.score;
+
+        if was_on_time {
+            profile.on_time_payments = profile.on_time_payments.saturating_add(1);
+            profile.consecutive_late = 0;
+            profile.score = profile.score.saturating_add(4).min(100);
+        } else {
+            profile.late_payments = profile.late_payments.saturating_add(1);
+            profile.consecutive_late = profile.consecutive_late.saturating_add(1);
+            let penalty = 10u32.saturating_add(profile.consecutive_late.saturating_mul(5));
+            profile.score = profile.score.saturating_sub(penalty);
+            if profile.consecutive_late >= 3 {
+                profile.score = profile.score.saturating_sub(10);
+            }
         }
+        profile.tier = Self::tier_from_score(profile.score);
+        Self::set_risk_record(&env, &borrower, &profile);
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("risk_upd"),),
+            (borrower, old_score, profile.score, was_on_time),
+        );
+
+        Ok(profile)
+    }
+
+    /// Return the dynamic risk profile, if one exists.
+    pub fn get_risk_profile(env: Env, borrower: Address) -> Option<RiskRecord> {
+        Self::read_risk_record(&env, &borrower)
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{Address, BytesN, Env};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+    use soroban_sdk::{Address, BytesN, Env, IntoVal};
 
     fn setup(env: &Env) -> (Address, VerificationRegistryContractClient<'static>) {
         let admin = Address::generate(env);
@@ -316,6 +548,37 @@ mod test {
         assert_eq!(record.report_hash, report_hash);
         assert_eq!(record.expiration_ledger, record.verified_ledger + 1_000);
         assert_eq!(record.score, 80u32);
+    }
+
+    #[test]
+    fn test_register_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+        client.register_verification(&borrower, &report_hash, &1_000u32, &80u32);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::vec![
+            &env,
+            symbol_short!("vreg").into_val(&env),
+        ];
+        assert_eq!(last_event.1, expected_topic);
+
+        let (event_admin, event_borrower, event_score, event_ledger, event_expiry): (Address, Address, u32, u32, u32) =
+            last_event.2.into_val(&env);
+        assert_eq!(event_admin, admin);
+        assert_eq!(event_borrower, borrower);
+        assert_eq!(event_score, 80u32);
+        assert_eq!(event_expiry, event_ledger + 1_000);
+
+        let record = client.get_verification(&borrower);
+        assert_eq!(event_ledger, record.verified_ledger);
     }
 
     #[test]
@@ -384,11 +647,9 @@ mod test {
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
         assert!(client.is_verified(&borrower));
 
-        // Advance the ledger right up to the expiration boundary: still valid.
         env.ledger().set_sequence_number(start + 100);
         assert!(client.is_verified(&borrower));
 
-        // One ledger past expiration: no longer valid.
         env.ledger().set_sequence_number(start + 101);
         assert!(!client.is_verified(&borrower));
     }
@@ -442,8 +703,6 @@ mod test {
         let contract_id = env.register(VerificationRegistryContract, ());
         let client = VerificationRegistryContractClient::new(&env, &contract_id);
 
-        // Authorize initialization, then withdraw all authorizations so the
-        // admin has not signed the subsequent call.
         env.mock_all_auths();
         client.initialize(&admin);
         env.set_auths(&[]);
@@ -451,7 +710,6 @@ mod test {
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[1u8; 32]);
 
-        // The admin never signed this call, so `require_auth` panics.
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
     }
 
@@ -474,8 +732,6 @@ mod test {
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[1u8; 32]);
 
-        // Only the non-admin signs. The contract calls `admin.require_auth()`,
-        // which is not satisfied, so the call fails with an authorization error.
         env.mock_auths(&[MockAuth {
             address: &non_admin,
             invoke: &MockAuthInvoke {
@@ -496,13 +752,9 @@ mod test {
 
         let new_admin = Address::generate(&env);
 
-        // Step 1: current admin proposes a new admin.
         client.propose_new_admin(&new_admin);
-
-        // Step 2: proposed admin accepts the role.
         client.accept_admin();
 
-        // The new admin can now perform admin-only actions.
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[3u8; 32]);
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
@@ -550,8 +802,6 @@ mod test {
 
         let new_admin = Address::generate(&env);
 
-        // A non-admin signs the call, but the contract requires the current
-        // admin's authorization, so the proposal is rejected.
         env.mock_auths(&[MockAuth {
             address: &non_admin,
             invoke: &MockAuthInvoke {
@@ -582,9 +832,6 @@ mod test {
         client.initialize(&admin);
         client.propose_new_admin(&new_admin);
 
-        // Someone other than the proposed admin tries to accept the role.
-        // The contract calls `proposed.require_auth()`, which the imposter's
-        // signature does not satisfy, so the call panics.
         env.mock_auths(&[MockAuth {
             address: &imposter,
             invoke: &MockAuthInvoke {
@@ -618,9 +865,6 @@ mod test {
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[5u8; 32]);
 
-        // The old admin signs, but it is no longer the admin, so the
-        // `admin.require_auth()` inside `register_verification` (which now
-        // checks `new_admin`) is not satisfied and the call panics.
         env.mock_auths(&[MockAuth {
             address: &admin,
             invoke: &MockAuthInvoke {
@@ -642,11 +886,9 @@ mod test {
         let first_candidate = Address::generate(&env);
         let second_candidate = Address::generate(&env);
 
-        // Admin proposes one address, then changes their mind.
         client.propose_new_admin(&first_candidate);
         client.propose_new_admin(&second_candidate);
 
-        // The latest proposal is the one that takes effect on acceptance.
         client.accept_admin();
 
         let borrower = Address::generate(&env);
@@ -654,4 +896,171 @@ mod test {
         client.register_verification(&borrower, &report_hash, &100u32, &80u32);
         assert!(client.is_verified(&borrower));
     }
+
+    // ── Rate Cap & Floor Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_default_rate_limits() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        assert_eq!(client.get_rate_cap(), 1800);
+        assert_eq!(client.get_rate_floor(), 200);
+    }
+
+    #[test]
+    fn test_set_rate_limits_ok() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        client.set_rate_limits(&1500u32, &300u32);
+        assert_eq!(client.get_rate_cap(), 1500);
+        assert_eq!(client.get_rate_floor(), 300);
+    }
+
+    #[test]
+    fn test_set_rate_limits_floor_greater_than_cap_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let result = client.try_set_rate_limits(&500u32, &1000u32);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidRateLimits)));
+    }
+
+    #[test]
+    fn test_set_rate_limits_cap_over_10000_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let result = client.try_set_rate_limits(&10001u32, &200u32);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidRateLimits)));
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamps_to_floor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        // Set a rate config where the excellent rate is below the default floor (200).
+        // Default floor is 200 bps, so setting excellent to 50 bps should be clamped to 200.
+        client.set_rate_config(&50u32, &600u32, &800u32, &1200u32);
+
+        // The stored config clamps rates on write, so when we read them back:
+        let config = client.get_rate_config();
+        assert_eq!(config.rate_excellent_bps, 200); // clamped to floor
+        assert_eq!(config.rate_good_bps, 600);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamps_to_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        // Set a rate config where the fallback rate exceeds the default cap (1800).
+        client.set_rate_config(&400u32, &600u32, &800u32, &5000u32);
+
+        let config = client.get_rate_config();
+        assert_eq!(config.rate_fallback_bps, 1800); // clamped to cap
+    }
+
+    #[test]
+    fn test_get_borrower_rate_live_clamping() {
+    #[test]
+    fn test_record_repayment_status_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[10u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Set tight limits: floor 500, cap 700
+        client.set_rate_limits(&700u32, &500u32);
+
+        // Config was stored before we set limits; re-set to trigger clamp.
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        // Borrower score is 95 (Excellent tier). With clamping:
+        // rate_excellent 400 -> floor 500, so borrower rate should be 500.
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 500);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_clamp_to_cap_live() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[11u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Set cap very low: 300 bps
+        client.set_rate_limits(&300u32, &100u32);
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        // Excellent tier rate 400 clamped to cap 300
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 300);
+    }
+
+    #[test]
+    fn test_get_borrower_rate_floor_below_defaults_unaffected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[12u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1000u32, &95u32);
+
+        // Rate limits are wide (1-5000), default rates should pass through.
+        client.set_rate_limits(&5000u32, &1u32);
+        client.set_rate_config(&400u32, &600u32, &800u32, &1200u32);
+
+        let rate = client.get_borrower_rate(&borrower);
+        assert_eq!(rate, 400);
+    }
+
+    #[test]
+    fn test_set_rate_limits_before_initialize_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(VerificationRegistryContract, ());
+        let client = VerificationRegistryContractClient::new(&env, &contract_id);
+
+        let result = client.try_set_rate_limits(&1800u32, &200u32);
+        assert_eq!(result, Err(Ok(RegistryError::NotInitialized)));
+
+        client.register_verification(&borrower, &report_hash, &1_000u32, &70u32);
+
+        client.record_repayment_status(&borrower, &true);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::vec![
+            &env,
+            symbol_short!("risk_upd").into_val(&env),
+        ];
+        assert_eq!(last_event.1, expected_topic);
+
+        let (event_borrower, old_score, new_score, was_on_time): (Address, u32, u32, bool) =
+            last_event.2.into_val(&env);
+        assert_eq!(event_borrower, borrower);
+        assert_eq!(old_score, 70u32);
+        assert_eq!(new_score, 74u32);
+        assert_eq!(was_on_time, true);
+    }
 }
+
+

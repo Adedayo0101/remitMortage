@@ -1,0 +1,134 @@
+name: Backup Verification
+
+# A backup is only as good as its last successful restore. This pipeline runs
+# a full dump → restore → validate drill against a disposable Postgres, on a
+# monthly schedule, and alerts by email when the restore does not come back
+# clean.
+on:
+  schedule:
+    # 04:00 UTC on the 1st of every month.
+    - cron: '0 4 1 * *'
+  workflow_dispatch:
+  # Guard the drill itself against regressions when its own inputs change.
+  pull_request:
+    paths:
+      - '.github/workflows/backup-verification.yml'
+      - 'scripts/verify-backup-restore.sh'
+      - 'backend/prisma/schema.prisma'
+
+jobs:
+  verify-restore:
+    name: Restore Drill (Sandbox Postgres)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Mock primary — stands in for production, seeded from the real schema.
+      SOURCE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/remitmortgage_source
+      # Throwaway target the dump is restored into. Wiped by the drill.
+      SANDBOX_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/remitmortgage_sandbox
+      REPORT_PATH: backup-verification-report.txt
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      # The runner image ships an older client than the server above; a
+      # pg_dump older than its server refuses to run, so pin them together.
+      - name: Install PostgreSQL 16 Client
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          sudo sed -i 's|deb http|deb [signed-by=/usr/share/keyrings/pgdg.gpg] http|' /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+          pg_dump --version
+
+      - name: Create Source and Sandbox Databases
+        run: |
+          export PGPASSWORD=postgres
+          psql -h localhost -U postgres -c "CREATE DATABASE remitmortgage_source;"
+          psql -h localhost -U postgres -c "CREATE DATABASE remitmortgage_sandbox;"
+
+      - name: Install Backend Dependencies
+        run: npm ci
+        working-directory: backend
+
+      # Applies the live Prisma schema so the drill exercises the real tables
+      # and indices rather than a hand-written fixture that can drift.
+      - name: Apply Prisma Schema to Source Database
+        run: npx prisma db push --skip-generate
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.SOURCE_DATABASE_URL }}
+
+      - name: Seed Source Database
+        run: npm run db:seed
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.SOURCE_DATABASE_URL }}
+        continue-on-error: true
+
+      - name: Run Restore Drill
+        id: drill
+        run: ./scripts/verify-backup-restore.sh
+
+      - name: Upload Validation Log
+        # Keep the summary either way — a passing run is the audit record that
+        # the backup was verified this month.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-verification-report
+          path: ${{ env.REPORT_PATH }}
+          retention-days: 90
+
+      # Alerts are scoped to scheduled/manual runs; a failing PR run already
+      # surfaces on the PR itself and needs no page.
+      - name: Email Alert on Failed Recovery Check
+        if: failure() && github.event_name != 'pull_request'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.ALERT_SMTP_SERVER }}
+          server_port: ${{ secrets.ALERT_SMTP_PORT }}
+          username: ${{ secrets.ALERT_SMTP_USERNAME }}
+          password: ${{ secrets.ALERT_SMTP_PASSWORD }}
+          from: RemitMortgage Backup Verification
+          to: ${{ secrets.ALERT_EMAIL_TO }}
+          subject: "[FAILED] Backup restore verification — ${{ github.repository }}"
+          body: |
+            The monthly database backup restoration drill failed.
+
+            Repository: ${{ github.repository }}
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Triggered by: ${{ github.event_name }}
+            Commit: ${{ github.sha }}
+
+            A failure here means the most recent backup could not be restored
+            cleanly into a sandbox, or the restored schema, indices or record
+            counts did not match the source. Treat recovery as unproven until
+            this is resolved.
+
+            The validation log is attached to the run as the
+            "backup-verification-report" artifact.

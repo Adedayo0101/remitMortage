@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: remitmortgage-backend-config
+  namespace: default
+  labels:
+    app: remitmortgage-backend
+data:
+  PORT: "4000"
+  NODE_ENV: "production"
+  REDIS_CLUSTER_ENABLED: "false"
+  OTEL_SERVICE_NAME: "remitmortgage-backend"
+  OTEL_TRACES_SAMPLER_RATIO: "1.0"
+  LOG_LEVEL: "info"

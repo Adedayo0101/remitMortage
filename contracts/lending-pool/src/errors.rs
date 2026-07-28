@@ -28,33 +28,55 @@ pub enum PoolError {
     NotEligibleForDefault = 11,
     /// Loan has already defaulted.
     AlreadyDefaulted = 12,
-    /// No pending upgrade exists to execute.
-    UpgradeNotPending = 11,
-    /// Upgrade was proposed but the timelock delay has not elapsed yet.
-    UpgradeTimelockActive = 12,
-    /// Investor cannot change tranche after the initial deposit.
-    TrancheMismatch = 15,
-    /// Junior tranche has insufficient capital to absorb this loss.
-    InsufficientJuniorCapital = 16,
     /// Operation rejected because the contract is paused.
     ContractPaused = 13,
     /// Proposed new admin is not the caller or no transfer is pending.
     NotPendingAdmin = 14,
+    /// No pending upgrade exists to execute.
+    UpgradeNotPending = 15,
+    /// Upgrade was proposed but the timelock delay has not elapsed yet.
+    UpgradeTimelockActive = 16,
+    /// Investor cannot change tranche after the initial deposit.
+    TrancheMismatch = 17,
+    /// Junior tranche has insufficient capital to absorb this loss.
+    InsufficientJuniorCapital = 18,
     /// Borrower has no valid, non-expired verification record in the
     /// configured VerificationRegistry, so the loan request is rejected.
-    ApplicantNotVerified = 17,
+    ApplicantNotVerified = 19,
     /// The daily borrow limit has been exceeded.
-    DailyBorrowLimitExceeded = 18,
+    DailyBorrowLimitExceeded = 20,
     /// Refund amount exceeds the amount disbursed for the loan.
-    RefundExceedsDisbursed = 19,
+    RefundExceedsDisbursed = 21,
     /// Disbursement recipient is not a whitelisted contractor.
-    UnauthorizedContractor = 20,
+    UnauthorizedContractor = 22,
     /// Refinancing requires at least 3 successful payments.
-    InsufficientPaymentHistory = 21,
+    InsufficientPaymentHistory = 23,
     /// Interest rate for refinancing is below the allowed floor.
-    InterestRateTooLow = 22,
+    InterestRateTooLow = 24,
     /// Loan cannot be refinanced.
-    RefinanceNotEligible = 23,
+    RefinanceNotEligible = 25,
     /// Loan is not yet overdue, so it cannot be marked as defaulted.
-    LoanNotOverdue = 24,
+    LoanNotOverdue = 26,
+    /// Oracle data is stale or unavailable.
+    OracleUnavailable = 27,
+    /// Oracle price is zero or invalid.
+    OraclePriceInvalid = 28,
+    /// Requested loan exceeds the configured maximum LTV.
+    LtvExceeded = 29,
+    /// Referral relationships cannot contain cycles.
+    ReferralCycleDetected = 30,
+    /// Referral relationship already exists.
+    ReferralAlreadySet = 31,
+    /// Loan maturity rebate has already been claimed.
+    RebateAlreadyClaimed = 32,
+    /// Loan has missed payments, so is ineligible for the maturity rebate.
+    MissedPaymentsPreventRebate = 33,
+    /// Loan must be in Approved state for this operation.
+    LoanNotActive = 32,
+    /// A restructure proposal already exists for this loan.
+    RestructureProposalExists = 33,
+    /// No pending restructure proposal for this loan.
+    NoRestructureProposal = 34,
+    /// MultisigValidator contract address has not been configured.
+    MultisigValidatorNotSet = 35,
 }

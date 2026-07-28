@@ -4,12 +4,22 @@ mod errors;
 mod types;
 
 pub use crate::errors::ValidatorError;
-pub use crate::types::{DataKey, MultisigConfig, Proposal, ProposalState, Signer, TimelockConfig};
+pub use crate::types::{
+    AdminMultisigConfig, DataKey, MultisigConfig, Proposal, ProposalState, Signer, TimelockConfig,
+};
 
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, Vec};
 
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
+
+/// Default proposal lifetime in ledgers when the caller passes 0 at submission.
+/// At ~5 seconds per ledger this is approximately 30 days.
+#[cfg(not(test))]
+const DEFAULT_PROPOSAL_EXPIRY_LEDGERS: u32 = 518_400;
+/// Compact default used in tests so expiry can be crossed with small ledger advances.
+#[cfg(test)]
+const DEFAULT_PROPOSAL_EXPIRY_LEDGERS: u32 = 1_000;
 
 /// Multisig Threshold Validator
 ///
@@ -74,6 +84,18 @@ impl MultisigValidator {
             }
         }
         None
+    }
+
+    /// Return `true` when the current ledger sequence has passed the proposal's
+    /// `expiration_ledger`.
+    ///
+    /// A value of `0` means the field was not set (legacy record) — treated as
+    /// non-expiring to preserve backwards compatibility.
+    fn is_expired(env: &Env, proposal: &Proposal) -> bool {
+        if proposal.expiration_ledger == 0 {
+            return false; // legacy / no-expiry
+        }
+        env.ledger().sequence() > proposal.expiration_ledger
     }
 }
 
@@ -207,19 +229,42 @@ impl MultisigValidator {
 
     /// Submit a new action proposal. `proposal_id` should be a unique 32-byte
     /// value (e.g. a hash of the action details). Anyone may submit.
+    ///
+    /// # Arguments
+    /// - `proposal_id`       — Unique 32-byte identifier (e.g. SHA-256 of action details).
+    /// - `expiration_ledger` — Ledger sequence number after which the proposal is
+    ///   considered expired and eligible for pruning.  Pass `0` to use the
+    ///   protocol default (`DEFAULT_PROPOSAL_EXPIRY_LEDGERS` from the current
+    ///   ledger sequence).
     pub fn submit_action(
         env: Env,
         proposal_id: BytesN<32>,
+        expiration_ledger: u32,
     ) -> Result<(), ValidatorError> {
         let now = env.ledger().timestamp();
+        let current_seq = env.ledger().sequence();
+
+        let effective_expiry = if expiration_ledger == 0 {
+            current_seq.saturating_add(DEFAULT_PROPOSAL_EXPIRY_LEDGERS)
+        } else {
+            expiration_ledger
+        };
+
         let proposal = Proposal {
             state: ProposalState::Pending,
             ready_at: 0,
             created_at: now,
+            expiration_ledger: effective_expiry,
         };
         env.storage()
             .persistent()
-            .set(&DataKey::ActionProposal(proposal_id), &proposal);
+            .set(&DataKey::ActionProposal(proposal_id.clone()), &proposal);
+
+        env.events().publish(
+            (symbol_short!("submitted"),),
+            (proposal_id, effective_expiry),
+        );
+
         Self::bump_instance(&env);
         Ok(())
     }
@@ -227,6 +272,9 @@ impl MultisigValidator {
     /// Approve a proposal with the given `signing_keys`. Once the cumulative
     /// weight meets the account's threshold, the proposal transitions from
     /// `Pending` to `Locked` and the timelock countdown begins.
+    ///
+    /// Returns `ProposalExpired` when the current ledger sequence has passed
+    /// the proposal's `expiration_ledger`.
     pub fn approve_action(
         env: Env,
         account: Address,
@@ -241,6 +289,11 @@ impl MultisigValidator {
 
         if proposal.state == ProposalState::Executed {
             return Err(ValidatorError::ProposalAlreadyExecuted);
+        }
+
+        // Reject votes on expired proposals before any other state check.
+        if Self::is_expired(&env, &proposal) {
+            return Err(ValidatorError::ProposalExpired);
         }
 
         // Already locked — no-op.
@@ -281,8 +334,8 @@ impl MultisigValidator {
         }
     }
 
-    /// Execute a timelocked proposal. Fails if not Locked, or if the timelock
-    /// delay has not yet elapsed.
+    /// Execute a timelocked proposal. Fails if not Locked, if the timelock
+    /// delay has not yet elapsed, or if the proposal has expired.
     pub fn execute_action(
         env: Env,
         proposal_id: BytesN<32>,
@@ -298,6 +351,12 @@ impl MultisigValidator {
         }
         if proposal.state != ProposalState::Locked {
             return Err(ValidatorError::NotYetApproved);
+        }
+
+        // A Locked proposal that somehow crosses its expiry without being
+        // executed is also blocked — the approval window has closed.
+        if Self::is_expired(&env, &proposal) {
+            return Err(ValidatorError::ProposalExpired);
         }
 
         let now = env.ledger().timestamp();
@@ -319,6 +378,202 @@ impl MultisigValidator {
             .persistent()
             .get(&DataKey::ActionProposal(proposal_id))
             .ok_or(ValidatorError::ProposalNotFound)
+    }
+
+    // ── Admin-managed k-of-n signer configuration ───────────────────────────────
+
+    /// Initialize the admin authorized to manage the `k-of-n` signer set.
+    /// Can only be called once; subsequent calls fail with `AdminAlreadySet`.
+    pub fn init_admin(env: Env, admin: Address) -> Result<(), ValidatorError> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(ValidatorError::AdminAlreadySet);
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Return the configured admin.
+    pub fn get_admin(env: Env) -> Result<Address, ValidatorError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ValidatorError::AdminNotSet)
+    }
+
+    fn require_admin(env: &Env) -> Result<Address, ValidatorError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ValidatorError::AdminNotSet)?;
+        admin.require_auth();
+        Ok(admin)
+    }
+
+    fn read_admin_config(env: &Env) -> Result<AdminMultisigConfig, ValidatorError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AdminConfig)
+            .ok_or(ValidatorError::AdminConfigNotSet)
+    }
+
+    fn write_admin_config(env: &Env, config: &AdminMultisigConfig) {
+        env.storage().persistent().set(&DataKey::AdminConfig, config);
+        Self::bump_instance(env);
+    }
+
+    /// Register the initial admin-managed signer set and required threshold.
+    /// Requires the admin's signature. The threshold must satisfy
+    /// `0 < threshold <= signers.len()`, and the signer set must contain no
+    /// duplicate addresses.
+    pub fn configure_signers(
+        env: Env,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), ValidatorError> {
+        Self::require_admin(&env)?;
+
+        let len = signers.len();
+        // Reject duplicate signer addresses.
+        for i in 0..len {
+            let a = signers.get_unchecked(i);
+            for j in (i + 1)..len {
+                if signers.get_unchecked(j) == a {
+                    return Err(ValidatorError::SignerAlreadyExists);
+                }
+            }
+        }
+
+        if threshold == 0 || threshold > len {
+            return Err(ValidatorError::InvalidThreshold);
+        }
+
+        Self::write_admin_config(&env, &AdminMultisigConfig { signers, threshold });
+        Ok(())
+    }
+
+    /// Update the required signature threshold. Requires the admin's signature.
+    /// Rejects a threshold of 0 or one that exceeds the number of active
+    /// signers (`InvalidThreshold`).
+    pub fn set_threshold(env: Env, threshold: u32) -> Result<(), ValidatorError> {
+        Self::require_admin(&env)?;
+
+        let mut config = Self::read_admin_config(&env)?;
+        if threshold == 0 || threshold > config.signers.len() {
+            return Err(ValidatorError::InvalidThreshold);
+        }
+        config.threshold = threshold;
+        Self::write_admin_config(&env, &config);
+        Ok(())
+    }
+
+    /// Add an address to the admin-managed signer set. Requires the admin's
+    /// signature. Fails with `SignerAlreadyExists` if the address is already a
+    /// signer.
+    pub fn add_signer(env: Env, signer: Address) -> Result<(), ValidatorError> {
+        Self::require_admin(&env)?;
+
+        let mut config = Self::read_admin_config(&env)?;
+        for i in 0..config.signers.len() {
+            if config.signers.get_unchecked(i) == signer {
+                return Err(ValidatorError::SignerAlreadyExists);
+            }
+        }
+        config.signers.push_back(signer);
+        Self::write_admin_config(&env, &config);
+        Ok(())
+    }
+
+    /// Remove an address from the admin-managed signer set. Requires the admin's
+    /// signature. Fails if the address is not a signer, or if removing it would
+    /// leave fewer signers than the configured threshold (`InvalidThreshold`).
+    pub fn remove_signer(env: Env, signer: Address) -> Result<(), ValidatorError> {
+        Self::require_admin(&env)?;
+
+        let mut config = Self::read_admin_config(&env)?;
+        let mut found: Option<u32> = None;
+        for i in 0..config.signers.len() {
+            if config.signers.get_unchecked(i) == signer {
+                found = Some(i);
+                break;
+            }
+        }
+        let idx = found.ok_or(ValidatorError::SignerNotFound)?;
+
+        if config.signers.len() - 1 < config.threshold {
+            return Err(ValidatorError::InvalidThreshold);
+        }
+        config.signers.remove(idx);
+        Self::write_admin_config(&env, &config);
+        Ok(())
+    }
+
+    /// Return the current admin-managed signer configuration.
+    pub fn get_signer_config(env: Env) -> Result<AdminMultisigConfig, ValidatorError> {
+        Self::read_admin_config(&env)
+    }
+
+    /// Count how many of the presented `signers` are valid members of the
+    /// admin-managed signer set. Duplicate presented addresses are counted once,
+    /// and addresses not in the configured set are ignored.
+    pub fn count_valid_signers(
+        env: Env,
+        signers: Vec<Address>,
+    ) -> Result<u32, ValidatorError> {
+        let config = Self::read_admin_config(&env)?;
+
+        let len = signers.len();
+        let mut count: u32 = 0;
+        for i in 0..len {
+            let addr = signers.get_unchecked(i);
+
+            // Skip duplicates already seen earlier in the presented list.
+            let mut seen = false;
+            for j in 0..i {
+                if signers.get_unchecked(j) == addr {
+                    seen = true;
+                    break;
+                }
+            }
+            if seen {
+                continue;
+            }
+
+            // Count only addresses that are configured signers.
+            for k in 0..config.signers.len() {
+                if config.signers.get_unchecked(k) == addr {
+                    count += 1;
+                    break;
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    /// Returns `true` iff the number of distinct valid signers presented meets
+    /// or exceeds the configured threshold.
+    pub fn verify_signatures(
+        env: Env,
+        signers: Vec<Address>,
+    ) -> Result<bool, ValidatorError> {
+        let config = Self::read_admin_config(&env)?;
+        let count = Self::count_valid_signers(env, signers)?;
+        Ok(count >= config.threshold)
+    }
+
+    /// Like `verify_signatures` but reverts with `InsufficientWeight` when the
+    /// number of valid signatures is below the configured threshold. Convenient
+    /// as a single `?`-propagatable authorization gate.
+    pub fn enforce_signatures(
+        env: Env,
+        signers: Vec<Address>,
+    ) -> Result<(), ValidatorError> {
+        if Self::verify_signatures(env, signers)? {
+            Ok(())
+        } else {
+            Err(ValidatorError::InsufficientWeight)
+        }
     }
 
     /// Contract version.

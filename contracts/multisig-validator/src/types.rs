@@ -51,6 +51,26 @@ pub struct Proposal {
     pub ready_at: u64,
     /// Ledger timestamp when the proposal was first submitted.
     pub created_at: u64,
+    /// Ledger sequence number after which this proposal is considered expired.
+    /// Once `env.ledger().sequence() > expiration_ledger` the proposal cannot
+    /// be voted on or executed and is eligible for pruning.
+    ///
+    /// Set at submission time.  A value of 0 means no expiry (legacy records
+    /// created before this field existed are treated as non-expiring).
+    pub expiration_ledger: u32,
+}
+
+/// Admin-managed multisig configuration: the required signature threshold and
+/// the set of addresses permitted to sign. Unlike the per-account weighted
+/// [`MultisigConfig`], this models a simple `k-of-n` signer group (e.g. 2-of-3,
+/// 3-of-5) that the contract admin can reconfigure over time.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminMultisigConfig {
+    /// Addresses permitted to sign (the "n").
+    pub signers: Vec<Address>,
+    /// Number of distinct signatures required to authorize (the "k").
+    pub threshold: u32,
 }
 
 /// Storage keys.
@@ -63,4 +83,8 @@ pub enum DataKey {
     TimelockConfig(Address),
     /// A timelocked action proposal, keyed by proposal ID (32-byte hash).
     ActionProposal(BytesN<32>),
+    /// The admin authorized to reconfigure the admin-managed signer set.
+    Admin,
+    /// The admin-managed `k-of-n` signer configuration.
+    AdminConfig,
 }

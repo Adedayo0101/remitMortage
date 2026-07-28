@@ -203,8 +203,13 @@ resource "aws_apprunner_service" "app" {
       image_configuration {
         port = "8080"
         runtime_environment_variables = {
-          DATABASE_URL = "postgres://${var.db_username}:${var.db_password}@${aws_db_instance.postgres.endpoint}/${aws_db_instance.postgres.db_name}"
-          REDIS_URL    = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
+          DATABASE_URL                = "postgres://${var.db_username}:${var.db_password}@${aws_db_instance.postgres.endpoint}/${aws_db_instance.postgres.db_name}"
+          REDIS_URL                   = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
+          REDIS_CLUSTER_ENABLED       = "false"
+          REDIS_CLUSTER_NODES         = "${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
+          OTEL_EXPORTER_OTLP_ENDPOINT = var.otel_exporter_otlp_endpoint
+          OTEL_SERVICE_NAME           = "remitmortgage-backend"
+          OTEL_TRACES_SAMPLER_RATIO   = var.otel_traces_sampler_ratio
         }
       }
       image_identifier      = var.app_image

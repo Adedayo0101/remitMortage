@@ -1,27 +1,47 @@
 "use client";
 
 import React, { useState } from "react";
+import { useTranslations } from "next-intl";
 import { useWallet } from "../context/WalletContext";
 import { useNotifications } from "@/context/NotificationContext";
+import { describeNetworkMismatch } from "../lib/wallet-errors";
+import { LocaleSwitcher } from "@/i18n/LocaleSwitcher";
 
 function shorten(pk: string) {
   return `${pk.slice(0, 6)}...${pk.slice(-4)}`;
 }
 
 const NAV_LINKS = [
-  { href: "/verify", label: "Verify" },
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/invest", label: "Invest Pool" },
-  { href: "/repay", label: "Repay" },
-  { href: "/contractor", label: "Contractor" },
-  { href: "/governance", label: "Governance" },
-  { href: "/history", label: "Audit Log" },
+  { href: "/verify", labelKey: "verify" },
+  { href: "/dashboard", labelKey: "dashboard" },
+  { href: "/invest", labelKey: "invest" },
+  { href: "/repay", labelKey: "repay" },
+  { href: "/contractor", labelKey: "contractor" },
+  { href: "/governance", labelKey: "governance" },
+  { href: "/history", labelKey: "history" },
 ];
 
 function InnerNavbar() {
-  const { publicKey, isConnected, usdcBalance, connect, disconnect, wrongNetwork } = useWallet();
+  const {
+    publicKey,
+    isConnected,
+    usdcBalance,
+    connect,
+    disconnect,
+    wrongNetwork,
+    network,
+    walletType,
+    walletError,
+    clearError,
+    isConnecting,
+  } = useWallet();
   const { unreadCount, togglePanel } = useNotifications();
+  const t = useTranslations("nav");
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // A disconnect detected by the wallet watcher clears publicKey and balance,
+  // so the button below falls back to the Connect Wallet CTA on its own.
+  const showDisconnectNotice = !!walletError && !isConnected;
 
   return (
     <>
@@ -54,27 +74,30 @@ function InnerNavbar() {
                 href="/developer-playground"
                 className="text-amber-400 hover:text-amber-300 font-semibold px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-xs transition-colors"
               >
-                Playground
+                {t("playground")}
               </a>
             )}
-            {NAV_LINKS.map(({ href, label }) => (
+            {NAV_LINKS.map(({ href, labelKey }) => (
               <a
                 key={href}
                 href={href}
                 className="text-slate-300 font-medium tracking-wide hover:text-cyan-400 transition-colors"
               >
-                {label}
+                {t(labelKey)}
               </a>
             ))}
           </nav>
 
           {/* Desktop Wallet */}
           <div className="hidden lg:flex items-center gap-3">
+            <LocaleSwitcher />
             <NotificationButton unreadCount={unreadCount} onClick={togglePanel} />
             <WalletButton
               isConnected={isConnected}
               publicKey={publicKey}
               usdcBalance={usdcBalance}
+              walletType={walletType}
+              isConnecting={isConnecting}
               connect={connect}
               disconnect={disconnect}
             />
@@ -82,11 +105,14 @@ function InnerNavbar() {
 
           {/* Mobile hamburger */}
           <div className="flex lg:hidden items-center gap-3">
+            <LocaleSwitcher />
             <NotificationButton unreadCount={unreadCount} onClick={togglePanel} compact />
             <WalletButton
               isConnected={isConnected}
               publicKey={publicKey}
               usdcBalance={usdcBalance}
+              walletType={walletType}
+              isConnecting={isConnecting}
               connect={connect}
               disconnect={disconnect}
             />
@@ -155,25 +181,53 @@ function InnerNavbar() {
               onClick={() => setMenuOpen(false)}
               className="py-3 px-3 rounded-lg text-amber-400 bg-amber-500/10 border border-amber-500/20 text-sm font-semibold"
             >
-              Playground
+              {t("playground")}
             </a>
           )}
-          {NAV_LINKS.map(({ href, label }) => (
+          {NAV_LINKS.map(({ href, labelKey }) => (
             <a
               key={href}
               href={href}
               onClick={() => setMenuOpen(false)}
               className="py-3 px-4 rounded-xl text-slate-200 hover:text-cyan-400 hover:bg-slate-800/60 transition-colors text-base font-medium"
             >
-              {label}
+              {t(labelKey)}
             </a>
           ))}
         </nav>
       </div>
 
       {wrongNetwork && (
-        <div className="fixed top-20 left-0 right-0 z-40 bg-amber-500/20 text-amber-300 border-b border-amber-500/30 text-center py-2 text-xs font-semibold backdrop-blur-md">
-          ⚠️ Connected to non-testnet account. Please switch Freighter wallet to Stellar Testnet.
+        <div
+          role="alert"
+          className="fixed top-20 left-0 right-0 z-40 bg-amber-500/20 text-amber-300 border-b border-amber-500/30 text-center py-2 text-xs font-semibold backdrop-blur-md"
+        >
+          ⚠️ {describeNetworkMismatch(network)}
+        </div>
+      )}
+
+      {showDisconnectNotice && (
+        <div
+          role="alert"
+          className="fixed left-0 right-0 z-40 flex flex-wrap items-center justify-center gap-3 border-b border-red-500/30 bg-red-500/15 py-2 text-xs font-semibold text-red-200 backdrop-blur-md"
+          style={{ top: wrongNetwork ? "5.75rem" : "5rem" }}
+        >
+          <span>{walletError?.message}</span>
+          <button
+            type="button"
+            onClick={() => connect()}
+            className="rounded-md border border-red-400/40 px-2.5 py-1 text-[11px] uppercase tracking-wider text-red-100 transition-colors hover:border-cyan-400/60 hover:text-cyan-200"
+          >
+            Reconnect
+          </button>
+          <button
+            type="button"
+            onClick={clearError}
+            aria-label="Dismiss wallet notice"
+            className="text-red-300/70 transition-colors hover:text-red-100"
+          >
+            ✕
+          </button>
         </div>
       )}
     </>
@@ -184,7 +238,10 @@ interface WalletButtonProps {
   isConnected: boolean;
   publicKey: string | null;
   usdcBalance: string | null;
-  connect: () => void;
+  /** Type of active wallet, used to show the correct badge. */
+  walletType: "stellar" | "evm" | "solana" | "ledger" | null;
+  isConnecting: boolean;
+  connect: () => Promise<string | null>;
   disconnect: () => void;
 }
 
@@ -192,16 +249,20 @@ function WalletButton({
   isConnected,
   publicKey,
   usdcBalance,
+  walletType,
+  isConnecting,
   connect,
   disconnect,
 }: WalletButtonProps) {
+  const t = useTranslations("nav");
   if (!isConnected) {
     return (
       <button
-        onClick={connect}
-        className="btn-cta !py-2.5 !px-4 !text-xs md:!text-sm shadow-cyan-500/20"
+        onClick={() => connect()}
+        disabled={isConnecting}
+        className="btn-cta !py-2.5 !px-4 !text-xs md:!text-sm shadow-cyan-500/20 disabled:opacity-50"
       >
-        Connect Wallet
+        {isConnecting ? "Connecting…" : t("connectWallet")}
         <svg
           xmlns="http://www.w3.org/2000/svg"
           width="14"
@@ -222,14 +283,29 @@ function WalletButton({
   }
   return (
     <div className="flex items-center gap-2">
+      {walletType === "stellar" ? (
+        <span
+          title="Connected via Freighter"
+          className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold text-cyan-400 uppercase tracking-wider px-2 py-1 bg-cyan-500/10 border border-cyan-500/20 rounded-md"
+        >
+          <svg viewBox="0 0 14 14" fill="currentColor" className="w-3 h-3" aria-hidden="true">
+            <circle cx="7" cy="7" r="6" />
+          </svg>
+          Freighter
+        </span>
+      ) : null}
+
       <div className="text-xs md:text-sm text-cyan-400 font-semibold px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
         {usdcBalance != null ? `${usdcBalance} USDC` : "—"}
       </div>
-      <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs font-semibold text-slate-200 font-mono">
+      <span
+        title={publicKey ?? "Connected"}
+        className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs font-semibold text-slate-200 font-mono"
+      >
         {publicKey ? shorten(publicKey) : "Connected"}
-      </div>
+      </span>
       <button onClick={disconnect} className="btn-ghost text-xs hover:text-red-400">
-        Disconnect
+        {t("disconnect")}
       </button>
     </div>
   );

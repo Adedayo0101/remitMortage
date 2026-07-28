@@ -674,6 +674,54 @@ export default function DeveloperPlayground() {
             </div>
           </div>
         </div>
+
+        {/* Glassmorphism Design Tokens Showcase */}
+        <section className="mt-16">
+          <h2 className="text-lg font-bold mb-1.5">
+            Glass <span className="gradient-text">Design Tokens</span>
+          </h2>
+          <p className="text-[var(--text-secondary)] text-sm mb-6 max-w-2xl">
+            Every panel and card below is styled purely with the shared{" "}
+            <code className="text-xs font-mono bg-[var(--bg-secondary)] px-1.5 py-0.5 rounded border border-[var(--border-color)]">
+              --glass-*
+            </code>{" "}
+            tokens defined in <code className="text-xs font-mono">globals.css</code>. Changing a
+            token updates every consumer at once.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="glass-card p-6">
+              <h3 className="text-sm font-bold mb-1">.glass-card</h3>
+              <p className="text-xs text-[var(--text-muted)]">
+                Default surface for dashboard cards and list items. Hover to see the glow
+                transition driven by <code>--glass-card-border-hover</code>.
+              </p>
+            </div>
+            <div className="glass-panel p-6">
+              <h3 className="text-sm font-bold mb-1">.glass-panel</h3>
+              <p className="text-xs text-[var(--text-muted)]">
+                Heavier blur and opacity for standalone panels that need to stand apart from the
+                page background.
+              </p>
+            </div>
+            <div className="glass-modal p-6">
+              <h3 className="text-sm font-bold mb-1">.glass-modal</h3>
+              <p className="text-xs text-[var(--text-muted)]">
+                Reserved for modal dialogs — darkest background, strongest blur, and the
+                largest shadow token.
+              </p>
+            </div>
+            <div className="relative overflow-hidden rounded-xl h-full min-h-[120px] bg-gradient-to-br from-[var(--color-blue)]/30 to-[var(--color-indigo)]/30 p-6">
+              <div className="glass-overlay absolute inset-0" />
+              <div className="relative">
+                <h3 className="text-sm font-bold mb-1">.glass-overlay</h3>
+                <p className="text-xs text-[var(--text-muted)]">
+                  Full-bleed scrim used behind modals, shown here over a sample gradient
+                  background.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

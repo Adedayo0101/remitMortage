@@ -1,7 +1,7 @@
 import { exec } from "child_process";
 import { promisify } from "util";
 import { createReadStream, unlinkSync } from "fs";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import { createCipher } from "crypto";
 import { loadConfig } from "../config.js";
@@ -211,6 +211,101 @@ export class DatabaseBackupService {
     }
 
     throw new Error(`Unsupported cloud provider: ${this.options.provider}`);
+  }
+
+  /**
+   * Lists backups older than retentionDays and archives them to cold storage
+   * (AWS S3 Glacier / GCS Archive), then removes them from the hot bucket.
+   */
+  async cleanupOldBackups(retentionDays = 30): Promise<{ archived: number; failed: number }> {
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    let archived = 0;
+    let failed = 0;
+
+    logger.info("Starting backup cleanup", { retentionDays, cutoff: cutoff.toISOString() });
+
+    try {
+      const keys = await this.listBackupKeys();
+
+      for (const key of keys) {
+        const age = this.parseBackupAge(key);
+        if (age === null || age > cutoff) continue;
+
+        try {
+          await this.moveToColdStorage(key);
+          archived++;
+          logger.info("Archived old backup to cold storage", { key });
+        } catch (err) {
+          failed++;
+          logger.error("Failed to archive backup", {
+            key,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } catch (err) {
+      logger.error("Backup cleanup enumeration failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    logger.info("Backup cleanup complete", { archived, failed });
+    return { archived, failed };
+  }
+
+  private async listBackupKeys(): Promise<string[]> {
+    const prefix = "backups/";
+
+    if (this.options.provider === "aws" && this.s3Client) {
+      const command = new ListObjectsV2Command({
+        Bucket: this.options.bucket,
+        Prefix: prefix,
+      });
+      const response = await this.s3Client.send(command);
+      return (response.Contents ?? []).map((o) => o.Key!).filter(Boolean);
+    }
+
+    if (this.options.provider === "gcs" && this.gcsStorage) {
+      const bucket = this.gcsStorage.bucket(this.options.bucket);
+      const [files] = await bucket.getFiles({ prefix });
+      return files.map((f) => f.name);
+    }
+
+    throw new Error(`Unsupported cloud provider: ${this.options.provider}`);
+  }
+
+  private parseBackupAge(key: string): Date | null {
+    const match = key.match(/remitmortgage-backup-(\d{4}-\d{2}-\d{2})/);
+    if (!match) return null;
+    const date = new Date(match[1] + "T00:00:00Z");
+    return isNaN(date.getTime()) ? null : date;
+  }
+
+  private async moveToColdStorage(key: string): Promise<void> {
+    if (this.options.provider === "aws" && this.s3Client) {
+      const copyCommand = new CopyObjectCommand({
+        Bucket: this.options.bucket,
+        CopySource: `${this.options.bucket}/${key}`,
+        Key: key.replace("backups/", "cold-storage/"),
+        StorageClass: "GLACIER",
+      });
+      await this.s3Client.send(copyCommand);
+
+      const deleteCommand = new DeleteObjectCommand({
+        Bucket: this.options.bucket,
+        Key: key,
+      });
+      await this.s3Client.send(deleteCommand);
+    } else if (this.options.provider === "gcs" && this.gcsStorage) {
+      const bucket = this.gcsStorage.bucket(this.options.bucket);
+      const file = bucket.file(key);
+      const archiveFile = bucket.file(key.replace("backups/", "cold-storage/"));
+
+      await file.copy(archiveFile, { destination: archiveFile });
+      await file.delete();
+    } else {
+      throw new Error(`Unsupported cloud provider: ${this.options.provider}`);
+    }
   }
 
   /**

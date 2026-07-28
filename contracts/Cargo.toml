@@ -3,11 +3,14 @@ resolver = "2"
 members = [
     "escrow",
     "governance",
+    "insurance-pool",
     "integration-tests",
     "lending-pool",
     "milestone",
     "multisig-validator",
+    "staking-pool",
     "verification-registry",
+    "yield-vault",
 ]
 
 [workspace.dependencies]

@@ -1,4 +1,7 @@
 import "dotenv/config";
+// Must load before any other module — OpenTelemetry auto-instrumentation
+// patches libraries (express, http, pg, etc.) at require-time.
+import "./tracing.js";
 import * as Sentry from "@sentry/node";
 
 Sentry.init({
@@ -12,9 +15,9 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
-import rTracer from "cls-rtracer";
 import { swaggerSpec } from "./docs/swagger.js";
 import { healthRouter } from "./routes/health.js";
+import { rpcHealthRouter } from "./routes/rpcHealth.js";
 import { verificationRouter } from "./routes/verification.js";
 import { borrowerRouter } from "./routes/borrower.js";
 import { loanRouter } from "./routes/loan.js";
@@ -22,18 +25,38 @@ import { milestoneRouter } from "./routes/milestone.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
+import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
+import { workspaceRouter } from "./routes/workspace.js";
+import { metricsRouter } from "./routes/metrics.js";
+import { webhooksRouter } from "./routes/webhooks.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { logMasker } from "./middleware/logMasker.js";
+import { correlationId } from "./middleware/correlationId.js";
+import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
+import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
+import {
+  globalRateLimiter,
+  sensitiveRateLimiter,
+  mutationRateLimiter,
+} from "./middleware/rateLimit.js";
+import { issueCsrfToken, csrfProtection, CSRF_COOKIE } from "./middleware/csrf.js";
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
-import { startBackupScheduler } from "./jobs/backupScheduler.js";
+import { startBackupScheduler, startBackupCleanupScheduler } from "./jobs/backupScheduler.js";
+import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
+import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
 import { initializeRedis } from "./services/redis.js";
+import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js";
+import { queueService } from "./services/queueService.js";
+import { startNotificationWorker, stopNotificationWorker } from "./workers/notificationWorker.js";
+import { startWebhookWorker, stopWebhookWorker } from "./workers/webhookWorker.js";
 
 const app = express();
 const config = loadConfig();
@@ -41,7 +64,30 @@ const PORT = config.port;
 
 void initializeRedis();
 
+// ── Background Queue Initialization ─────────────────────────────────
+void (async () => {
+  try {
+    await initializeRedisCluster();
+    await queueService.initialize();
+    await Promise.all([
+      startNotificationWorker(),
+      startWebhookWorker(),
+    ]);
+    logger.info("[queue] BullMQ workers started", {
+      mode: config.redisClusterEnabled ? "cluster" : "single",
+    });
+  } catch (err) {
+    logger.error("[queue] failed to start workers, running without queue", { err });
+  }
+})();
+
 // ── Middleware ───────────────────────────────────────────────────────────
+// Correlation ID must be first so every downstream middleware, handler and
+// log line for this request resolves the same trace ID.
+app.use(correlationId);
+// HTTP metrics must be first so the timer starts at the earliest possible point.
+app.use(httpMetricsMiddleware);
+app.use(tracingMiddleware);
 app.use(requestLogger);
 app.use(helmet());
 app.use(cors({
@@ -60,7 +106,25 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
+app.use(logMasker);
 app.use(cookieParser());
+
+// Global rate limiter — caps naive request floods across the whole API before
+// any route-specific limiter narrows it further.
+app.use(globalRateLimiter);
+
+// CSRF: issue a double-submit token cookie to every client, then reject
+// state-mutating requests that authenticate via a session cookie without
+// echoing the token back in the `x-csrf-token` header.
+app.use(issueCsrfToken);
+app.use(csrfProtection);
+
+// Lets first-party clients read the current CSRF token (also delivered via the
+// `csrfToken` cookie) to attach on subsequent mutating requests.
+app.get("/api/csrf-token", (req, res) => {
+  const csrfToken = (req as typeof req & { csrfToken?: string }).csrfToken;
+  res.json({ csrfToken, cookieName: CSRF_COOKIE });
+});
 
 // Basic rate limiter for verification endpoints: 100 requests per minute per IP
 const verificationLimiter = rateLimit({
@@ -74,18 +138,24 @@ const verificationLimiter = rateLimit({
 });
 
 // ── Routes ──────────────────────────────────────────────────────────────
+// /metrics is unauthenticated at the Express level — the route itself
+// enforces bearer-token auth via metricsAuthMiddleware when METRICS_TOKEN is set.
+app.use("/metrics", metricsRouter);
+app.use("/api/health/rpc", rpcHealthRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
-app.use("/api/borrower", authMiddleware, borrowerRouter);
-app.use("/api/loan", authMiddleware, loanRouter);
-app.use("/api/milestone", milestoneRouter);
+app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
+app.use("/api/loan", mutationRateLimiter, authMiddleware, loanRouter);
+app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
-app.use("/api/did", didRouter);
+app.use("/api/did", sensitiveRateLimiter, didRouter);
 app.use("/api/audit-logs", auditRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
+app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
+app.use("/api/webhooks", authMiddleware, webhooksRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
@@ -107,6 +177,27 @@ app.listen(PORT, () => {
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();
+  startBackupCleanupScheduler();
+  startWebhookKeyRotationScheduler();
+  // Proactively monitor Soroban RPC node health and alert operators on
+  // degradation, downtime or failover through the existing webhook mechanism.
+  startRpcHealthMonitor();
 });
+
+// ── Graceful Shutdown ─────────────────────────────────────────────────
+async function shutdown(signal: string) {
+  logger.info(`[shutdown] received ${signal}, shutting down gracefully`);
+  await Promise.allSettled([
+    stopNotificationWorker(),
+    stopWebhookWorker(),
+    queueService.close(),
+    closeCluster(),
+  ]);
+  logger.info("[shutdown] complete");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 export default app;

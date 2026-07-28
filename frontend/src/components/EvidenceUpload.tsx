@@ -4,11 +4,21 @@ import React, { useState, useRef } from "react";
 
 interface EvidenceUploadProps {
   milestoneId: string;
-  onUploadSuccess: (cid: string) => void;
+  onUploadSuccess: (cid: string, sha256Hash?: string) => void;
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "video/mp4"];
+
+/**
+ * Computes Web Crypto API SHA-256 file digest.
+ */
+export async function computeSha256(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 export default function EvidenceUpload({ milestoneId, onUploadSuccess }: EvidenceUploadProps) {
   const [file, setFile] = useState<File | null>(null);
@@ -16,12 +26,14 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [cid, setCid] = useState<string | null>(null);
+  const [sha256Hash, setSha256Hash] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
     setCid(null);
+    setSha256Hash(null);
 
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
@@ -52,9 +64,13 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
     setError(null);
 
     try {
+      const hashHex = await computeSha256(file);
+      setSha256Hash(hashHex);
+
       const formData = new FormData();
       formData.append("file", file);
       formData.append("milestoneId", milestoneId);
+      formData.append("sha256_hash", hashHex);
 
       const res = await fetch("/api/milestone/upload", {
         method: "POST",
@@ -68,7 +84,7 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
       const data = await res.json();
       if (data.cid) {
         setCid(data.cid);
-        onUploadSuccess(data.cid);
+        onUploadSuccess(data.cid, hashHex);
       } else {
         throw new Error("Invalid response from server");
       }
@@ -149,9 +165,14 @@ export default function EvidenceUpload({ milestoneId, onUploadSuccess }: Evidenc
             </svg>
           </div>
           <p className="text-sm font-semibold text-[var(--success)] mb-1">Upload Successful</p>
-          <div className="text-xs text-[var(--text-muted)] w-full overflow-hidden text-ellipsis whitespace-nowrap text-center mb-2">
+          <div className="text-xs text-[var(--text-muted)] w-full overflow-hidden text-ellipsis whitespace-nowrap text-center mb-1">
             {`CID: ${cid}`}
           </div>
+          {sha256Hash && (
+            <div className="text-[11px] font-mono text-emerald-400/90 w-full overflow-hidden text-ellipsis whitespace-nowrap text-center mb-2">
+              {`SHA-256: ${sha256Hash}`}
+            </div>
+          )}
           <a
             href={`https://ipfs.io/ipfs/${cid}`}
             target="_blank"

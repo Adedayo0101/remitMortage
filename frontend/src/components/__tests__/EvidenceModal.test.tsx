@@ -97,4 +97,30 @@ describe("EvidenceModal & IPFSMediaPlayer", () => {
 
     expect(screen.getByLabelText(/Exit fullscreen view/i)).toBeInTheDocument();
   });
+
+  it("renders Cryptographic Integrity Verified badge when SHA-256 hash is provided", () => {
+    const dataWithHash = {
+      ...mockMilestoneImage,
+      sha256_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    };
+    render(<EvidenceModal isOpen={true} onClose={jest.fn()} milestoneData={dataWithHash} />);
+
+    expect(screen.getByTestId("integrity-verified-badge")).toBeInTheDocument();
+    expect(screen.getByText(/Cryptographic Integrity Verified ✓/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/i)
+    ).toBeInTheDocument();
+  });
+
+  it("renders error alert when file checksum mismatches expected hash", () => {
+    const dataWithMismatch = {
+      ...mockMilestoneImage,
+      sha256_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      expectedHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    };
+    render(<EvidenceModal isOpen={true} onClose={jest.fn()} milestoneData={dataWithMismatch} />);
+
+    expect(screen.getByTestId("hash-mismatch-alert")).toBeInTheDocument();
+    expect(screen.getByText(/Cryptographic Checksum Mismatch Error/i)).toBeInTheDocument();
+  });
 });

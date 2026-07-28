@@ -7,6 +7,10 @@ import { ToastProvider } from "@/context/ToastContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 const MilestoneCard = dynamic(() => import("../../components/MilestoneCard"), { ssr: false });
+const BuilderReputationTable = dynamic(
+  () => import("../../components/BuilderReputationTable"),
+  { ssr: false }
+);
 
 const MILESTONES = [
   { id: "m1", name: "Foundation", initialStage: "Pending" as const },
@@ -54,6 +58,8 @@ function ContractorDashboardInner() {
             />
           ))}
         </div>
+
+        <BuilderReputationTable />
       </div>
     </main>
   );

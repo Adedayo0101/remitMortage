@@ -1,8 +1,11 @@
 "use client";
 
 import React from "react";
+import { useTranslations } from "next-intl";
 
 export default function Footer() {
+  const t = useTranslations("footer");
+
   return (
     <footer className="bg-[#040711] border-t border-slate-800/80 text-slate-400 py-16 px-6 relative overflow-hidden">
       {/* Background ambient lighting */}
@@ -41,26 +44,26 @@ export default function Footer() {
 
         {/* Protocol Links */}
         <div className="space-y-3">
-          <h4 className="text-sm font-semibold text-white uppercase tracking-wider">Protocol</h4>
+          <h4 className="text-sm font-semibold text-white uppercase tracking-wider">{t("protocol")}</h4>
           <ul className="space-y-2 text-xs">
             <li>
               <a href="/verify" className="hover:text-cyan-400 transition-colors">
-                Remittance Verification
+                {t("remittanceVerification")}
               </a>
             </li>
             <li>
               <a href="/dashboard" className="hover:text-cyan-400 transition-colors">
-                Down-Payment Escrow
+                {t("downPaymentEscrow")}
               </a>
             </li>
             <li>
               <a href="/invest" className="hover:text-cyan-400 transition-colors">
-                DeFi Lending Pool
+                {t("defiLendingPool")}
               </a>
             </li>
             <li>
               <a href="/repay" className="hover:text-cyan-400 transition-colors">
-                Mortgage Repayments
+                {t("mortgageRepayments")}
               </a>
             </li>
           </ul>
@@ -69,27 +72,27 @@ export default function Footer() {
         {/* Governance & Ops */}
         <div className="space-y-3">
           <h4 className="text-sm font-semibold text-white uppercase tracking-wider">
-            Governance & Ops
+            {t("governance")}
           </h4>
           <ul className="space-y-2 text-xs">
             <li>
               <a href="/contractor" className="hover:text-cyan-400 transition-colors">
-                Contractor Evidence Hub
+                {t("contractorEvidenceHub")}
               </a>
             </li>
             <li>
               <a href="/governance" className="hover:text-cyan-400 transition-colors">
-                Multisig Milestone Approval
+                {t("multisigMilestoneApproval")}
               </a>
             </li>
             <li>
               <a href="/history" className="hover:text-cyan-400 transition-colors">
-                On-Chain Audit Trail
+                {t("onChainAuditTrail")}
               </a>
             </li>
             <li>
               <a href="/analytics" className="hover:text-cyan-400 transition-colors">
-                Protocol Analytics
+                {t("protocolAnalytics")}
               </a>
             </li>
           </ul>
@@ -97,7 +100,7 @@ export default function Footer() {
 
         {/* Stellar & Soroban Specs */}
         <div className="space-y-3">
-          <h4 className="text-sm font-semibold text-white uppercase tracking-wider">Ecosystem</h4>
+          <h4 className="text-sm font-semibold text-white uppercase tracking-wider">{t("ecosystem")}</h4>
           <p className="text-xs text-slate-400 leading-relaxed">
             Built on Stellar Horizon API and Soroban Smart Contracts. Settlements execute in 3-5
             seconds with instant finality in USDC.
