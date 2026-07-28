@@ -17,7 +17,7 @@ import {
  *   /api/borrower/G1234.../tx → /api/borrower/:address/tx
  *   /api/analytics            → /api/analytics
  */
-function normaliseRoute(url: string): string {
+export function normaliseRoute(url: string): string {
   return (
     url
       // Strip query strings.

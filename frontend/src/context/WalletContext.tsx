@@ -9,7 +9,7 @@ import {
   WALLET_ERROR_MESSAGES,
   type WalletError,
 } from "../lib/wallet-errors";
-import { DEFAULT_LEDGER_PATH } from "../lib/ledger";
+import { DEFAULT_LEDGER_PATH, getLedgerPublicKey } from "../lib/ledger";
 
 type BalanceLine = {
   asset_code?: string;
@@ -50,7 +50,7 @@ type WalletWindow = Window & {
   };
 };
 
-type WalletType = "stellar" | "evm" | "solana" | null;
+type WalletType = "stellar" | "evm" | "solana" | "ledger" | null;
 
 type WalletContextType = {
   publicKey: string | null;
@@ -70,8 +70,9 @@ type WalletContextType = {
   connectLedger: () => Promise<string | null>;
   connectEVM: () => Promise<string | null>;
   connectSolana: () => Promise<string | null>;
+  connectLedger: () => Promise<string | null>;
   ledgerPath: string;
-  setLedgerPath: (path: string) => void;
+  setLedgerPath: React.Dispatch<React.SetStateAction<string>>;
   disconnect: () => void;
   disconnectAll: () => void;
   signMessage: (message: string) => Promise<string | null>;
@@ -119,6 +120,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [network, setNetwork] = useState<string | null>(null);
   const [wrongNetwork, setWrongNetwork] = useState<boolean>(false);
   const [walletError, setWalletError] = useState<WalletError | null>(null);
+  const [ledgerPath, setLedgerPath] = useState<string>(DEFAULT_LEDGER_PATH);
   // Mirrors `publicKey` for the polling loop, which must not re-subscribe on
   // every render just to know the currently connected account.
   const publicKeyRef = useRef<string | null>(null);
@@ -222,7 +224,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setWalletError(null);
 
     try {
-      return await connect();
+      const result = await getLedgerPublicKey(ledgerPath);
+      const publicKeyFromLedger = result.publicKey;
+      setPublicKey(publicKeyFromLedger);
+      publicKeyRef.current = publicKeyFromLedger;
+      setWalletType("ledger");
+      setNetwork(null);
+      setWrongNetwork(false);
+      await fetchBalances(publicKeyFromLedger);
+      return publicKeyFromLedger;
     } catch (err) {
       reportError(err);
       return null;
@@ -434,6 +444,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     connectLedger,
     connectEVM,
     connectSolana,
+    connectLedger,
     ledgerPath,
     setLedgerPath,
     disconnect,

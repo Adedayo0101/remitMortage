@@ -49,7 +49,6 @@
       ]
     ],
     [],
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -76,6 +75,9 @@
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -307,40 +309,17 @@
         }
       ]
     ],
-    [],
-    [],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-              "function_name": "mark_default",
-              "args": [
-                {
-                  "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [],
-    [],
     []
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 2073601,
+    "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
-    "min_persistent_entry_ttl": 4000000,
+    "min_persistent_entry_ttl": 4096,
     "min_temp_entry_ttl": 16,
-    "max_entry_ttl": 4000001,
+    "max_entry_ttl": 6312000,
     "ledger_entries": [
       [
         {
@@ -400,40 +379,7 @@
             },
             "ext": "v0"
           },
-          4000000
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": 115220454072064130
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 115220454072064130
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6073601
+          6311999
         ]
       ],
       [
@@ -466,7 +412,7 @@
             },
             "ext": "v0"
           },
-          4000000
+          6311999
         ]
       ],
       [
@@ -499,7 +445,7 @@
             },
             "ext": "v0"
           },
-          4000000
+          6311999
         ]
       ],
       [
@@ -532,7 +478,7 @@
             },
             "ext": "v0"
           },
-          4000000
+          6311999
         ]
       ],
       [
@@ -565,7 +511,7 @@
             },
             "ext": "v0"
           },
-          4000000
+          6311999
         ]
       ],
       [
@@ -598,7 +544,7 @@
             },
             "ext": "v0"
           },
-          4000000
+          6311999
         ]
       ],
       [
@@ -631,7 +577,7 @@
             },
             "ext": "v0"
           },
-          4000000
+          6311999
         ]
       ],
       [
@@ -664,39 +610,7 @@
             },
             "ext": "v0"
           },
-          4000000
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-            "key": "ledger_key_contract_instance",
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-                "key": "ledger_key_contract_instance",
-                "durability": "persistent",
-                "val": {
-                  "contract_instance": {
-                    "executable": {
-                      "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                    },
-                    "storage": null
-                  }
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          3999999
+          6311999
         ]
       ],
       [
@@ -782,47 +696,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "last_stake_ledger"
-                      },
-                      "val": {
-                        "u32": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "lp_shares"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 700000000000
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "staked_shares"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 0
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "staking_rewards"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 0
-                        }
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "start_ledger"
                       },
                       "val": {
@@ -843,7 +716,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          4095
         ]
       ],
       [
@@ -929,47 +802,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "last_stake_ledger"
-                      },
-                      "val": {
-                        "u32": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "lp_shares"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 300000000000
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "staked_shares"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 0
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "staking_rewards"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 0
-                        }
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "start_ledger"
                       },
                       "val": {
@@ -990,7 +822,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          4095
         ]
       ],
       [
@@ -1051,7 +883,7 @@
                         "symbol": "defaulted_ledger"
                       },
                       "val": {
-                        "u32": 2073601
+                        "u32": 0
                       }
                     },
                     {
@@ -1084,7 +916,7 @@
                         "symbol": "last_interest_ledger"
                       },
                       "val": {
-                        "u32": 2073601
+                        "u32": 0
                       }
                     },
                     {
@@ -1093,8 +925,8 @@
                       },
                       "val": {
                         "i128": {
-                          "hi": 9223372036,
-                          "lo": 15767830570574293539
+                          "hi": 0,
+                          "lo": 200000000000
                         }
                       }
                     },
@@ -1128,7 +960,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 50000000000
+                          "lo": 0
                         }
                       }
                     },
@@ -1137,7 +969,7 @@
                         "symbol": "status"
                       },
                       "val": {
-                        "u32": 4
+                        "u32": 1
                       }
                     }
                   ]
@@ -1146,7 +978,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          4095
         ]
       ],
       [
@@ -1226,7 +1058,7 @@
                         "symbol": "payments_missed"
                       },
                       "val": {
-                        "u32": 3
+                        "u32": 0
                       }
                     }
                   ]
@@ -1235,103 +1067,7 @@
             },
             "ext": "v0"
           },
-          3999999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "ShareBalance"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "ShareBalance"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 700000000000
-                  }
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          3999999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "ShareBalance"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "ShareBalance"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 300000000000
-                  }
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          3999999
+          4095
         ]
       ],
       [
@@ -1376,7 +1112,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          4095
         ]
       ],
       [
@@ -1482,12 +1218,24 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "DefaultedLoanCount"
+                              "symbol": "HalvingEpoch"
                             }
                           ]
                         },
                         "val": {
-                          "u32": 1
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "HalvingInterval"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1000
                         }
                       },
                       {
@@ -1507,7 +1255,7 @@
                               "val": {
                                 "i128": {
                                   "hi": 0,
-                                  "lo": 0
+                                  "lo": 300000000000
                                 }
                               }
                             },
@@ -1518,7 +1266,7 @@
                               "val": {
                                 "i128": {
                                   "hi": 0,
-                                  "lo": 300000000000
+                                  "lo": 0
                                 }
                               }
                             },
@@ -1540,6 +1288,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "LastHalvingLedger"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "LoanCount"
                             }
                           ]
@@ -1552,46 +1312,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "OracleFallbackPrice"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "i128": {
-                            "hi": 0,
-                            "lo": 10000000
-                          }
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "OracleMaxAgeLedgers"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 200
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "OracleMaxLtvBps"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 7500
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "ReentrancyLock"
+                              "symbol": "ReentrancyGuard"
                             }
                           ]
                         },
@@ -1616,7 +1337,7 @@
                               "val": {
                                 "i128": {
                                   "hi": 0,
-                                  "lo": 0
+                                  "lo": 700000000000
                                 }
                               }
                             },
@@ -1627,7 +1348,7 @@
                               "val": {
                                 "i128": {
                                   "hi": 0,
-                                  "lo": 700000000000
+                                  "lo": 0
                                 }
                               }
                             },
@@ -1643,36 +1364,6 @@
                               }
                             }
                           ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "ShareSupply"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "i128": {
-                            "hi": 0,
-                            "lo": 1000000000000
-                          }
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "TotalDefaultedLoss"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "i128": {
-                            "hi": 9223372036,
-                            "lo": 15767830520574293539
-                          }
                         }
                       },
                       {
@@ -1701,7 +1392,7 @@
                         "val": {
                           "i128": {
                             "hi": 0,
-                            "lo": 850000000000
+                            "lo": 800000000000
                           }
                         }
                       },
@@ -1754,7 +1445,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          518400
         ]
       ],
       [
@@ -1787,7 +1478,7 @@
             },
             "ext": "v0"
           },
-          4000000
+          6311999
         ]
       ],
       [
@@ -1820,7 +1511,7 @@
             },
             "ext": "v0"
           },
-          4000000
+          6311999
         ]
       ],
       [
@@ -1893,7 +1584,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          518400
         ]
       ],
       [
@@ -1966,7 +1657,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          518400
         ]
       ],
       [
@@ -2039,7 +1730,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          518400
         ]
       ],
       [
@@ -2112,7 +1803,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          518400
         ]
       ],
       [
@@ -2224,7 +1915,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          120960
         ]
       ],
       [
@@ -2245,7 +1936,7 @@
             },
             "ext": "v0"
           },
-          3999999
+          518400
         ]
       ]
     ]

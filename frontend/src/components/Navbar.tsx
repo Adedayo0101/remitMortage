@@ -239,7 +239,7 @@ interface WalletButtonProps {
   publicKey: string | null;
   usdcBalance: string | null;
   /** Type of active wallet, used to show the correct badge. */
-  walletType: "stellar" | "evm" | "solana" | null;
+  walletType: "stellar" | "evm" | "solana" | "ledger" | null;
   isConnecting: boolean;
   connect: () => Promise<string | null>;
   disconnect: () => void;

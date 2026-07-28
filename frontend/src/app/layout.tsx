@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { WalletProvider } from "../context/WalletContext";
 import "./globals.css";
+import { ContractRegistryProvider } from "@/context/ContractRegistryContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { NotificationProvider } from "@/context/NotificationContext";
@@ -93,23 +94,23 @@ export default async function RootLayout({
   return (
     <html lang={locale}>
       <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
-        <NextIntlClientProvider locale={locale} messages={messages}>
-          <ThemeProvider>
-            <WalletProvider>
-              <AuthProvider>
-                <NotificationProvider>
-                  <ToastProvider>
-                    <div className="flex-1">{children}</div>
-                    <Footer />
-                    <NotificationLayer />
-                    <ToastContainer />
-                    <HotToaster />
-                  </ToastProvider>
-                </NotificationProvider>
-              </AuthProvider>
-            </WalletProvider>
-          </ThemeProvider>
-        </NextIntlClientProvider>
+        <ThemeProvider>
+          <WalletProvider>
+            <ContractRegistryProvider>
+            <AuthProvider>
+            <NotificationProvider>
+              <ToastProvider>
+                <div className="flex-1">{children}</div>
+                <Footer />
+                <NotificationLayer />
+                <ToastContainer />
+                <HotToaster />
+              </ToastProvider>
+              </NotificationProvider>
+            </AuthProvider>
+            </ContractRegistryProvider>
+          </WalletProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

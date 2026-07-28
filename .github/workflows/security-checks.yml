@@ -154,3 +154,39 @@ jobs:
         with:
           name: trivy-frontend-report
           path: trivy-frontend-report.txt
+
+  snyk-backend-scan:
+    name: Snyk Container Scan - Backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Backend Docker Image
+        run: docker build -t remitmortgage-backend:${{ github.sha }} ./backend
+
+      - name: Run Snyk to check Docker image for vulnerabilities
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: remitmortgage-backend:${{ github.sha }}
+          args: --severity-threshold=high --file=backend/Dockerfile
+
+  snyk-frontend-scan:
+    name: Snyk Container Scan - Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Frontend Docker Image
+        run: docker build -t remitmortgage-frontend:${{ github.sha }} ./frontend
+
+      - name: Run Snyk to check Docker image for vulnerabilities
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: remitmortgage-frontend:${{ github.sha }}
+          args: --severity-threshold=high --file=frontend/Dockerfile

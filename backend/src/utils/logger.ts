@@ -1,5 +1,6 @@
 import winston from "winston";
 import rTracer from "cls-rtracer";
+import { trace } from "@opentelemetry/api";
 
 const { combine, timestamp, json, colorize, simple, errors, printf } = winston.format;
 
@@ -9,6 +10,18 @@ const isProduction = process.env.NODE_ENV === "production";
 const requestIdFormat = winston.format((info) => {
   const id = rTracer.id();
   if (id) info.requestId = id;
+  
+  try {
+    const span = trace.getActiveSpan();
+    if (span) {
+      const spanContext = span.spanContext();
+      info.traceId = spanContext.traceId;
+      info.spanId = spanContext.spanId;
+    }
+  } catch (err) {
+    // Ignore tracing errors to ensure logging remains resilient
+  }
+  
   return info;
 });
 
