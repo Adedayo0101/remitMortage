@@ -10,7 +10,14 @@
     "docs:export": "tsx src/docs/export-openapi.ts",
     "test": "jest",
     "db:migrate": "prisma migrate dev",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "load-test": "tsx load-tests/run-all.ts",
+    "load-test:health": "tsx load-tests/scenarios/health-read.ts",
+    "load-test:audit": "tsx load-tests/scenarios/audit-log-read.ts",
+    "load-test:analytics": "tsx load-tests/scenarios/analytics-read.ts",
+    "load-test:loans": "tsx load-tests/scenarios/loan-status-read.ts",
+    "load-test:verify": "tsx load-tests/scenarios/verification-write.ts",
+    "load-test:mixed": "tsx load-tests/scenarios/mixed-workload.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.709.0",
@@ -66,6 +73,7 @@
     "@types/supertest": "^7.2.0",
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.8",
+    "autocannon": "^8.0.0",
     "jest": "^30.4.2",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.11",

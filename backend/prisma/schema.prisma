@@ -32,6 +32,11 @@ model Notification {
   attempts    Int                @default(0)
   lastError   String?
   nextRetryAt DateTime?
+
+  // Index backing the notification scheduler's retry sweep: WHERE status = 'Pending'
+  @@index([status])
+  // Index for retry-at queries: WHERE status = 'Pending' AND nextRetryAt <= now()
+  @@index([status, nextRetryAt])
 }
 
 model UnpinnedCid {
@@ -129,6 +134,11 @@ model VerificationResult {
   spanMonths     Float
   eligible       Boolean
   analyzedAt     DateTime  @default(now())
+
+  // Index backing getApplicant() which orders verificationResults by analyzedAt desc
+  @@index([applicantId, analyzedAt])
+  // Supports eligibility-filtered queries and analytics scans
+  @@index([eligible])
 }
 
 model LoanApplication {
@@ -146,6 +156,13 @@ model LoanApplication {
   missedPayments     Int        @default(0)
   lateFeeBalance     Float      @default(0)
   gracePeriodEndsAt  DateTime?
+
+  // Index backing getApplicationsByBorrower(): filter by applicant then sort by createdAt
+  @@index([applicantId, createdAt])
+  // Index backing getPendingApplications(): WHERE status = 'Pending' — avoids full table scan
+  @@index([status])
+  // Composite index for queries that filter by both applicant and status
+  @@index([applicantId, status])
 }
 
 model AuditLog {
