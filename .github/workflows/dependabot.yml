@@ -1,0 +1,33 @@
+version: 1
+updates:
+  # Rust dependencies (contracts directory)
+  - package-ecosystem: "cargo"
+    directory: "/contracts"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    labels:
+      - "dependencies"
+      - "security"
+    reviewers:
+      - "Astronabs/maintainers"
+
+  # Node.js dependencies (backend)
+  - package-ecosystem: "npm"
+    directory: "/backend"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    labels:
+      - "dependencies"
+      - "security"
