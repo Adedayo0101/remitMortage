@@ -38,4 +38,10 @@ pub enum MilestoneError {
     SelfDealingNotAllowed = 16,
     /// Reentrancy guard is already set.
     ReentrancyGuard = 17,
+    /// Budget change proposal not found.
+    BudgetChangeNotFound = 18,
+    /// Budget change proposal has already been executed.
+    BudgetChangeAlreadyExecuted = 19,
+    /// New budget exceeds the available loan allotment.
+    BudgetChangeExceedsAllotment = 20,
 }

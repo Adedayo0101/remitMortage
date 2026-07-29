@@ -9,6 +9,7 @@ import { NotificationLayer } from "@/components/NotificationLayer";
 import { ToastProvider } from "@/context/ToastContext";
 import { ToastContainer } from "@/components/ToastContainer";
 import { HotToaster } from "@/components/HotToaster";
+import WalletBanner from "@/components/WalletBanner";
 import Footer from "@/components/Footer";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
@@ -94,6 +95,7 @@ export default async function RootLayout({
   return (
     <html lang={locale}>
       <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
+        <WalletBanner />
         <ThemeProvider>
           <WalletProvider>
             <ContractRegistryProvider>

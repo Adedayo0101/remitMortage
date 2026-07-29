@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Symbol, Vec};
 
 /// Configuration for the milestone disbursement contract.
 #[contracttype]
@@ -56,6 +56,21 @@ pub struct MilestoneRecord {
     pub disputed_ledger: u32,
 }
 
+/// A proposal to change the budget for an existing (pending) milestone.
+/// Keyed by `Symbol` (human-readable milestone id) in storage.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BudgetChangeProposal {
+    /// Links to the actual `MilestoneRecord` (keyed by BytesN<32>).
+    pub proposal_id: BytesN<32>,
+    /// The new requested budget amount.
+    pub new_amount: i128,
+    /// Number of governance votes received so far.
+    pub votes: u32,
+    /// Whether the change has been applied to the milestone record.
+    pub executed: bool,
+}
+
 /// Storage keys for the milestone contract.
 #[contracttype]
 #[derive(Clone)]
@@ -70,4 +85,8 @@ pub enum DataKey {
     MilestoneCount,
     /// Reentrancy guard flag — true while a mutating function is executing.
     Reentrant,
+    /// Budget change proposal keyed by milestone Symbol.
+    BudgetChange(Symbol),
+    /// Tracks whether an approver has voted on a budget change.
+    BudgetChangeVoted(Symbol, Address),
 }

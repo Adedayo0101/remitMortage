@@ -670,6 +670,7 @@ impl LendingPoolContract {
         senior_rate_bps: u32,
         treasury_address: Address,
         halving_interval: u32,
+        lockup_duration_ledgers: u32,
     ) -> Result<(), PoolError> {
         if env.storage().instance().has(&DataKey::Config) {
             return Err(PoolError::AlreadyInitialized);
@@ -684,6 +685,7 @@ impl LendingPoolContract {
             interest_rate_bps,
             senior_rate_bps,
             treasury_address,
+            lockup_duration_ledgers,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
@@ -2016,6 +2018,14 @@ impl LendingPoolContract {
 
         let config = Self::read_config(&env)?;
 
+        // ── Lockup Period Check ───────────────────────────────────────
+        if config.lockup_duration_ledgers > 0 {
+            let current_ledger = env.ledger().sequence();
+            if current_ledger < record.start_ledger + config.lockup_duration_ledgers {
+                return Err(PoolError::LockupPeriodActive);
+            }
+        }
+
         // ── Dynamic Fee Calculation ───────────────────────────────────
         let utilization_bps = Self::calculate_utilization(&env);
         let fee_bps = Self::calculate_withdrawal_fee_bps(utilization_bps);
@@ -2911,7 +2921,7 @@ mod test {
 
         let contract_id = env.register(LendingPoolContract, ());
         let client = LendingPoolContractClient::new(env, &contract_id);
-        client.initialize(&admin, &token_address, &escrow, &interest_rate_bps, &senior_rate_bps, &treasury, &0u32);
+        client.initialize(&admin, &token_address, &escrow, &interest_rate_bps, &senior_rate_bps, &treasury, &0u32, &0u32);
 
         (admin, investor, treasury, token_address, client)
     }
@@ -2948,6 +2958,7 @@ mod test {
         assert_eq!(config.interest_rate_bps, 800u32);
         assert_eq!(config.senior_rate_bps, 400u32);
         assert_eq!(config.treasury_address, treasury);
+        assert_eq!(config.lockup_duration_ledgers, 0u32);
         assert_eq!(client.get_liquidity(), 0);
 
         let si = client.get_tranche_info(&Tranche::Senior);
@@ -3027,7 +3038,7 @@ mod test {
 
         let (admin, _investor, _treasury, token_address, client) = setup_pool(&env);
 
-        let result = client.try_initialize(&admin, &token_address, &Address::generate(&env), &800u32, &400u32, &Address::generate(&env), &0u32);
+        let result = client.try_initialize(&admin, &token_address, &Address::generate(&env), &800u32, &400u32, &Address::generate(&env), &0u32, &0u32);
         assert!(result.is_err());
     }
 
@@ -3765,6 +3776,7 @@ mod test {
             &800u32,
             &400u32,
             &Address::generate(&env),
+            &0u32,
             &0u32,
         );
 
@@ -5094,7 +5106,7 @@ mod test {
         let contract_id1 = env.register(LendingPoolContract, ());
         let client1 = LendingPoolContractClient::new(&env, &contract_id1);
         // halving_interval = 500 so we can cross the boundary easily.
-        client1.initialize(&admin1, &token_address1, &escrow1, &800u32, &400u32, &treasury1, &500u32);
+        client1.initialize(&admin1, &token_address1, &escrow1, &800u32, &400u32, &treasury1, &500u32, &0u32);
 
         client1.deposit(&investor1, &100_000_0000000i128, &Tranche::Senior);
 
@@ -5201,7 +5213,7 @@ mod test {
 
         let contract_id = env.register(LendingPoolContract, ());
         let client = LendingPoolContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_address, &escrow, &800u32, &400u32, &treasury, &2_500u32);
+        client.initialize(&admin, &token_address, &escrow, &800u32, &400u32, &treasury, &2_500u32, &0u32);
 
         let info = client.get_halving_info();
         assert_eq!(info.halving_interval, 2_500u32);
@@ -5813,7 +5825,7 @@ mod test {
         let escrow = Address::generate(&env);
         let contract_id = env.register(LendingPoolContract, ());
         let client = LendingPoolContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_address, &escrow, &800u32, &400u32, &treasury, &0u32);
+        client.initialize(&admin, &token_address, &escrow, &800u32, &400u32, &treasury, &0u32, &0u32);
 
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
@@ -6022,5 +6034,88 @@ mod test {
 
         let res = client.try_cancel_restructure(&loan_id, &_admin);
         assert_eq!(res.err().unwrap().unwrap(), PoolError::NoRestructureProposal);
+    }
+
+    // ── Lockup Period Tests ──────────────────────────────────────────
+
+    /// Helper: deploy a pool with a non-zero lockup_duration_ledgers.
+    fn setup_pool_with_lockup(
+        env: &Env,
+        lockup_ledgers: u32,
+    ) -> (Address, Address, Address, Address, LendingPoolContractClient<'_>) {
+        let admin = Address::generate(env);
+        let investor = Address::generate(env);
+        let treasury = Address::generate(env);
+        let token_admin = Address::generate(env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let sac = StellarAssetClient::new(env, &token_address);
+        sac.mint(&investor, &100_000_0000000i128);
+        let escrow = Address::generate(env);
+        let contract_id = env.register(LendingPoolContract, ());
+        let client = LendingPoolContractClient::new(env, &contract_id);
+        client.initialize(&admin, &token_address, &escrow, &800u32, &400u32, &treasury, &0u32, &lockup_ledgers);
+        (admin, investor, treasury, token_address, client)
+    }
+
+    #[test]
+    fn test_withdraw_blocked_during_lockup() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let lockup = 518_400u32; // ~30 days of ledgers
+        let (_admin, investor, _treasury, _token, client) = setup_pool_with_lockup(&env, lockup);
+
+        // Deposit at ledger 1.
+        env.ledger().set_sequence_number(1);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        // Try to withdraw before the lockup has elapsed.
+        env.ledger().set_sequence_number(1 + lockup - 1); // one ledger before expiry
+        let res = client.try_withdraw(&investor, &10_000_0000000i128);
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::LockupPeriodActive);
+
+        // Exactly at expiry boundary — still blocked (strict < check).
+        env.ledger().set_sequence_number(1 + lockup);
+        let res = client.try_withdraw(&investor, &10_000_0000000i128);
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::LockupPeriodActive);
+    }
+
+    #[test]
+    fn test_withdraw_allowed_after_lockup() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let lockup = 518_400u32;
+        let (_admin, investor, _treasury, _token, client) = setup_pool_with_lockup(&env, lockup);
+
+        // Deposit at ledger 1.
+        env.ledger().set_sequence_number(1);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        // Advance past the lockup period.
+        env.ledger().set_sequence_number(1 + lockup + 1);
+        client.withdraw(&investor, &10_000_0000000i128);
+
+        let record = client.get_investor_info(&investor);
+        assert_eq!(record.deposited, 40_000_0000000i128);
+    }
+
+    #[test]
+    fn test_withdraw_no_lockup_when_config_is_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Pool created with lockup = 0 (default from setup_pool).
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+
+        env.ledger().set_sequence_number(1);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        // Immediate withdrawal succeeds because lockup is disabled.
+        client.withdraw(&investor, &10_000_0000000i128);
+
+        let record = client.get_investor_info(&investor);
+        assert_eq!(record.deposited, 40_000_0000000i128);
     }
 }
