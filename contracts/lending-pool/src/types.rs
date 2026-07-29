@@ -40,6 +40,9 @@ pub struct PoolConfig {
     pub senior_rate_bps: u32,
     /// Protocol treasury address where withdrawal fees are routed.
     pub treasury_address: Address,
+    /// Minimum number of ledgers an LP's deposit must remain in the pool
+    /// before a withdrawal is allowed. 0 means no lockup.
+    pub lockup_duration_ledgers: u32,
 }
 
 /// Tracks an individual investor's capital contribution.

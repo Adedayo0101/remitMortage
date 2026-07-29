@@ -27,7 +27,7 @@ fn setup_pool_with_rates(
 
     let cid = env.register(LendingPoolContract, ());
     let client = LendingPoolContractClient::new(env, &cid);
-    client.initialize(&admin, &token_addr, &escrow, &borrow_rate, &senior_rate, &treasury, &0u32);
+    client.initialize(&admin, &token_addr, &escrow, &borrow_rate, &senior_rate, &treasury, &0u32, &0u32);
 
     (admin, investor, treasury, token_addr, client)
 }

@@ -79,4 +79,6 @@ pub enum PoolError {
     NoRestructureProposal = 34,
     /// MultisigValidator contract address has not been configured.
     MultisigValidatorNotSet = 35,
+    /// Investor withdrawal is blocked because the lockup period has not elapsed.
+    LockupPeriodActive = 36,
 }
