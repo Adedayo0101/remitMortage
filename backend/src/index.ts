@@ -56,6 +56,7 @@ import { loadConfig } from "./config.js";
 import logger from "./utils/logger.js";
 import { feeEstimator } from "./services/feeEstimator.js";
 import { initializeRedis } from "./services/redis.js";
+import { checkPrismaMigrations } from "./utils/prismaCheck.js";
 import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js";
 import { queueService } from "./services/queueService.js";
 import { startNotificationWorker, stopNotificationWorker } from "./workers/notificationWorker.js";
@@ -66,6 +67,33 @@ const config = loadConfig();
 const PORT = config.port;
 
 void initializeRedis();
+
+// ── Prisma Schema Migration Check ───────────────────────────────────
+// Verifies the Postgres schema matches the Prisma definition before the
+// server starts accepting traffic.  In production, pending migrations are
+// fatal — the process aborts with a clear message.
+//
+// Override via:
+//   SKIP_PRISMA_CHECK=true   — skip the check entirely (CI, ephemeral envs)
+if (!process.env.SKIP_PRISMA_CHECK) {
+  const result = checkPrismaMigrations();
+  if (!result.ok) {
+    const isProduction = process.env.NODE_ENV === "production";
+    const fatal = isProduction && result.pending > 0;
+    if (fatal) {
+      logger.error(
+        `[prisma] ${result.message} ` +
+        `Aborting boot — run "npx prisma migrate deploy" or "npm run db:migrate" to sync, then restart.`
+      );
+      process.exit(1);
+    }
+    logger.warn(result.message, { pending: result.pending, applied: result.applied });
+  } else {
+    logger.info(result.message);
+  }
+} else {
+  logger.warn("[prisma] Schema check skipped via SKIP_PRISMA_CHECK");
+}
 
 // ── Background Queue Initialization ─────────────────────────────────
 void (async () => {
