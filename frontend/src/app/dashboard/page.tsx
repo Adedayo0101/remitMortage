@@ -14,6 +14,8 @@ import WithdrawModal from "../../components/WithdrawModal";
 import MilestoneTimeline, { type MilestoneNode } from "../../components/MilestoneTimeline";
 import YieldEstimatorCalculator from "../../components/YieldEstimatorCalculator";
 import VerificationBadge from "../../components/VerificationBadge";
+import { CreditRecoveryTimeline } from "../../components/CreditRecoveryTimeline";
+import { generateRecoveryPlan, getBorrowerAlert } from "@/lib/creditRecovery";
 import {
   consumeTxSuccessFeedback,
   shortenAddress,
@@ -110,6 +112,8 @@ export default function DashboardPage() {
   const [showDeposit, setShowDeposit] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [milestones, setMilestones] = useState<MilestoneNode[]>([]);
+  const [recoveryPlan, setRecoveryPlan] = useState<ReturnType<typeof generateRecoveryPlan> | null>(null);
+  const [showRecoveryTimeline, setShowRecoveryTimeline] = useState(false);
 
   function buildDashboardStatement() {
     if (!publicKey || !status) return null;
@@ -178,6 +182,14 @@ export default function DashboardPage() {
         const data = await res.json();
         setStatus(data);
         setMilestones(SAMPLE_MILESTONES);
+        const missed = data.loan?.missedPayments ?? 0;
+        setRecoveryPlan(
+          generateRecoveryPlan({
+            missedPayments: missed,
+            consecutiveLate: missed > 0 ? 1 : 0,
+            onTimePayments: Math.max(0, 10 - missed),
+          })
+        );
       } catch (e: any) {
         setError(e?.message || "Failed to load borrower status");
       } finally {
@@ -295,7 +307,10 @@ export default function DashboardPage() {
             <MaturityAlertOverlay
               escrow={status.escrow}
               loan={status.loan}
+              creditAlert={recoveryPlan ? getBorrowerAlert(recoveryPlan) : null}
+              creditScore={recoveryPlan?.currentScore ?? null}
               onOpenDeposit={() => setShowDeposit(true)}
+              onOpenRecovery={() => setShowRecoveryTimeline(true)}
             />
 
             {/* Quick Metrics Bar */}
@@ -338,6 +353,42 @@ export default function DashboardPage() {
             <YieldEstimatorCalculator
               initialAmount={Number(status.escrow.deposited) || undefined}
             />
+
+            {/* Credit Score Recovery Timeline */}
+            {recoveryPlan && (
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl overflow-hidden shadow-xl backdrop-blur-xl">
+                <button
+                  type="button"
+                  onClick={() => setShowRecoveryTimeline(!showRecoveryTimeline)}
+                  className="w-full flex items-center justify-between p-6 hover:bg-slate-900/60 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-gradient-to-br from-cyan-500/20 to-emerald-500/20 border border-cyan-500/20">
+                      <svg className="w-5 h-5 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                      </svg>
+                    </div>
+                    <div className="text-left">
+                      <h2 className="text-lg font-bold text-white">
+                        Credit Score Recovery Plan
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {recoveryPlan.currentScore} pts · {recoveryPlan.currentTier} tier · {recoveryPlan.monthsToTarget} months to next tier
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-semibold text-cyan-400">
+                    {showRecoveryTimeline ? "Hide" : "Show timeline"}
+                  </span>
+                </button>
+
+                {showRecoveryTimeline && (
+                  <div className="px-6 pb-6 border-t border-slate-800 pt-4">
+                    <CreditRecoveryTimeline plan={recoveryPlan} />
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Savings & Loan Cards Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

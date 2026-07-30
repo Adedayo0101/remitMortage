@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
+import { TrendingUp } from "lucide-react";
 
 export type MilestoneAlert = {
   id: string;
@@ -16,18 +17,30 @@ export type MilestoneAlert = {
   onActionClick?: () => void;
 };
 
+export type CreditAlert = {
+  type: "CREDIT_SCORE_DROP" | "CREDIT_RECOVERY_ON_TRACK" | "CREDIT_IMPROVEMENT_NEAR" | null;
+  title: string;
+  message: string;
+};
+
 interface MaturityAlertOverlayProps {
   escrow: { deposited: string; target: string; progress: number };
   loan?: { status: string; missedPayments?: number };
   milestoneAlert?: MilestoneAlert | null;
+  creditAlert?: CreditAlert | null;
+  creditScore?: number | null;
   onOpenDeposit?: () => void;
+  onOpenRecovery?: () => void;
 }
 
 export default function MaturityAlertOverlay({
   escrow,
   loan,
   milestoneAlert,
+  creditAlert,
+  creditScore,
   onOpenDeposit,
+  onOpenRecovery,
 }: MaturityAlertOverlayProps) {
   const [dismissedAlerts, setDismissedAlerts] = useState<Record<string, boolean>>({});
 
@@ -137,6 +150,11 @@ export default function MaturityAlertOverlay({
               <p className="text-xs text-amber-300/80 mt-1 max-w-xl">
                 You have {loan?.missedPayments} missed payment on your schedule. Complete your installment to keep your borrower credit score intact and maintain mortgage eligibility.
               </p>
+              {(creditScore != null) && (
+                <p className="text-xs text-amber-400/70 mt-2">
+                  Score impact: {creditScore}/100 · On-time payments rebuild +4 pts each
+                </p>
+              )}
             </div>
           </div>
 
@@ -146,6 +164,80 @@ export default function MaturityAlertOverlay({
             </Link>
             <button
               onClick={() => dismiss("missed_payment")}
+              className="text-xs text-slate-400 hover:text-white"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 5. Credit Score Alert (pre-populated based on active loan conditions) */}
+      {creditAlert && !dismissedAlerts[`credit_${creditAlert.type}`] && (
+        <div
+          className={`rounded-2xl border p-5 shadow-lg backdrop-blur-xl flex flex-col md:flex-row md:items-center md:justify-between gap-4 ${
+            creditAlert.type === "CREDIT_SCORE_DROP"
+              ? "border-amber-500/40 bg-amber-950/30"
+              : creditAlert.type === "CREDIT_IMPROVEMENT_NEAR"
+                ? "border-emerald-500/30 bg-emerald-950/30"
+                : "border-cyan-500/30 bg-cyan-950/30"
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-xl font-bold ${
+                creditAlert.type === "CREDIT_SCORE_DROP"
+                  ? "bg-amber-500/20 border border-amber-500/40 text-amber-400"
+                  : creditAlert.type === "CREDIT_IMPROVEMENT_NEAR"
+                    ? "bg-emerald-500/20 border border-emerald-500/40 text-emerald-400"
+                    : "bg-cyan-500/20 border border-cyan-500/40 text-cyan-400"
+              }`}
+            >
+              <TrendingUp className="w-5 h-5" />
+            </div>
+            <div>
+              <h4
+                className={`text-base font-bold ${
+                  creditAlert.type === "CREDIT_SCORE_DROP"
+                    ? "text-amber-200"
+                    : creditAlert.type === "CREDIT_IMPROVEMENT_NEAR"
+                      ? "text-emerald-200"
+                      : "text-cyan-200"
+                }`}
+              >
+                {creditAlert.title}
+              </h4>
+              <p className="text-xs text-slate-300/80 mt-1 max-w-xl">
+                {creditAlert.message}
+              </p>
+              {(creditScore != null) && (
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Current credit score: <span className="font-bold text-white">{creditScore}/100</span>
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0">
+            {onOpenRecovery && (
+              <button
+                onClick={() => {
+                  onOpenRecovery();
+                  dismiss(`credit_${creditAlert.type}`);
+                }}
+                className={`text-xs font-bold !py-2.5 !px-4 rounded-lg transition-colors ${
+                  creditAlert.type === "CREDIT_SCORE_DROP"
+                    ? "bg-amber-500 hover:bg-amber-400 text-slate-950"
+                    : creditAlert.type === "CREDIT_IMPROVEMENT_NEAR"
+                      ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                      : "bg-cyan-600 hover:bg-cyan-500 text-white"
+                }`}
+              >
+                View Recovery Plan
+              </button>
+            )}
+            <button
+              onClick={() => dismiss(`credit_${creditAlert.type}`)}
               className="text-xs text-slate-400 hover:text-white"
             >
               Dismiss
