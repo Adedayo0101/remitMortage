@@ -46,3 +46,27 @@ variable "otel_traces_sampler_ratio" {
   default     = "1.0"
 }
 
+# ── Geo-DNS & CDN ───────────────────────────────────────────────────────
+
+variable "app_domain_name" {
+  description = "Main application domain (apex) for the frontend"
+  type        = string
+  default     = "remitmortgage.com"
+}
+
+variable "www_domain_name" {
+  description = "www subdomain (empty string to disable)"
+  type        = string
+  default     = "www.remitmortgage.com"
+}
+
+variable "frontend_origin_domain" {
+  description = "Origin domain for the Next.js application server (App Runner / ALB DNS name)"
+  type        = string
+}
+
+variable "certificate_arn" {
+  description = "ACM certificate ARN in us-east-1 for the CloudFront distribution (must cover app_domain_name and www_domain_name)"
+  type        = string
+}
+

@@ -6,6 +6,7 @@ import EvidenceUpload from "./EvidenceUpload";
 import MilestoneTracker, { Stage } from "./MilestoneTracker";
 import MilestoneSigningProgressPanel from "./MilestoneSigningProgressPanel";
 import { createMilestoneProposal } from "@/lib/milestoneSigning";
+import { useSignatureQueueStore } from "@/lib/signatureQueueStore";
 
 interface MilestoneProps {
   id: string;
@@ -39,6 +40,8 @@ export default function MilestoneCard({ id, name, initialStage, shareId }: Miles
     setCid(uploadedCid);
   };
 
+  const addProposal = useSignatureQueueStore((s) => s.addProposal);
+
   const handleRequestDisbursement = async () => {
     if (!cid || isRequesting) return;
 
@@ -46,6 +49,17 @@ export default function MilestoneCard({ id, name, initialStage, shareId }: Miles
     try {
       const proposal = await createMilestoneProposal(id, cid);
       setProposalId(proposal.proposalId);
+      addProposal(
+        proposal.proposalId,
+        proposal.milestoneId,
+        proposal.evidenceCid,
+        proposal.signers.map((s) => ({
+          address: s.address,
+          label: s.label,
+          weight: s.weight,
+        })),
+        proposal.requiredWeight
+      );
       toast({
         variant: "info",
         title: "Disbursement requested",
