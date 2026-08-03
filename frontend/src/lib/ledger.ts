@@ -141,7 +141,6 @@ export async function openLedgerConnection(): Promise<LedgerConnection> {
     throw new Error("Ledger app support is not available in this environment.");
   }
 
-  const { default: Str } = await import("@ledgerhq/hw-app-str");
   const stellar = new (Str as unknown as new (t: LedgerTransport) => LedgerStr)(transport);
 
   return {

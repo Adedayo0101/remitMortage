@@ -61,7 +61,22 @@ const mockSigners: GovernanceSigner[] = [
   },
 ];
 
-const mockApprovalProposals = [
+interface Proposal {
+  id: string;
+  proposalId: string;
+  milestoneTitle: string;
+  contractor: string;
+  amount: string;
+  ipfsCid: string;
+  currentWeight: number;
+  requiredWeight: number;
+  totalSignerWeight: number;
+  signers: GovernanceSigner[];
+  status: "approved" | "pending";
+  expiration: string;
+}
+
+const mockApprovalProposals: Proposal[] = [
   {
     id: "approval_1",
     proposalId: "prop_mock_1",

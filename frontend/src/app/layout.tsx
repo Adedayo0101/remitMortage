@@ -95,24 +95,26 @@ export default async function RootLayout({
   return (
     <html lang={locale}>
       <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
-        <WalletBanner />
-        <ThemeProvider>
-          <WalletProvider>
-            <ContractRegistryProvider>
-            <AuthProvider>
-            <NotificationProvider>
-              <ToastProvider>
-                <div className="flex-1">{children}</div>
-                <Footer />
-                <NotificationLayer />
-                <ToastContainer />
-                <HotToaster />
-              </ToastProvider>
-              </NotificationProvider>
-            </AuthProvider>
-            </ContractRegistryProvider>
-          </WalletProvider>
-        </ThemeProvider>
+        <NextIntlClientProvider messages={messages} locale={locale}>
+          <WalletBanner />
+          <ThemeProvider>
+            <WalletProvider>
+              <ContractRegistryProvider>
+              <AuthProvider>
+              <NotificationProvider>
+                <ToastProvider>
+                  <div className="flex-1">{children}</div>
+                  <Footer />
+                  <NotificationLayer />
+                  <ToastContainer />
+                  <HotToaster />
+                </ToastProvider>
+                </NotificationProvider>
+              </AuthProvider>
+              </ContractRegistryProvider>
+            </WalletProvider>
+          </ThemeProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );

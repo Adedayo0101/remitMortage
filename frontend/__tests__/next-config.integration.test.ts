@@ -4,6 +4,7 @@ import request from "supertest";
 describe("Next config headers integration", () => {
   it("applies CSP header to HTML responses when headers are attached", async () => {
     const { default: nextConfig } = await import("../next.config");
+    if (!nextConfig.headers) throw new Error("headers not defined");
     const headersConfig = await nextConfig.headers();
     expect(Array.isArray(headersConfig)).toBe(true);
 

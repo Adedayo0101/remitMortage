@@ -29,7 +29,7 @@ const tabs: { id: SettingsTab; label: string }[] = [
   { id: "contractor", label: "Developer/Contractor" },
 ];
 
-const notificationDetails: Record
+const notificationDetails: Record<
   NotificationKey,
   { label: string; description: string; category: "channel" | "escrow" | "loan" }
 > = {

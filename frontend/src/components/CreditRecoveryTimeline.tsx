@@ -107,7 +107,7 @@ export function CreditRecoveryTimeline({ plan }: CreditRecoveryTimelineProps) {
                 borderRadius: "8px",
                 fontSize: "12px",
               }}
-              formatter={(value: number, _name: string, props: { payload: ChartDataPoint }) => {
+              formatter={(value: number, _name: string, props: any) => {
                 return [`${value} pts · ${props.payload.tier}`, props.payload.isProjected ? "Projected" : "Actual"];
               }}
             />
