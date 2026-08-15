@@ -288,7 +288,7 @@ export default function HistoryClient() {
   }
 
   return (
-    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
+    <div className="rm-app-page min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
       <main className="max-w-7xl mx-auto px-6 pt-32 pb-20">

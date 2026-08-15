@@ -458,4 +458,12 @@ export function useWallet() {
   return ctx;
 }
 
+export function OptionalWalletProvider({ children }: { children: React.ReactNode }) {
+  const ctx = useContext(WalletContext);
+  if (ctx) {
+    return <>{children}</>;
+  }
+  return <WalletProvider>{children}</WalletProvider>;
+}
+
 export default WalletContext;

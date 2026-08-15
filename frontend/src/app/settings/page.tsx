@@ -296,7 +296,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#060913] text-slate-100">
+    <main className="rm-app-page min-h-screen bg-[#060913] text-slate-100">
       <Navbar />
 
       <section className="pt-28 pb-16 px-6">

@@ -2,8 +2,8 @@
 
 import React from "react";
 import dynamic from "next/dynamic";
-import { WalletProvider } from "@/context/WalletContext";
-import { ToastProvider } from "@/context/ToastContext";
+import { OptionalWalletProvider } from "@/context/WalletContext";
+import { OptionalToastProvider } from "@/context/ToastContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 const MilestoneCard = dynamic(() => import("../../components/MilestoneCard"), { ssr: false });
@@ -21,20 +21,20 @@ const MILESTONES = [
 
 export default function ContractorDashboard() {
   return (
-    <ToastProvider>
-      <WalletProvider>
+    <OptionalToastProvider>
+      <OptionalWalletProvider>
         <ContractorDashboardInner />
-      </WalletProvider>
-    </ToastProvider>
+      </OptionalWalletProvider>
+    </OptionalToastProvider>
   );
 }
 
 function ContractorDashboardInner() {
   return (
-    <main className="min-h-screen bg-[#060913] text-slate-100 pb-20">
+    <main className="rm-app-page rm-contractor-page min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
-      <div className="pt-32 px-6 max-w-7xl mx-auto">
+      <div className="rm-contractor-shell pt-32 px-6 max-w-7xl mx-auto">
         <div className="mb-10">
           <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-4 border border-cyan-500/20">
             Soroban Milestone Disbursement Hub

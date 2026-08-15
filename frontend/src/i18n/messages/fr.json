@@ -11,6 +11,9 @@
     "connectWallet": "Connecter le portefeuille",
     "disconnect": "Se déconnecter",
     "gasOptimizer": "Optimiseur de Gaz",
+    "application": "Demande",
+    "identity": "Identité et KYC",
+    "protocol": "Modules du protocole",
     "language": "Langue"
   },
   "footer": {

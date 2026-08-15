@@ -93,8 +93,8 @@ export default async function RootLayout({
   const messages = await getMessages();
 
   return (
-    <html lang={locale}>
-      <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
+    <html lang={locale} suppressHydrationWarning>
+      <body className="min-h-screen font-sans antialiased flex flex-col justify-between">
         <NextIntlClientProvider messages={messages} locale={locale}>
           <WalletBanner />
           <ThemeProvider>

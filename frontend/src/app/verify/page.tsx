@@ -4,16 +4,16 @@ import React, { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import toast, { Toaster } from "react-hot-toast";
-import { useWallet, WalletProvider } from "@/context/WalletContext";
+import { useWallet, OptionalWalletProvider } from "@/context/WalletContext";
 import { isValidStellarAddress, VerificationResult, VerificationStats } from "@/lib/verification";
 
 const Navbar = dynamic(() => import("@/components/Navbar"), { ssr: false });
 
 export default function VerifyPage() {
   return (
-    <WalletProvider>
+    <OptionalWalletProvider>
       <VerifyPageInner />
-    </WalletProvider>
+    </OptionalWalletProvider>
   );
 }
 
@@ -71,7 +71,7 @@ function VerifyPageInner() {
   }
 
   return (
-    <main className="min-h-screen bg-[#060913] text-slate-100 pb-20 relative">
+    <main className="rm-app-page rm-verify-page min-h-screen bg-[#060913] text-slate-100 pb-20 relative">
       <Navbar />
       <Toaster
         position="top-right"
@@ -85,7 +85,7 @@ function VerifyPageInner() {
         }}
       />
 
-      <div className="max-w-4xl mx-auto px-4 md:px-6 pt-32 pb-20 relative z-10">
+      <div className="rm-verify-content max-w-4xl mx-auto px-4 md:px-6 pt-32 pb-20 relative z-10">
         {/* Header */}
         <div className="mb-10 text-center md:text-left">
           <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-4 border border-cyan-500/20">

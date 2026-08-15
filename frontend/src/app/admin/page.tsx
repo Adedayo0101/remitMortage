@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import toast, { Toaster } from "react-hot-toast";
-import { useWallet, WalletProvider } from "../../context/WalletContext";
+import { useWallet, OptionalWalletProvider } from "../../context/WalletContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -56,9 +56,9 @@ const IPFS_GATEWAY = "https://ipfs.io/ipfs/";
 
 export default function AdminPage() {
   return (
-    <WalletProvider>
+    <OptionalWalletProvider>
       <AdminPageInner />
-    </WalletProvider>
+    </OptionalWalletProvider>
   );
 }
 

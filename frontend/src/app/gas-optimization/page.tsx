@@ -110,7 +110,7 @@ export default function GasOptimizationPage() {
   const formatStroops = (val: number) => `${val.toLocaleString()} stroops`;
 
   return (
-    <div className="min-h-screen bg-[#060913] text-slate-200 selection:bg-cyan-500/30 font-sans">
+    <div className="rm-app-page min-h-screen bg-[#060913] text-slate-200 selection:bg-cyan-500/30 font-sans">
       <Navbar />
       
       <main className="pt-28 pb-20 px-6 max-w-7xl mx-auto">

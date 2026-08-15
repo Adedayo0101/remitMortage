@@ -11,6 +11,9 @@
     "connectWallet": "Connect Wallet",
     "disconnect": "Disconnect",
     "gasOptimizer": "Gas Optimizer",
+    "application": "Apply",
+    "identity": "Identity & KYC",
+    "protocol": "Protocol Modules",
     "language": "Language"
   },
   "footer": {

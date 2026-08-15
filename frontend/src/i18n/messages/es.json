@@ -11,6 +11,9 @@
     "connectWallet": "Conectar billetera",
     "disconnect": "Desconectar",
     "gasOptimizer": "Optimizador de Gas",
+    "application": "Solicitar",
+    "identity": "Identidad y KYC",
+    "protocol": "Módulos del protocolo",
     "language": "Idioma"
   },
   "footer": {

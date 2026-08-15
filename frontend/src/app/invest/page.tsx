@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { useWallet, WalletProvider } from "../../context/WalletContext";
+import { useWallet, OptionalWalletProvider } from "../../context/WalletContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 import ROIProjectionWidget from "../../components/ROIProjectionWidget";
@@ -93,9 +93,9 @@ function UtilizationGauge({ rate }: { rate: number }) {
 
 export default function InvestPage() {
   return (
-    <WalletProvider>
+    <OptionalWalletProvider>
       <InvestPageInner />
-    </WalletProvider>
+    </OptionalWalletProvider>
   );
 }
 
@@ -250,7 +250,7 @@ function InvestPageInner() {
     (metrics ? Math.max(0, Math.round(metrics.estimatedApyBps * 2 - seniorApyBps)) : 0);
 
   return (
-    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
+    <div className="rm-app-page rm-invest-page min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
       <main className="max-w-6xl mx-auto px-6 pt-32">

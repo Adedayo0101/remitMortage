@@ -160,7 +160,7 @@ export default function GovernanceDashboard() {
 
   if (isMember === null) {
     return (
-      <div className="min-h-screen bg-[#FFFDFA] text-[#010721]">
+      <div className="rm-app-page min-h-screen bg-[#FFFDFA] text-[#010721]">
         <Navbar />
         <div className="flex flex-col items-center justify-center pt-32 pb-20 px-6">
           <div className="relative">
@@ -176,7 +176,7 @@ export default function GovernanceDashboard() {
 
   if (isMember === false) {
     return (
-      <div className="min-h-screen bg-[#FFFDFA] text-[#010721]">
+      <div className="rm-app-page min-h-screen bg-[#FFFDFA] text-[#010721]">
         <Navbar />
         <div className="flex items-center justify-center pt-32 pb-20 px-6">
           <div className="max-w-md w-full bg-white border border-gray-200 rounded-2xl p-8 text-center shadow-lg relative overflow-hidden">
@@ -279,7 +279,7 @@ export default function GovernanceDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FFFDFA] text-[#010721]">
+    <div className="rm-app-page min-h-screen bg-[#FFFDFA] text-[#010721]">
       <Navbar />
       <div className="max-w-7xl mx-auto px-6 pt-32 pb-20">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 space-y-4 md:space-y-0">
