@@ -44,6 +44,14 @@ const FEE_MEDIUM_BPS: u32 = 50;
 /// Withdrawal fee at high utilization (> 80%): 2% = 200 bps.
 const FEE_HIGH_BPS: u32 = 200;
 
+// ── Protocol Fee Switch Constants ────────────────────────────────────
+/// Hard ceiling on the protocol fee switch: 50% of interest (5 000 bps).
+///
+/// Governance cannot exceed this even with a valid multisig, so a mistaken or
+/// coerced proposal can never route the entire yield stream away from the
+/// investors who funded the loans.
+const MAX_FEE_SWITCH_BPS: u32 = 5_000;
+
 // ── Dynamic Interest Rate Constants ────────────────────────────────────
 /// Excellent tier (score 80–100): 4% APR.
 const INTEREST_RATE_EXCELLENT_BPS: u32 = 400;
@@ -223,6 +231,26 @@ impl LendingPoolContract {
             .instance()
             .get(&DataKey::TotalWithdrawalFees)
             .unwrap_or(0i128)
+    }
+
+    fn read_total_protocol_fees(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalProtocolFees)
+            .unwrap_or(0i128)
+    }
+
+    /// Splits `interest` into the protocol's cut and the investors' remainder.
+    ///
+    /// Returns `(protocol_fee, distributable)`, which always sum back to
+    /// `interest` — the remainder is computed by subtraction rather than a
+    /// second division, so rounding can never strand a stroop between them.
+    fn split_protocol_fee(config: &PoolConfig, interest: i128) -> (i128, i128) {
+        if interest <= 0 || config.fee_switch_bps == 0 {
+            return (0, interest.max(0));
+        }
+        let fee = (interest * config.fee_switch_bps as i128) / BPS_SCALE as i128;
+        (fee, interest - fee)
     }
 
     fn read_loan(env: &Env, loan_id: &BytesN<32>) -> Result<LoanRecord, PoolError> {
@@ -685,6 +713,9 @@ impl LendingPoolContract {
             interest_rate_bps,
             senior_rate_bps,
             treasury_address,
+            // Off at deployment. Turning the switch on is a deliberate
+            // governance act, never a deployment-time default.
+            fee_switch_bps: 0,
             lockup_duration_ledgers,
         };
 
@@ -713,6 +744,7 @@ impl LendingPoolContract {
         env.storage().instance().set(&DataKey::ActiveLoanCommitments, &0i128);
         env.storage().instance().set(&DataKey::TotalDeposited, &0i128);
         env.storage().instance().set(&DataKey::TotalWithdrawalFees, &0i128);
+        env.storage().instance().set(&DataKey::TotalProtocolFees, &0i128);
         env.storage().instance().set(&DataKey::Version, &1u32);
 
         // ── Reward Halving bootstrap ──────────────────────────────────
@@ -1606,6 +1638,12 @@ impl LendingPoolContract {
         // Fraction of loan repaid this payment = amount / total_owed.
         let interest_in_payment = (interest * amount) / total_owed;
 
+        // Protocol fee taken from this payment's interest, if the switch is
+        // on. Hoisted out of the waterfall because the liquidity accounting
+        // at the end of `repay` has to net it off — these tokens leave the
+        // contract before the repayment is booked as available capital.
+        let mut protocol_fee = 0i128;
+
         if interest_in_payment > 0 {
             // ── Reward Halving: check for epoch transition and scale ──
             // apply_halving_if_due advances the epoch counter if the
@@ -1614,6 +1652,40 @@ impl LendingPoolContract {
             // is reduced; previously booked TotalRepaidInterest is untouched.
             let multiplier_bps = Self::apply_halving_if_due(&env);
             let effective_interest = Self::scale_interest_by_multiplier(interest_in_payment, multiplier_bps);
+
+            // ── Protocol Fee Switch ───────────────────────────────────
+            // The protocol's cut comes off the top, before the senior/junior
+            // waterfall runs, so investors are only ever credited yield the
+            // treasury has already been paid out of. At the default 0 this is
+            // a no-op and `distributable` is the full effective interest.
+            let (fee, distributable) = Self::split_protocol_fee(&config, effective_interest);
+            protocol_fee = fee;
+
+            if protocol_fee > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &config.treasury_address,
+                    &protocol_fee,
+                );
+
+                let total_protocol_fees = Self::read_total_protocol_fees(&env) + protocol_fee;
+                env.storage()
+                    .instance()
+                    .set(&DataKey::TotalProtocolFees, &total_protocol_fees);
+
+                env.events().publish(
+                    (Symbol::new(&env, "protocol_fee"),),
+                    (
+                        loan_id.clone(),
+                        config.treasury_address.clone(),
+                        protocol_fee,
+                        config.fee_switch_bps,
+                    ),
+                );
+            }
+
+            // Everything below splits only what is left for investors.
+            let effective_interest = distributable;
 
             let senior_info = Self::read_tranche_info(&env, &Tranche::Senior);
             let junior_info = Self::read_tranche_info(&env, &Tranche::Junior);
@@ -1687,8 +1759,10 @@ impl LendingPoolContract {
 
         Self::set_loan(&env, &loan_id, &loan);
 
-        // Increase available liquidity with the repayment.
-        let liquidity = Self::read_total_liquidity(&env) + amount;
+        // Increase available liquidity with the repayment, net of any
+        // protocol fee already forwarded to the treasury — those tokens have
+        // left the pool and must not be counted as lendable.
+        let liquidity = Self::read_total_liquidity(&env) + amount - protocol_fee;
         env.storage()
             .instance()
             .set(&DataKey::TotalLiquidity, &liquidity);
@@ -2512,6 +2586,63 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .get(&DataKey::MultisigValidator)
+    }
+
+    /// Set the protocol fee switch, in basis points of loan interest.
+    ///
+    /// This is the protocol's revenue lever, so it is deliberately the hardest
+    /// setting on the pool to change: the caller must both hold admin auth
+    /// *and* present signers meeting the configured k-of-n threshold on the
+    /// `MultisigValidator`. There is no admin-only path — if no validator has
+    /// been configured the call fails closed with `MultisigValidatorNotSet`,
+    /// so a lone compromised admin key cannot start diverting yield.
+    ///
+    /// `new_bps` is capped at `MAX_FEE_SWITCH_BPS` (50%). Passing `0` turns
+    /// the switch back off and restores the full yield to investors.
+    ///
+    /// # Arguments
+    /// - `new_bps` — Share of interest routed to the treasury, in bps.
+    /// - `signers` — Signer addresses validated against the multisig threshold.
+    pub fn set_fee_switch_bps(
+        env: Env,
+        new_bps: u32,
+        signers: Vec<Address>,
+    ) -> Result<(), PoolError> {
+        if new_bps > MAX_FEE_SWITCH_BPS {
+            return Err(PoolError::FeeSwitchTooHigh);
+        }
+
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        // Governance gate. Fails closed when no validator is configured.
+        let validator = Self::read_multisig_validator(&env)?;
+        MultisigValidatorClient::new(&env, &validator).enforce_signatures(&signers);
+
+        let previous_bps = config.fee_switch_bps;
+        config.fee_switch_bps = new_bps;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "fee_switch_set"),),
+            (previous_bps, new_bps),
+        );
+
+        Ok(())
+    }
+
+    /// Returns the current protocol fee switch in basis points. `0` means the
+    /// switch is off and all interest is distributed to investors.
+    pub fn get_fee_switch_bps(env: Env) -> Result<u32, PoolError> {
+        Ok(Self::read_config(&env)?.fee_switch_bps)
+    }
+
+    /// Lifetime interest routed to the treasury by the fee switch.
+    pub fn get_total_protocol_fees(env: Env) -> i128 {
+        Self::read_total_protocol_fees(&env)
     }
 
     /// Returns the configured InsurancePool address, or `None` if the
@@ -4784,7 +4915,7 @@ mod test {
 
         // The borrower still owes the gross amount — the fee is an
         // origination cost, not a reduction in debt.
-        let loan = client.get_loan(&loan_id).unwrap();
+        let loan = client.get_loan_info(&loan_id);
         assert_eq!(loan.disbursed, amount);
         assert_eq!(loan.outstanding_debt, amount);
     }
@@ -5425,7 +5556,7 @@ mod test {
         let loan_id = mock_loan_id(env);
         let investor = Address::generate(env);
         let sac = StellarAssetClient::new(env, token_address);
-        sac.mint(investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(borrower, &loan_id, &principal);
         client.approve_loan(&loan_id);
@@ -5461,7 +5592,7 @@ mod test {
         assert!(lifetime_interest > 0);
 
         // Claim the rebate — should be 10% of interest paid.
-        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        let rebate = client.claim_maturity_rebate(&loan_id);
         let expected_rebate = lifetime_interest / 10;
         assert_eq!(rebate, expected_rebate);
         assert!(rebate > 0);
@@ -5483,7 +5614,7 @@ mod test {
         let principal = 100_000_0000000i128; // 100k
 
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
         client.approve_loan(&loan_id);
@@ -5496,7 +5627,7 @@ mod test {
         // Repay principal + 10% interest = 110,000
         let interest = (principal * 1000) / 10_000; // 10% = 10,000
         let total_owed = principal + interest;
-        sac.mint(&borrower, total_owed);
+        sac.mint(&borrower, &total_owed);
         client.repay(&borrower, &loan_id, &total_owed);
 
         let lifetime_interest = client.get_borrower_lifetime_interest(&borrower);
@@ -5505,7 +5636,7 @@ mod test {
         assert!(lifetime_interest >= 9_000_0000000i128);
 
         // Rebate should be exactly lifetime_interest / 10.
-        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        let rebate = client.claim_maturity_rebate(&loan_id);
         assert_eq!(rebate, lifetime_interest / 10);
     }
 
@@ -5525,7 +5656,7 @@ mod test {
         client.repay(&borrower, &loan_id, &total_owed);
 
         // First claim succeeds.
-        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        let rebate = client.claim_maturity_rebate(&loan_id);
         assert!(rebate > 0);
 
         // Second claim fails with RebateAlreadyClaimed.
@@ -5546,7 +5677,7 @@ mod test {
         let loan_id = mock_loan_id(&env);
         let investor = Address::generate(&env);
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
         client.approve_loan(&loan_id);
@@ -5600,6 +5731,269 @@ mod test {
 
         let result = client.try_claim_maturity_rebate(&loan_id);
         assert_eq!(result.unwrap_err(), Ok(PoolError::InvalidLoanState));
+    }
+
+    // ── Protocol Fee Switch Tests ─────────────────────────────────────────
+
+    /// 10 000 USDC at the pool's default 8% rate.
+    const FEE_TEST_PRINCIPAL: i128 = 10_000_0000000i128;
+
+    /// Outcome of one full loan cycle run at a given fee-switch setting.
+    struct FeeSwitchRun {
+        /// Tokens actually received by the treasury address.
+        treasury_balance: i128,
+        /// Running total the pool reports for fees routed by the switch.
+        reported_fees: i128,
+        /// Interest credited to the senior and junior tranches combined.
+        distributed_yield: i128,
+        /// Pool's tracked liquidity after the repayment.
+        tracked_liquidity: i128,
+        /// Pool contract's real token balance after the repayment.
+        actual_balance: i128,
+    }
+
+    /// Runs a complete deposit → borrow → disburse → repay cycle in a fresh
+    /// environment with the fee switch set to `fee_bps`, and reports what the
+    /// treasury and the tranches ended up with.
+    ///
+    /// Each run is self-contained so two settings can be compared directly,
+    /// which is what the acceptance criteria are about: the treasury's take
+    /// must grow with `fee_bps`, and it must come out of investor yield.
+    fn run_fee_switch_cycle(fee_bps: u32) -> FeeSwitchRun {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _unused_investor, treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+
+        if fee_bps > 0 {
+            let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+            client.set_multisig_validator(&validator_addr);
+            client.set_fee_switch_bps(&fee_bps, &signers);
+        }
+
+        let borrower = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let principal = FEE_TEST_PRINCIPAL;
+
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, &(principal * 2));
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+
+        let loan_id = mock_loan_id(&env);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+
+        // Clear the whole debt in one payment. Reading `outstanding_debt`
+        // rather than assuming principal + interest keeps the test honest if
+        // interest has compounded.
+        sac.mint(&borrower, &principal);
+        let owed = client.get_loan_info(&loan_id).outstanding_debt;
+        client.repay(&borrower, &loan_id, &owed);
+
+        let senior = client.get_tranche_info(&Tranche::Senior);
+        let junior = client.get_tranche_info(&Tranche::Junior);
+
+        FeeSwitchRun {
+            treasury_balance: token.balance(&treasury),
+            reported_fees: client.get_total_protocol_fees(),
+            distributed_yield: senior.total_yield_distributed
+                + junior.total_yield_distributed,
+            tracked_liquidity: client.get_pool_health().total_liquidity,
+            actual_balance: token.balance(&client.address),
+        }
+    }
+
+    #[test]
+    fn test_fee_switch_defaults_to_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        // Acceptance criterion: off until governance turns it on.
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+        assert_eq!(client.get_total_protocol_fees(), 0i128);
+    }
+
+    #[test]
+    fn test_repay_routes_no_fee_while_switch_is_off() {
+        let run = run_fee_switch_cycle(0);
+
+        assert_eq!(run.treasury_balance, 0i128);
+        assert_eq!(run.reported_fees, 0i128);
+        // Every unit of interest reached the tranches.
+        assert!(run.distributed_yield > 0);
+    }
+
+    #[test]
+    fn test_fee_switch_routes_interest_to_treasury() {
+        let run = run_fee_switch_cycle(1_000);
+
+        // The treasury actually holds the tokens, and the pool's running
+        // total agrees with the on-chain balance.
+        assert!(run.treasury_balance > 0);
+        assert_eq!(run.treasury_balance, run.reported_fees);
+
+        // The fee is 10% of the interest that flowed through the waterfall.
+        let interest = run.reported_fees + run.distributed_yield;
+        assert_eq!(run.reported_fees, interest / 10);
+    }
+
+    #[test]
+    fn test_fee_switch_deducts_before_investor_yield() {
+        let off = run_fee_switch_cycle(0);
+        let on = run_fee_switch_cycle(1_000);
+
+        // Same loan, same interest — the switch only changes who receives it.
+        let interest_off = off.distributed_yield;
+        let interest_on = on.reported_fees + on.distributed_yield;
+        assert_eq!(interest_off, interest_on);
+
+        // Acceptance criterion: the fee comes out of investor yield, and the
+        // two together still account for every stroop of interest.
+        assert_eq!(on.distributed_yield, interest_off - on.reported_fees);
+        assert!(on.distributed_yield < off.distributed_yield);
+    }
+
+    #[test]
+    fn test_treasury_take_scales_with_configured_bps() {
+        let low = run_fee_switch_cycle(1_000);
+        let high = run_fee_switch_cycle(2_500);
+
+        let interest = low.reported_fees + low.distributed_yield;
+        assert_eq!(low.treasury_balance, (interest * 1_000) / 10_000);
+        assert_eq!(high.treasury_balance, (interest * 2_500) / 10_000);
+        assert!(high.treasury_balance > low.treasury_balance);
+    }
+
+    #[test]
+    fn test_fee_switch_at_cap_routes_half_the_interest() {
+        let run = run_fee_switch_cycle(MAX_FEE_SWITCH_BPS);
+
+        let interest = run.reported_fees + run.distributed_yield;
+        assert_eq!(run.reported_fees, interest / 2);
+    }
+
+    #[test]
+    fn test_fee_switch_nets_off_pool_liquidity() {
+        let run = run_fee_switch_cycle(1_000);
+
+        // Fees forwarded to the treasury have left the pool, so tracked
+        // liquidity must not count them as lendable capital.
+        assert!(run.treasury_balance > 0);
+        assert_eq!(run.tracked_liquidity, run.actual_balance);
+    }
+
+    #[test]
+    fn test_fee_switch_can_be_turned_back_off() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+
+        client.set_fee_switch_bps(&1_000u32, &signers);
+        assert_eq!(client.get_fee_switch_bps(), 1_000u32);
+
+        client.set_fee_switch_bps(&0u32, &signers);
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+    }
+
+    #[test]
+    fn test_fee_switch_rejects_rate_above_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+
+        let result = client.try_set_fee_switch_bps(&(MAX_FEE_SWITCH_BPS + 1), &signers);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::FeeSwitchTooHigh));
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+
+        // The cap itself is still reachable.
+        client.set_fee_switch_bps(&MAX_FEE_SWITCH_BPS, &signers);
+        assert_eq!(client.get_fee_switch_bps(), MAX_FEE_SWITCH_BPS);
+    }
+
+    #[test]
+    fn test_fee_switch_fails_closed_without_a_multisig() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Note: no `set_multisig_validator` — governance is not wired up.
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        let signers: Vec<Address> = soroban_sdk::vec![&env, Address::generate(&env)];
+        let result = client.try_set_fee_switch_bps(&1_000u32, &signers);
+
+        assert_eq!(result.unwrap_err(), Ok(PoolError::MultisigValidatorNotSet));
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+    }
+
+    #[test]
+    fn test_fee_switch_rejects_signers_below_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+
+        // One signature against a 2-of-3 threshold.
+        let lone: Vec<Address> = soroban_sdk::vec![&env, signers.get(0).unwrap()];
+        let result = client.try_set_fee_switch_bps(&1_000u32, &lone);
+
+        assert!(result.is_err());
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+    }
+
+    #[test]
+    fn test_fee_switch_accrues_across_multiple_repayments() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _unused, treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+        client.set_fee_switch_bps(&1_000u32, &signers);
+
+        let borrower = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let principal = FEE_TEST_PRINCIPAL;
+
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, &(principal * 2));
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+
+        let loan_id = mock_loan_id(&env);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+        sac.mint(&borrower, &principal);
+
+        let owed = client.get_loan_info(&loan_id).outstanding_debt;
+        let half = owed / 2;
+
+        client.repay(&borrower, &loan_id, &half);
+        let after_first = token.balance(&treasury);
+        assert!(after_first > 0);
+
+        client.repay(&borrower, &loan_id, &(owed - half));
+
+        // Fees accumulate across payments rather than being overwritten, and
+        // the running total keeps matching what the treasury holds.
+        let total = token.balance(&treasury);
+        assert!(total > after_first);
+        assert_eq!(client.get_total_protocol_fees(), total);
     }
 
     // ── Debt Restructuring Tests ──────────────────────────────────────────
@@ -5791,7 +6185,7 @@ mod test {
         let principal = 10_000_0000000i128;
 
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
         client.approve_loan(&loan_id);
@@ -5823,7 +6217,12 @@ mod test {
     }
 
     #[test]
-    fn test_maturity_rebate_reverted_on_cancelled_loan() {
+    fn test_approve_restructure_fails_without_multisig() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
         let loan_id = BytesN::from_array(&env, &[24u8; 32]);
 
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
@@ -5918,7 +6317,7 @@ mod test {
         let principal = 10_000_0000000i128;
 
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
         client.cancel_loan(&loan_id);
@@ -5929,7 +6328,12 @@ mod test {
     }
 
     #[test]
-    fn test_maturity_rebate_reverted_on_requested_loan() {
+    fn test_restructure_applies_new_terms_after_approval() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
         let loan_id = BytesN::from_array(&env, &[26u8; 32]);
 
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
@@ -5966,7 +6370,7 @@ mod test {
     }
 
     #[test]
-    fn test_cancel_restructure_by_borrower() {
+    fn test_maturity_rebate_reverted_on_requested_loan() {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -5976,7 +6380,7 @@ mod test {
         let principal = 10_000_0000000i128;
 
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
 
@@ -6010,6 +6414,15 @@ mod test {
         // With compound interest after 1 period it may be slightly different.
         let expected_interest = total_owed - principal;
         assert!(lifetime >= expected_interest - 10); // allow small rounding
+    }
+
+    #[test]
+    fn test_cancel_restructure_by_borrower() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
         let loan_id = BytesN::from_array(&env, &[27u8; 32]);
 
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);

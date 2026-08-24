@@ -75,6 +75,8 @@ pub enum PoolError {
     LoanNotActive = 37,
     /// A restructure proposal already exists for this loan.
     RestructureProposalExists = 38,
+    /// Proposed fee switch exceeds the hard protocol cap.
+    FeeSwitchTooHigh = 39,
     /// No pending restructure proposal for this loan.
     NoRestructureProposal = 34,
     /// MultisigValidator contract address has not been configured.
