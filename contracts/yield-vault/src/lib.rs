@@ -206,9 +206,8 @@ impl YieldVaultContract {
         let shares = if total_shares == 0 || total_assets == 0 {
             amount
         } else {
-            (amount as u128)
-                .saturating_mul(total_shares as u128)
-                / (total_assets as u128) as i128
+            ((amount as u128).saturating_mul(total_shares as u128)
+                / total_assets as u128) as i128
         };
 
         if shares <= 0 {
@@ -271,9 +270,8 @@ impl YieldVaultContract {
             panic!("insufficient vault shares");
         }
 
-        let amount = (shares as u128)
-            .saturating_mul(total_assets as u128)
-            / (total_shares as u128) as i128;
+        let amount = ((shares as u128).saturating_mul(total_assets as u128)
+            / total_shares as u128) as i128;
 
         let new_total_shares = total_shares - shares;
         let new_total_assets = total_assets - amount;
@@ -361,9 +359,8 @@ impl YieldVaultContract {
         if total_shares == 0 {
             shares
         } else {
-            (shares as u128)
-                .saturating_mul(total_assets as u128)
-                / (total_shares as u128) as i128
+            ((shares as u128).saturating_mul(total_assets as u128)
+                / total_shares as u128) as i128
         }
     }
 }

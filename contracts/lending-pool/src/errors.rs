@@ -72,9 +72,9 @@ pub enum PoolError {
     /// Loan has missed payments, so is ineligible for the maturity rebate.
     MissedPaymentsPreventRebate = 33,
     /// Loan must be in Approved state for this operation.
-    LoanNotActive = 32,
+    LoanNotActive = 37,
     /// A restructure proposal already exists for this loan.
-    RestructureProposalExists = 33,
+    RestructureProposalExists = 38,
     /// No pending restructure proposal for this loan.
     NoRestructureProposal = 34,
     /// MultisigValidator contract address has not been configured.

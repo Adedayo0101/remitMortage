@@ -403,7 +403,8 @@ impl VerificationRegistryContract {
                 RiskTier::Poor => config.rate_fallback_bps,
             }
         } else {
-            // Check if borrower has valid, non-expired verification
+            // No risk record yet — fall back to the borrower's verification
+            // score, provided the verification has not expired.
             match Self::read_record(&env, &borrower) {
                 Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
                     let score = record.score;
@@ -416,20 +417,6 @@ impl VerificationRegistryContract {
                     } else {
                         config.rate_fallback_bps
                     }
-            };
-        }
-
-        match Self::read_record(&env, &borrower) {
-            Some(record) if env.ledger().sequence() <= record.expiration_ledger => {
-                let score = record.score;
-                if score >= 80 {
-                    config.rate_excellent_bps
-                } else if score >= 60 {
-                    config.rate_good_bps
-                } else if score >= 40 {
-                    config.rate_fair_bps
-                } else {
-                    config.rate_fallback_bps
                 }
                 _ => config.rate_fallback_bps,
             }
@@ -971,8 +958,6 @@ mod test {
 
     #[test]
     fn test_get_borrower_rate_live_clamping() {
-    #[test]
-    fn test_record_repayment_status_emits_event() {
         let env = Env::default();
         env.mock_all_auths();
         let (_admin, client) = setup(&env);
@@ -1040,6 +1025,16 @@ mod test {
 
         let result = client.try_set_rate_limits(&1800u32, &200u32);
         assert_eq!(result, Err(Ok(RegistryError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_record_repayment_status_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[13u8; 32]);
 
         client.register_verification(&borrower, &report_hash, &1_000u32, &70u32);
 

@@ -9,10 +9,8 @@ mod fuzz;
 pub use crate::errors::PoolError;
 pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo};
 use soroban_sdk::{contract, contractimpl, symbol_short, IntoVal, Symbol, token, Address, BytesN, Env, Vec};
-use multisig_validator::MultisigValidatorClient;
-pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, Tranche, TrancheInfo};
-use soroban_sdk::{contract, contractimpl, symbol_short, Symbol, token, Address, BytesN, Env};
 use insurance_pool::{premium_for, InsurancePoolContractClient};
+use multisig_validator::MultisigValidatorClient;
 use verification_registry::VerificationRegistryContractClient;
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
@@ -291,6 +289,8 @@ impl LendingPoolContract {
         env.storage()
             .persistent()
             .set(&DataKey::LoanRebateClaimed(loan_id.clone()), &true);
+    }
+
     // ── Restructure Proposal Helpers ──────────────────────────────────────
 
     fn read_restructure_proposal(env: &Env, loan_id: &BytesN<32>) -> Result<RestructureProposal, PoolError> {
@@ -1801,9 +1801,6 @@ impl LendingPoolContract {
             senior_info.total_deposited -= senior_loss;
             senior_info.total_loss_absorbed += senior_loss;
 
-        // Record the realized loss for pool-health accounting.
-        let total_loss = Self::read_total_defaulted_loss(&env) + loss;
-        Self::set_total_defaulted_loss(&env, total_loss);
             Self::set_tranche_info(&env, &Tranche::Junior, &junior_info);
             Self::set_tranche_info(&env, &Tranche::Senior, &senior_info);
 
@@ -2089,6 +2086,7 @@ impl LendingPoolContract {
         );
 
         Ok(())
+        }) // non_reentrant
     }
 
     /// Investor claims their proportional share of repaid interest.
@@ -2468,6 +2466,24 @@ impl LendingPoolContract {
     /// Set the MultisigValidator contract address used for admin multisig
     /// approval of privileged operations (e.g. restructure approval). Admin-only.
     pub fn set_multisig_validator(env: Env, validator: Address) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultisigValidator, &validator);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (symbol_short!("set_msig"),),
+            (validator,),
+        );
+
+        Ok(())
+    }
+
     /// Set (or update) the InsurancePool contract that receives the 5 bps
     /// premium skimmed from every disbursement. Admin-only.
     ///
@@ -2479,16 +2495,11 @@ impl LendingPoolContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::MultisigValidator, &validator);
             .set(&DataKey::InsurancePool, &insurance_pool);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("set_msig"),),
-            (validator,),
-        );
         env.events()
             .publish((symbol_short!("set_ins"),), (insurance_pool,));
 
@@ -2501,6 +2512,8 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .get(&DataKey::MultisigValidator)
+    }
+
     /// Returns the configured InsurancePool address, or `None` if the
     /// protocol insurance fund is not wired up.
     pub fn get_insurance_pool(env: Env) -> Option<Address> {
@@ -2859,7 +2872,9 @@ impl LendingPoolContract {
         // Mark the rebate as claimed to prevent double-dipping.
         Self::mark_rebate_claimed(&env, &loan_id);
 
-        Self::bump_instance(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         env.events().publish(
             (Symbol::new(&env, "maturity_rebate"),),
@@ -5562,6 +5577,31 @@ mod test {
 
     #[test]
     fn test_maturity_rebate_fails_if_loan_not_repaid() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        let loan_id = mock_loan_id(&env);
+        let investor = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, &(principal * 2));
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+
+        // Loan is live, not repaid — the rebate is not available yet.
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Approved);
+
+        let result = client.try_claim_maturity_rebate(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::InvalidLoanState));
+    }
+
     // ── Debt Restructuring Tests ──────────────────────────────────────────
 
     /// Helper: deploy and configure a MultisigValidator contract with a 2-of-3
