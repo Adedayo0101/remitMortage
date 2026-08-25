@@ -70,6 +70,52 @@ terraform destroy -var="db_password=YOUR_SECURE_PASSWORD"
 | `app_image` | ECR Image URI for the App Runner service | `public.ecr.aws/nginx/nginx:latest` |
 | `environment` | Deployment environment | `dev` |
 
+## Blue-Green Deployment
+
+New backend releases use a blue-green strategy to achieve zero-downtime deploys.
+
+### How It Works
+
+Two App Runner services run in parallel at all times:
+
+| Slot  | Role   | Description                                      |
+|-------|--------|--------------------------------------------------|
+| Blue  | Active | Currently serving production traffic             |
+| Green | Idle   | Staging target for the next release              |
+
+An SSM Parameter Store key (`/remitmortgage/<env>/active-slot`) tracks which slot is live. The deploy workflow reads this to determine which slot is idle, then:
+
+1. Deploys the new image to the idle slot.
+2. Waits for the App Runner service to reach `RUNNING`.
+3. Runs repeated HTTP health checks against the idle slot's `/api/health` endpoint.
+4. Switches traffic by updating the active-slot pointer (and in production, Route 53 weighted records).
+5. Soaks for 60 seconds, then re-validates the now-active slot.
+6. **Auto-rollback**: if the post-switch health check fails, the active-slot pointer is immediately reverted to the previous stable slot.
+
+### Trigger a Deployment
+
+Go to **Actions → Blue-Green Deployment → Run workflow** and supply:
+- `environment` — `dev`, `staging`, or `production`
+- `image_tag` — the Docker image tag to deploy
+
+### Required Secrets
+
+| Secret | Description |
+|--------|-------------|
+| `AWS_ACCESS_KEY_ID` | IAM key with App Runner + SSM + Route 53 write access |
+| `AWS_SECRET_ACCESS_KEY` | Corresponding secret key |
+
+### Terraform Resources
+
+`blue-green.tf` provisions:
+- `aws_apprunner_service.app_blue` — the active slot service
+- `aws_apprunner_service.app_green` — the idle slot service
+- Outputs: `blue_service_url`, `green_service_url`, `blue_service_arn`, `green_service_arn`
+
+On first deploy, run `terraform apply` to create both services, then trigger the workflow.
+
+---
+
 ## Backup Verification
 
 A backup nobody has restored is an assumption, not a recovery plan. The
