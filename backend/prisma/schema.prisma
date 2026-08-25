@@ -189,13 +189,14 @@ model LoanApplication {
 }
 
 model AuditLog {
-  id           String   @id @default(uuid())
+  id           String   @default(uuid())
   action       String
   actorAddress String?
   ipAddress    String?
   metadata     Json?
   createdAt    DateTime @default(now())
 
+  @@id([id, createdAt])
   @@index([action])
   @@index([actorAddress])
   @@index([createdAt])
