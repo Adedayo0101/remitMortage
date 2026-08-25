@@ -31,6 +31,7 @@ import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
 import { workspaceRouter } from "./routes/workspace.js";
 import { metricsRouter } from "./routes/metrics.js";
+import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -203,6 +204,9 @@ app.listen(PORT, () => {
   logger.info("RemitMortgage API server started", {
     port: PORT,
     environment: process.env.NODE_ENV || "development",
+    // Logged so the pool ceiling the alerts are computed against is visible in
+    // startup logs, not only on /metrics.
+    dbConnectionLimit: getTrackedConnectionLimit(),
   });
 
   // Start the Soroban contract event indexer alongside the HTTP server. It

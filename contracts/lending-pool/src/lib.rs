@@ -717,6 +717,9 @@ impl LendingPoolContract {
             // governance act, never a deployment-time default.
             fee_switch_bps: 0,
             lockup_duration_ledgers,
+            // No deposit floor at deployment, so existing integrations are
+            // unaffected until an admin sets one via `set_min_deposit_amount`.
+            min_deposit_amount: 0,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
@@ -790,6 +793,13 @@ impl LendingPoolContract {
         }
 
         let config = Self::read_config(&env)?;
+
+        // Dust guard. Checked before the token transfer and before any storage
+        // write, so a rejected deposit leaves the pool exactly as it was.
+        // A configured minimum of 0 disables the floor.
+        if config.min_deposit_amount > 0 && amount < config.min_deposit_amount {
+            return Err(PoolError::DepositBelowMinimum);
+        }
 
         // Transfer USDC from investor to pool.
         let token = Self::token_client(&env, &config.token);
@@ -2893,6 +2903,50 @@ impl LendingPoolContract {
         env.events()
             .publish((symbol_short!("set_penlt"),), daily_bps);
         Ok(())
+    }
+
+    /// Configure the smallest deposit the pool will accept, in token stroops.
+    /// Admin-only.
+    ///
+    /// Without a floor, `deposit` can be flooded with negligible amounts to
+    /// grief the pool's storage: every call touches an `InvestorRecord`, the
+    /// per-tranche aggregate and the debt-share ledger. Setting a minimum
+    /// makes that attack cost the attacker real capital per entry.
+    ///
+    /// Pass `0` to disable the floor. Negative values are rejected — the
+    /// intent there is ambiguous, and silently treating them as "off" would
+    /// hide a mistake in a governance transaction.
+    ///
+    /// Existing positions are untouched: the floor applies to new deposits
+    /// only, so raising it can never strand capital already in the pool.
+    pub fn set_min_deposit_amount(env: Env, amount: i128) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if amount < 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        config.min_deposit_amount = amount;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events()
+            .publish((symbol_short!("set_mindp"),), amount);
+
+        Ok(())
+    }
+
+    /// Get the currently configured minimum deposit amount, in token stroops.
+    /// `0` means no floor is enforced.
+    pub fn get_min_deposit_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.min_deposit_amount)
+            .unwrap_or(0)
     }
 
     /// Get the currently configured per-day late-payment penalty in basis points.
@@ -6736,4 +6790,247 @@ mod test {
         let record = client.get_investor_info(&investor);
         assert_eq!(record.deposited, 40_000_0000000i128);
     }
+
+    // ── Minimum deposit amount (dust guard) ──────────────────────────────
+
+    /// The floor is off at deployment, so nothing changes for existing pools
+    /// until an admin opts in.
+    #[test]
+    fn test_min_deposit_defaults_to_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+
+        assert_eq!(client.get_min_deposit_amount(), 0i128);
+        assert_eq!(client.get_pool_config().min_deposit_amount, 0i128);
+
+        // A single stroop is accepted while the floor is disabled.
+        client.deposit(&investor, &1i128, &Tranche::Senior);
+        assert_eq!(client.get_liquidity(), 1i128);
+    }
+
+    #[test]
+    fn test_set_min_deposit_amount_updates_config() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        assert_eq!(client.get_min_deposit_amount(), 100_0000000i128);
+        assert_eq!(
+            client.get_pool_config().min_deposit_amount,
+            100_0000000i128
+        );
+    }
+
+    /// Setting the floor must not disturb any other config field.
+    #[test]
+    fn test_set_min_deposit_preserves_other_config_fields() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let before = client.get_pool_config();
+
+        client.set_min_deposit_amount(&250_0000000i128);
+        let after = client.get_pool_config();
+
+        assert_eq!(after.admin, before.admin);
+        assert_eq!(after.token, before.token);
+        assert_eq!(after.escrow, before.escrow);
+        assert_eq!(after.interest_rate_bps, before.interest_rate_bps);
+        assert_eq!(after.senior_rate_bps, before.senior_rate_bps);
+        assert_eq!(after.treasury_address, before.treasury_address);
+        assert_eq!(after.fee_switch_bps, before.fee_switch_bps);
+        assert_eq!(
+            after.lockup_duration_ledgers,
+            before.lockup_duration_ledgers
+        );
+        assert_eq!(after.min_deposit_amount, 250_0000000i128);
+    }
+
+    #[test]
+    fn test_set_min_deposit_rejects_negative() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        let result = client.try_set_min_deposit_amount(&-1i128);
+        assert_eq!(result, Err(Ok(PoolError::InvalidAmount)));
+        assert_eq!(client.get_min_deposit_amount(), 0i128);
+    }
+
+    /// Boundary: just below the minimum is rejected.
+    #[test]
+    fn test_deposit_just_below_minimum_reverts() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        let minimum = 100_0000000i128;
+        client.set_min_deposit_amount(&minimum);
+
+        let result = client.try_deposit(&investor, &(minimum - 1), &Tranche::Senior);
+        assert_eq!(result, Err(Ok(PoolError::DepositBelowMinimum)));
+    }
+
+    /// Boundary: exactly the minimum is accepted.
+    #[test]
+    fn test_deposit_exactly_at_minimum_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        let minimum = 100_0000000i128;
+        client.set_min_deposit_amount(&minimum);
+
+        client.deposit(&investor, &minimum, &Tranche::Senior);
+
+        assert_eq!(client.get_liquidity(), minimum);
+        assert_eq!(client.get_investor_info(&investor).deposited, minimum);
+    }
+
+    /// Boundary: above the minimum is unaffected by the check.
+    #[test]
+    fn test_deposit_above_minimum_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        let minimum = 100_0000000i128;
+        client.set_min_deposit_amount(&minimum);
+
+        client.deposit(&investor, &(minimum + 1), &Tranche::Senior);
+
+        assert_eq!(client.get_liquidity(), minimum + 1);
+    }
+
+    /// The acceptance criterion: a rejected deposit must leave pool state and
+    /// the investor's token balance exactly as they were.
+    #[test]
+    fn test_rejected_dust_deposit_leaves_state_untouched() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        // Establish a real position first, so we are asserting that the
+        // rejected call changes nothing rather than that everything is zero.
+        client.deposit(&investor, &500_0000000i128, &Tranche::Senior);
+
+        let liquidity_before = client.get_liquidity();
+        let record_before = client.get_investor_info(&investor);
+        let tranche_before = client.get_tranche_info(&Tranche::Senior);
+        let investor_balance_before = token.balance(&investor);
+        let pool_balance_before = token.balance(&client.address);
+
+        let result = client.try_deposit(&investor, &1i128, &Tranche::Senior);
+        assert_eq!(result, Err(Ok(PoolError::DepositBelowMinimum)));
+
+        assert_eq!(client.get_liquidity(), liquidity_before);
+        assert_eq!(client.get_investor_info(&investor), record_before);
+        assert_eq!(client.get_tranche_info(&Tranche::Senior), tranche_before);
+        // No tokens moved — the guard runs before the transfer.
+        assert_eq!(token.balance(&investor), investor_balance_before);
+        assert_eq!(token.balance(&client.address), pool_balance_before);
+    }
+
+    /// A flood of dust deposits is rejected wholesale, which is the griefing
+    /// vector the floor exists to close.
+    #[test]
+    fn test_dust_flood_is_rejected_wholesale() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        for amount in 1i128..=25i128 {
+            let result = client.try_deposit(&investor, &amount, &Tranche::Senior);
+            assert_eq!(result, Err(Ok(PoolError::DepositBelowMinimum)));
+        }
+
+        // Not a single record was created.
+        assert_eq!(client.get_liquidity(), 0i128);
+        assert_eq!(client.get_investor_info(&investor).deposited, 0i128);
+    }
+
+    /// Zero and negative amounts keep reporting InvalidAmount rather than
+    /// being reclassified by the new floor.
+    #[test]
+    fn test_zero_deposit_still_reports_invalid_amount_under_a_floor() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        assert_eq!(
+            client.try_deposit(&investor, &0i128, &Tranche::Senior),
+            Err(Ok(PoolError::InvalidAmount))
+        );
+        assert_eq!(
+            client.try_deposit(&investor, &-5i128, &Tranche::Senior),
+            Err(Ok(PoolError::InvalidAmount))
+        );
+    }
+
+    /// Lowering the floor re-admits amounts that were previously rejected;
+    /// raising it never touches capital already deposited.
+    #[test]
+    fn test_min_deposit_is_reconfigurable_and_not_retroactive() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+
+        client.set_min_deposit_amount(&100_0000000i128);
+        client.deposit(&investor, &100_0000000i128, &Tranche::Senior);
+
+        // Raise the floor above the existing position.
+        client.set_min_deposit_amount(&1_000_0000000i128);
+        assert_eq!(
+            client.get_investor_info(&investor).deposited,
+            100_0000000i128
+        );
+        assert_eq!(
+            client.try_deposit(&investor, &100_0000000i128, &Tranche::Senior),
+            Err(Ok(PoolError::DepositBelowMinimum))
+        );
+
+        // Disable it again and the same amount is accepted.
+        client.set_min_deposit_amount(&0i128);
+        client.deposit(&investor, &100_0000000i128, &Tranche::Senior);
+        assert_eq!(
+            client.get_investor_info(&investor).deposited,
+            200_0000000i128
+        );
+    }
+
+    /// The floor applies per tranche-agnostic deposit call, junior included.
+    #[test]
+    fn test_min_deposit_applies_to_junior_tranche_too() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        assert_eq!(
+            client.try_deposit(&investor, &1i128, &Tranche::Junior),
+            Err(Ok(PoolError::DepositBelowMinimum))
+        );
+        client.deposit(&investor, &100_0000000i128, &Tranche::Junior);
+        assert_eq!(
+            client.get_tranche_info(&Tranche::Junior).total_deposited,
+            100_0000000i128
+        );
+    }
+
 }
