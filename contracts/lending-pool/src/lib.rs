@@ -532,6 +532,21 @@ impl LendingPoolContract {
         loan.last_interest_ledger = current;
     }
 
+    fn recalculate_remaining_schedule(schedule: &mut RepaymentSchedule, remaining_debt: i128) {
+        let remaining_months = schedule
+            .duration_months
+            .saturating_sub(schedule.payments_made)
+            .max(1);
+
+        if remaining_debt <= 0 {
+            schedule.monthly_amount = 0;
+            return;
+        }
+
+        let divisor = remaining_months as i128;
+        schedule.monthly_amount = (remaining_debt + divisor - 1) / divisor;
+    }
+
     fn check_not_paused(env: &Env) -> Result<(), PoolError> {
         let paused: bool = env
             .storage()
@@ -1699,6 +1714,88 @@ impl LendingPoolContract {
 
         env.events().publish(
             (symbol_short!("repay"),),
+            (borrower.clone(), loan_id.clone(), amount, remaining - amount),
+        );
+
+        Ok(())
+    }
+
+    /// Borrower prepays part of the outstanding principal on an approved loan.
+    ///
+    /// The remaining repayment schedule keeps its shape, but the monthly amount
+    /// is re-priced pro-rata against the reduced debt so future installments
+    /// immediately reflect the lower balance.
+    pub fn prepay(
+        env: Env,
+        borrower: Address,
+        loan_id: BytesN<32>,
+        amount: i128,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        borrower.require_auth();
+
+        if amount <= 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        let config = Self::read_config(&env)?;
+        let mut loan = Self::read_loan(&env, &loan_id)?;
+
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::InvalidLoanState);
+        }
+
+        Self::accrue_interest(&env, &mut loan);
+
+        let remaining = loan.outstanding_debt;
+        if amount > remaining {
+            return Err(PoolError::OverPayment);
+        }
+
+        if env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
+            let mut sched: RepaymentSchedule = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LoanSchedule(loan_id.clone()))
+                .unwrap();
+            let remaining_after_prepay = remaining - amount;
+            Self::recalculate_remaining_schedule(&mut sched, remaining_after_prepay);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
+        }
+
+        let token = Self::token_client(&env, &config.token);
+        token.transfer(&borrower, &env.current_contract_address(), &amount);
+
+        loan.repaid += amount;
+        loan.outstanding_debt = loan.outstanding_debt.saturating_sub(amount);
+
+        if loan.outstanding_debt == 0 {
+            loan.status = LoanStatus::Repaid;
+
+            let undisbursed = loan.principal - loan.disbursed;
+            if undisbursed > 0 {
+                let active_commitments = Self::read_active_commitments(&env);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::ActiveLoanCommitments, &(active_commitments - undisbursed));
+            }
+        }
+
+        Self::set_loan(&env, &loan_id, &loan);
+
+        let liquidity = Self::read_total_liquidity(&env) + amount;
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalLiquidity, &liquidity);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (symbol_short!("prepay"),),
             (borrower.clone(), loan_id.clone(), amount, remaining - amount),
         );
 
@@ -5396,6 +5493,47 @@ mod test {
         // The record is retained as Cancelled, so the ID stays taken.
         let result = client.try_request_loan(&borrower, &loan_id, &10_000_0000000i128);
         assert_eq!(result.unwrap_err(), Ok(PoolError::LoanAlreadyExists));
+    }
+
+    #[test]
+    fn test_partial_prepay_reprices_remaining_schedule() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let sac = StellarAssetClient::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 10_000_0000000i128;
+
+        sac.mint(&investor, principal * 2);
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+        sac.mint(&borrower, &(principal));
+
+        let original_schedule = client.get_repayment_schedule(&loan_id).unwrap();
+        let original_monthly = original_schedule.monthly_amount;
+
+        let prepay_amount = 4_000_0000000i128;
+        client.prepay(&borrower, &loan_id, &prepay_amount);
+
+        let loan_after_prepay = client.get_loan_info(&loan_id);
+        assert_eq!(loan_after_prepay.outstanding_debt, principal - prepay_amount);
+
+        let updated_schedule = client.get_repayment_schedule(&loan_id).unwrap();
+        assert!(updated_schedule.monthly_amount < original_monthly);
+        assert_eq!(updated_schedule.payments_made, original_schedule.payments_made);
+        assert_eq!(updated_schedule.payments_missed, original_schedule.payments_missed);
+
+        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        client.repay(&borrower, &loan_id, &1i128);
+
+        let loan_after_accrual = client.get_loan_info(&loan_id);
+        let expected_after_interest = ((principal - prepay_amount) * 10_800i128) / 10_000i128 - 1i128;
+        assert_eq!(loan_after_accrual.outstanding_debt, expected_after_interest);
     }
 
     // ── Maturity Rebate Tests (Issue #298) ─────────────────────────────
