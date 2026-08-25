@@ -28,6 +28,7 @@ import {
 } from "@/lib/statementExport";
 
 import MaturityAlertOverlay from "../../components/MaturityAlertOverlay";
+import ProductTour from "../../components/ProductTour";
 
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -225,6 +226,13 @@ export default function DashboardPage() {
 
           <div className="flex items-center gap-3">
             <button
+              id="tour-onboarding-cta"
+              onClick={() => router.push("/onboarding")}
+              className="btn-outline-blue disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {t("startOnboarding")}
+            </button>
+            <button
               onClick={handleDownloadStatement}
               disabled={!status}
               className="btn-outline-blue disabled:opacity-40 disabled:cursor-not-allowed"
@@ -392,7 +400,7 @@ export default function DashboardPage() {
 
             {/* Savings & Loan Cards Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl">
+              <div id="tour-savings" className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl">
                 <SavingsProgressCard
                   deposited={status.escrow.deposited}
                   target={status.escrow.target}
@@ -400,7 +408,7 @@ export default function DashboardPage() {
                   shareId={publicKey ?? undefined}
                 />
               </div>
-              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl flex flex-col justify-between">
+              <div id="tour-loan-status" className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl flex flex-col justify-between">
                 <LoanStatusCard loan={status.loan} />
                 <div className="mt-6 pt-6 border-t border-slate-800 flex gap-3">
                   <button
@@ -443,6 +451,7 @@ export default function DashboardPage() {
           </div>
         )}
 
+        <ProductTour />
         <DepositModal isOpen={showDeposit} onClose={() => setShowDeposit(false)} />
         <WithdrawModal
           isOpen={showWithdraw}

@@ -77,6 +77,7 @@
     "description": "Suivez vos économies d’acompte de 30 %, le rendement accumulé du protocole et les versements liés aux étapes d’hypothèque.",
     "downloadStatement": "Télécharger le relevé",
     "depositUsdc": "Déposer des USDC",
+    "startOnboarding": "Commencer l'onboarding",
     "earlyExit": "Sortie anticipée"
   }
 }
