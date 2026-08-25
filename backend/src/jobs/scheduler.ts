@@ -1,4 +1,6 @@
 import cron from "node-cron";
+import logger from "../utils/logger.js";
+import { startPartitionManager } from "./partitionManager.js";
 import { runRepaymentAudit } from "./repaymentAudit.js";
 import { runKycExpiryReminderJob } from "./kycExpiryReminder.js";
 import { runEscrowReconciliation } from "./escrowReconciliation.js";
@@ -14,6 +16,8 @@ export function startScheduler() {
     console.log("[Scheduler] Already running, ignoring start request.");
     return;
   }
+
+  startPartitionManager();
 
   // Daily at midnight UTC: repayment audit
   schedulerTask = cron.schedule("0 0 * * *", async () => {
