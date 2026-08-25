@@ -48,6 +48,15 @@ pub struct PoolConfig {
     /// Minimum number of ledgers an LP's deposit must remain in the pool
     /// before a withdrawal is allowed. 0 means no lockup.
     pub lockup_duration_ledgers: u32,
+    /// Smallest deposit the pool will accept from an investor, in token
+    /// stroops. Guards against storage-bloat griefing: without a floor an
+    /// attacker can flood `deposit` with negligible amounts, each one writing
+    /// or touching an `InvestorRecord` and the tranche aggregates.
+    ///
+    /// `0` — the deployment default — disables the floor entirely, so existing
+    /// behaviour is unchanged until an admin opts in via
+    /// `set_min_deposit_amount`.
+    pub min_deposit_amount: i128,
 }
 
 /// Tracks an individual investor's capital contribution.

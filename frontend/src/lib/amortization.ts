@@ -136,8 +136,14 @@ export function buildAmortizationSchedule({
   const totalRepayment = principal + totalInterest;
   const monthlyPayment = totalRepayment / termCount;
 
-  const principalPerMonth = principal / termCount;
+  // Interest is floored per month; the principal slice is then whatever the
+  // installment has left over. Flooring both independently does *not* work:
+  // floor(principal/n) + floor(interest/n) can come to one stroop less than
+  // floor((principal + interest)/n), which would leave every non-final row's
+  // components failing to add up to its own payment. Deriving principal from
+  // the payment keeps `principal + interest === payment` true on every row.
   const interestPerMonth = totalInterest / termCount;
+  const principalPerMonth = monthlyPayment - interestPerMonth;
 
   const rows: AmortizationRow[] = [];
   let principalPaid = 0n;
@@ -148,16 +154,14 @@ export function buildAmortizationSchedule({
     const isFinal = month === months;
 
     // The last installment absorbs every rounding remainder so the schedule
-    // closes out at exactly `totalRepayment`.
-    const principalPortion = isFinal
-      ? principal - principalPaid
-      : principalPerMonth;
+    // closes out at exactly `totalRepayment`. Its principal slice is derived
+    // from the payment for the same reason as above, which also makes it
+    // exactly `principal - principalPaid`.
+    const payment = isFinal ? totalRepayment - paidSoFar : monthlyPayment;
     const interestPortion = isFinal
       ? totalInterest - cumulativeInterest
       : interestPerMonth;
-    const payment = isFinal
-      ? totalRepayment - paidSoFar
-      : monthlyPayment;
+    const principalPortion = isFinal ? payment - interestPortion : principalPerMonth;
 
     principalPaid += principalPortion;
     cumulativeInterest += interestPortion;

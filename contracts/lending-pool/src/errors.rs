@@ -83,4 +83,6 @@ pub enum PoolError {
     MultisigValidatorNotSet = 35,
     /// Investor withdrawal is blocked because the lockup period has not elapsed.
     LockupPeriodActive = 36,
+    /// Deposit is below the pool's configured minimum deposit amount.
+    DepositBelowMinimum = 40,
 }
