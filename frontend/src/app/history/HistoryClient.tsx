@@ -20,6 +20,18 @@ const HORIZON_TESTNET = "https://horizon-testnet.stellar.org";
 const STELLARCHAIN_BASE = "https://testnet.stellarchain.io/transactions/";
 const PAGE_SIZE = 20;
 
+export type FilterPreset = {
+  id: string;
+  name: string;
+  category: TxCategory;
+  dateFrom: string;
+  dateTo: string;
+  amountMin: number;
+  amountMax: number;
+  sortField: SortField;
+  sortDirection: "asc" | "desc";
+};
+
 type TxRecord = {
   id: string;
   date: string;
@@ -92,6 +104,73 @@ export default function HistoryClient() {
 
   const { filters, updateFilters, setSortField } = useTransactionHistoryFilters(1000000);
   const sliderMaxRef = useRef(1000000);
+
+  // Presets
+  const [presets, setPresets] = useState<FilterPreset[]>([]);
+  const [showPresetModal, setShowPresetModal] = useState(false);
+  const [newPresetName, setNewPresetName] = useState("");
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+  const [editingPresetName, setEditingPresetName] = useState("");
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("remitmortgage_filter_presets");
+      if (saved) {
+        setPresets(JSON.parse(saved));
+      }
+    } catch (e) {}
+  }, []);
+
+  function savePresets(newPresets: FilterPreset[]) {
+    setPresets(newPresets);
+    try {
+      localStorage.setItem("remitmortgage_filter_presets", JSON.stringify(newPresets));
+    } catch (e) {}
+  }
+
+  function handleSavePreset() {
+    if (!newPresetName.trim()) return;
+    const newPreset: FilterPreset = {
+      id: Date.now().toString(),
+      name: newPresetName.trim(),
+      category: filters.category,
+      dateFrom: filters.dateFrom,
+      dateTo: filters.dateTo,
+      amountMin: filters.amountMin,
+      amountMax: filters.amountMax,
+      sortField: filters.sortField,
+      sortDirection: filters.sortDirection,
+    };
+    savePresets([...presets, newPreset]);
+    setNewPresetName("");
+    setShowPresetModal(false);
+  }
+
+  function handleApplyPreset(preset: FilterPreset) {
+    updateFilters({
+      category: preset.category,
+      dateFrom: preset.dateFrom,
+      dateTo: preset.dateTo,
+      amountMin: preset.amountMin,
+      amountMax: preset.amountMax,
+      sortField: preset.sortField,
+      sortDirection: preset.sortDirection,
+    });
+  }
+
+  function handleDeletePreset(id: string) {
+    savePresets(presets.filter((p) => p.id !== id));
+  }
+
+  function handleRenamePreset(id: string) {
+    if (!editingPresetName.trim()) return;
+    savePresets(
+      presets.map((p) =>
+        p.id === id ? { ...p, name: editingPresetName.trim() } : p
+      )
+    );
+    setEditingPresetId(null);
+  }
 
   useEffect(() => {
     async function checkFreighter() {
@@ -349,7 +428,56 @@ export default function HistoryClient() {
         {publicKey && (
           <>
             <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-5 mb-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-5 gap-3">
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <span className="text-sm font-semibold text-[var(--text-primary)]">Filter Presets:</span>
+                  {presets.length === 0 ? (
+                    <span className="text-xs text-[var(--text-muted)] italic">No presets saved</span>
+                  ) : (
+                    <div className="flex-1 sm:flex-none relative group">
+                      <select
+                        className="w-full sm:w-auto bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent-primary)] transition-colors appearance-none pr-8 cursor-pointer"
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          if (!id) return;
+                          const p = presets.find((x) => x.id === id);
+                          if (p) handleApplyPreset(p);
+                          e.target.value = ""; // reset after apply
+                        }}
+                        defaultValue=""
+                      >
+                        <option value="" disabled>Load a preset...</option>
+                        {presets.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-[var(--text-muted)]">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {presets.length > 0 && (
+                    <button
+                      onClick={() => setShowPresetModal(true)}
+                      className="text-xs px-3 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-[var(--bg-card-hover)] transition-colors"
+                    >
+                      Manage Presets
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setShowPresetModal(true)}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-[var(--accent-primary)]/10 text-[var(--accent-primary-light)] hover:bg-[var(--accent-primary)]/20 transition-colors font-medium border border-[var(--accent-primary)]/30"
+                  >
+                    + Save Current Filters
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 pt-3 border-t border-[var(--border-color)]">
                 <div>
                   <label className="block text-xs text-[var(--text-muted)] mb-1.5 font-medium uppercase tracking-wider">
                     Category
@@ -554,6 +682,111 @@ export default function HistoryClient() {
               </>
             )}
           </>
+        )}
+
+        {/* Preset Management Modal */}
+        {showPresetModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl w-full max-w-md shadow-2xl p-6">
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="text-lg font-bold text-white">Save Filter Preset</h3>
+                <button
+                  onClick={() => {
+                    setShowPresetModal(false);
+                    setEditingPresetId(null);
+                  }}
+                  className="text-[var(--text-muted)] hover:text-white transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+              </div>
+
+              <div className="mb-6">
+                <label className="block text-xs text-[var(--text-muted)] mb-1.5 font-medium uppercase tracking-wider">
+                  Preset Name
+                </label>
+                <input
+                  type="text"
+                  value={newPresetName}
+                  onChange={(e) => setNewPresetName(e.target.value)}
+                  placeholder="e.g., Large Withdrawals, Q3 Deposits..."
+                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-[var(--accent-primary)] transition-colors"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSavePreset();
+                  }}
+                />
+                <button
+                  onClick={handleSavePreset}
+                  disabled={!newPresetName.trim()}
+                  className="mt-3 w-full py-2 bg-[var(--accent-primary)] text-white font-medium rounded-lg hover:bg-[var(--accent-primary-light)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Save Preset
+                </button>
+              </div>
+
+              {presets.length > 0 && (
+                <div className="border-t border-[var(--border-color)] pt-5">
+                  <h4 className="text-xs text-[var(--text-muted)] mb-3 font-medium uppercase tracking-wider">
+                    Existing Presets
+                  </h4>
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {presets.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between bg-[var(--bg-secondary)] p-2.5 rounded-lg border border-[var(--border-color)] group">
+                        {editingPresetId === p.id ? (
+                          <div className="flex flex-1 items-center gap-2 mr-2">
+                            <input
+                              type="text"
+                              value={editingPresetName}
+                              onChange={(e) => setEditingPresetName(e.target.value)}
+                              className="flex-1 bg-[var(--bg-card)] border border-[var(--accent-primary)] rounded px-2 py-1 text-xs text-white outline-none"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") handleRenamePreset(p.id);
+                                if (e.key === "Escape") setEditingPresetId(null);
+                              }}
+                            />
+                            <button
+                              onClick={() => handleRenamePreset(p.id)}
+                              className="text-xs text-emerald-400 hover:text-emerald-300 font-medium"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-sm text-white truncate max-w-[200px]" title={p.name}>
+                            {p.name}
+                          </span>
+                        )}
+
+                        {editingPresetId !== p.id && (
+                          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => {
+                                setEditingPresetId(p.id);
+                                setEditingPresetName(p.name);
+                              }}
+                              className="p-1.5 text-[var(--text-muted)] hover:text-white bg-[var(--bg-card-hover)] rounded-md transition-colors"
+                              title="Rename"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                            </button>
+                            <button
+                              onClick={() => handleDeletePreset(p.id)}
+                              className="p-1.5 text-red-400/70 hover:text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded-md transition-colors"
+                              title="Delete"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </main>
     </div>

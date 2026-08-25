@@ -9,6 +9,7 @@ import { getLendingPoolRates } from "../services/soroban.js";
 import { feeEstimator } from "../services/feeEstimator.js";
 import { cacheMiddleware } from "../middleware/cache.js";
 import { loadConfig } from "../config.js";
+import { convertUsdTo } from "../services/fx.js";
 
 export const analyticsRouter = Router();
 
@@ -30,9 +31,25 @@ const MAX_VOLUME_MONTHS = 24;
  *       200:
  *         description: Protocol summary.
  */
-analyticsRouter.get("/overview", cacheMiddleware(60), (_req, res) => {
+analyticsRouter.get("/overview", cacheMiddleware(60), async (req, res) => {
   try {
-    res.json(getProtocolOverview());
+    const overview = getProtocolOverview();
+    const currency = (req.query.currency as string) || "USD";
+
+    if (currency !== "USD" && currency !== "USDC") {
+      const converted = { ...overview, tvl: { ...overview.tvl } };
+      converted.tvl.escrow = (await convertUsdTo(parseFloat(overview.tvl.escrow), currency)).toFixed(2);
+      converted.tvl.lendingPool = (await convertUsdTo(parseFloat(overview.tvl.lendingPool), currency)).toFixed(2);
+      converted.tvl.total = (await convertUsdTo(parseFloat(overview.tvl.total), currency)).toFixed(2);
+      
+      // Clearly label converted values
+      (converted as any).isConvertedEstimate = true;
+      (converted as any).displayCurrency = currency;
+      
+      return res.json(converted);
+    }
+
+    res.json(overview);
   } catch (error) {
     console.error("Analytics overview error:", error);
     res.status(500).json({ error: "Failed to compute protocol overview" });
@@ -55,6 +72,7 @@ analyticsRouter.get("/overview", cacheMiddleware(60), (_req, res) => {
  */
 analyticsRouter.get("/loans", cacheMiddleware(60), (_req, res) => {
   try {
+    // Loans endpoint returns counts/percentages, not raw currency values
     res.json(getLoanPerformance());
   } catch (error) {
     console.error("Analytics loans error:", error);
@@ -76,9 +94,22 @@ analyticsRouter.get("/loans", cacheMiddleware(60), (_req, res) => {
  *       200:
  *         description: Disbursement progress metrics.
  */
-analyticsRouter.get("/disbursement", cacheMiddleware(60), (_req, res) => {
+analyticsRouter.get("/disbursement", cacheMiddleware(60), async (req, res) => {
   try {
-    res.json(getDisbursementProgress());
+    const progress = getDisbursementProgress();
+    const currency = (req.query.currency as string) || "USD";
+
+    if (currency !== "USD" && currency !== "USDC") {
+      const converted = { ...progress };
+      converted.totalDisbursed = (await convertUsdTo(parseFloat(progress.totalDisbursed), currency)).toFixed(2);
+      
+      (converted as any).isConvertedEstimate = true;
+      (converted as any).displayCurrency = currency;
+      
+      return res.json(converted);
+    }
+
+    res.json(progress);
   } catch (error) {
     console.error("Analytics disbursement error:", error);
     res.status(500).json({ error: "Failed to compute disbursement progress" });
@@ -109,13 +140,34 @@ analyticsRouter.get("/disbursement", cacheMiddleware(60), (_req, res) => {
  *       200:
  *         description: Monthly volume series, oldest first.
  */
-analyticsRouter.get("/volume", cacheMiddleware(60), (req, res) => {
+analyticsRouter.get("/volume", cacheMiddleware(60), async (req, res) => {
   try {
     const parsed = parseInt(String(req.query.months ?? ""), 10);
     const months = Number.isFinite(parsed)
       ? Math.min(Math.max(parsed, 1), MAX_VOLUME_MONTHS)
       : DEFAULT_VOLUME_MONTHS;
-    res.json(getMonthlyVolume(months));
+      
+    const volumeData = getMonthlyVolume(months);
+    const currency = (req.query.currency as string) || "USD";
+
+    if (currency !== "USD" && currency !== "USDC") {
+      const converted = await Promise.all(volumeData.map(async (month) => {
+        return {
+          ...month,
+          deposits: (await convertUsdTo(parseFloat(month.deposits), currency)).toFixed(2),
+          repayments: (await convertUsdTo(parseFloat(month.repayments), currency)).toFixed(2),
+          disbursements: (await convertUsdTo(parseFloat(month.disbursements), currency)).toFixed(2),
+        };
+      }));
+      
+      return res.json({
+        data: converted,
+        isConvertedEstimate: true,
+        displayCurrency: currency
+      });
+    }
+
+    res.json(volumeData);
   } catch (error) {
     console.error("Analytics volume error:", error);
     res.status(500).json({ error: "Failed to compute monthly volume" });
