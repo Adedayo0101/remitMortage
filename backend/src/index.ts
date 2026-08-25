@@ -190,6 +190,7 @@ app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
+app.use("/api/user", userRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 

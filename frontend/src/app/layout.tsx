@@ -7,6 +7,7 @@ import { AuthProvider } from "@/context/AuthContext";
 import { NotificationProvider } from "@/context/NotificationContext";
 import { NotificationLayer } from "@/components/NotificationLayer";
 import { ToastProvider } from "@/context/ToastContext";
+import { IdleSessionProvider } from "@/context/IdleSessionContext";
 import { ToastContainer } from "@/components/ToastContainer";
 import { HotToaster } from "@/components/HotToaster";
 import WalletBanner from "@/components/WalletBanner";
@@ -103,11 +104,13 @@ export default async function RootLayout({
               <AuthProvider>
               <NotificationProvider>
                 <ToastProvider>
-                  <div className="flex-1">{children}</div>
-                  <Footer />
-                  <NotificationLayer />
-                  <ToastContainer />
-                  <HotToaster />
+                  <IdleSessionProvider>
+                    <div className="flex-1">{children}</div>
+                    <Footer />
+                    <NotificationLayer />
+                    <ToastContainer />
+                    <HotToaster />
+                  </IdleSessionProvider>
                 </ToastProvider>
                 </NotificationProvider>
               </AuthProvider>

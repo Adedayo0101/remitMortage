@@ -23,6 +23,7 @@ type FreighterClient = {
   getNetwork?: () => string | Promise<string>;
   isConnected?: () => boolean | Promise<boolean>;
   isAllowed?: () => boolean | Promise<boolean>;
+  signBlob?: (blob: string) => string | Promise<string>;
 };
 
 /**
@@ -316,6 +317,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         return Array.from(signedMessage.signature)
           .map((byte) => byte.toString(16).padStart(2, "0"))
           .join("");
+      }
+
+      if (walletType === "stellar") {
+        const freighter = await loadFreighter();
+        if (!freighter || typeof freighter.signBlob !== "function") {
+          throw new Error("Freighter is not available or does not support signBlob");
+        }
+        return await freighter.signBlob(message);
       }
 
       return null;
