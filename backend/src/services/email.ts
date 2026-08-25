@@ -214,3 +214,41 @@ export async function sendLoanStatusUpdate(to: string, loanId: string, status: s
   `;
   return sendEmail(to, subject, getBrandedHtml(subject, body));
 }
+
+/**
+ * Sends a branded Lockout Security Alert HTML email.
+ */
+export async function sendLockoutNotificationEmail(
+  to: string,
+  lockoutMinutes: number,
+  ipAddress?: string
+): Promise<boolean> {
+  const subject = "Security Alert: Account Locked - RemitMortgage";
+  const body = `
+    <h2 style="color: #ef4444;">Security Alert: Account Temporarily Locked</h2>
+    <p>Multiple consecutive failed login attempts were detected on your RemitMortgage account.</p>
+    <p>To protect your financial records and assets from unauthorized access, your account has been temporarily locked for <strong>${lockoutMinutes} minute(s)</strong>.</p>
+    <table class="details-table">
+      <tr>
+        <td class="details-label">Lockout Duration</td>
+        <td class="details-value"><strong>${lockoutMinutes} minute(s)</strong></td>
+      </tr>
+      ${
+        ipAddress
+          ? `<tr>
+        <td class="details-label">Originating IP Address</td>
+        <td class="details-value"><code>${ipAddress}</code></td>
+      </tr>`
+          : ""
+      }
+      <tr>
+        <td class="details-label">Timestamp</td>
+        <td class="details-value">${new Date().toLocaleString()}</td>
+      </tr>
+    </table>
+    <p style="margin-top: 20px;">If this was not you, someone may be attempting to guess your password. We strongly recommend resetting your password immediately once the lockout period expires.</p>
+    <a href="#" class="cta-button" style="background-color: #ef4444;">Reset Password</a>
+  `;
+  return sendEmail(to, subject, getBrandedHtml(subject, body));
+}
+
