@@ -189,13 +189,14 @@ model LoanApplication {
 }
 
 model AuditLog {
-  id           String   @id @default(uuid())
+  id           String   @default(uuid())
   action       String
   actorAddress String?
   ipAddress    String?
   metadata     Json?
   createdAt    DateTime @default(now())
 
+  @@id([id, createdAt])
   @@index([action])
   @@index([actorAddress])
   @@index([createdAt])
@@ -423,4 +424,17 @@ model WebhookDelivery {
   @@index([subscriptionId])
   @@index([success])
   @@index([nextRetryAt])
+}
+
+model ApiKey {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  name      String
+  scopes    String[]
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+  @@index([revoked])
 }
