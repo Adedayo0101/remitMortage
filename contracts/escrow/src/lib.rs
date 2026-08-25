@@ -539,7 +539,6 @@ impl EscrowContract {
             .get(&DataKey::PendingUpgrade)
     }
 }
-*/
 
 /*
 #[cfg(any())]
@@ -1906,3 +1905,4 @@ mod test {
     // Existing upgrade, pause, admin transfer, and query functions remain...
     // (The rest of your original file continues here)
 }
+*/

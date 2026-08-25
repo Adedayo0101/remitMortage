@@ -4,6 +4,12 @@ import dynamic from "next/dynamic";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
+// Push relies on browser-only APIs (ServiceWorker, PushManager, Notification),
+// so it must never be evaluated during SSR.
+const PushNotificationPanel = dynamic(
+  () => import("../../components/PushNotificationPanel"),
+  { ssr: false }
+);
 
 type SettingsTab = "profile" | "wallets" | "notifications" | "contractor";
 
@@ -526,9 +532,17 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
+                  {/* Browser Push */}
+                  <div className="space-y-3 pt-2 border-t border-slate-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">
+                      4. Browser Push Notifications
+                    </h3>
+                    <PushNotificationPanel address={stellarAddress || email || "default_user"} />
+                  </div>
+
                   {/* Partner Webhook Endpoint */}
                   <label className="block space-y-2 pt-2 border-t border-slate-800">
-                    <span className="text-xs font-bold uppercase tracking-wider text-cyan-400">4. Partner Webhook Integration</span>
+                    <span className="text-xs font-bold uppercase tracking-wider text-cyan-400">5. Partner Webhook Integration</span>
                     <p className="text-xs text-slate-400">Receive automated JSON webhooks when escrow maturity milestones occur.</p>
                     <div className="flex flex-col sm:flex-row gap-3 pt-2">
                       <input

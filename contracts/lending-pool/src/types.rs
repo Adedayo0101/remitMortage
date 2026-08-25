@@ -40,6 +40,11 @@ pub struct PoolConfig {
     pub senior_rate_bps: u32,
     /// Protocol treasury address where withdrawal fees are routed.
     pub treasury_address: Address,
+    /// Protocol fee switch, in basis points, taken from loan interest before
+    /// it reaches investors. `0` — the deployment default — leaves the switch
+    /// off so every unit of interest flows to the tranches. Mutable only via
+    /// `set_fee_switch_bps`, which is gated behind the governance multisig.
+    pub fee_switch_bps: u32,
     /// Minimum number of ledgers an LP's deposit must remain in the pool
     /// before a withdrawal is allowed. 0 means no lockup.
     pub lockup_duration_ledgers: u32,
@@ -236,6 +241,9 @@ pub enum DataKey {
     PendingAdmin,
     /// Total withdrawal fees collected and routed to treasury.
     TotalWithdrawalFees,
+    /// Lifetime protocol fees skimmed from interest by the fee switch and
+    /// routed to the treasury.
+    TotalProtocolFees,
     /// Address of the VerificationRegistry contract used to resolve borrower
     /// interest rates during loan requests. Absent until `set_verification_registry`
     /// is called by the admin.
