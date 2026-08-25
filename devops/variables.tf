@@ -70,3 +70,24 @@ variable "certificate_arn" {
   type        = string
 }
 
+# ── AWS Cost Anomaly Detection & Alerting ───────────────────────────────
+
+variable "cost_anomaly_threshold_amount" {
+  description = "Absolute dollar impact threshold ($) for triggering AWS cost anomaly alerts"
+  type        = number
+  default     = 50
+}
+
+variable "slack_webhook_url" {
+  description = "Slack Incoming Webhook URL for posting cost anomaly alerts to #devops"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "cost_anomaly_eval_frequency" {
+  description = "Frequency for cost anomaly evaluation and notifications (IMMEDIATE, DAILY, or WEEKLY)"
+  type        = string
+  default     = "IMMEDIATE"
+}
+

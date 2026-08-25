@@ -87,6 +87,27 @@ export const WalletSelectModal: React.FC<WalletSelectModalProps> = ({
   const [pathError, setPathError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [connectingType, setConnectingType] = useState<"stellar" | "ledger" | null>(null);
+  const [challengeStatus, setChallengeStatus] = useState<string | null>(null);
+  const [signatureResult, setSignatureResult] = useState<string | null>(null);
+
+  const wallet = useWallet();
+
+  async function handleSignChallenge() {
+    setChallengeStatus("Signing challenge...");
+    setSignatureResult(null);
+    try {
+      const challengeMsg = "auth_challenge_nonce_123456";
+      const sig = await wallet.signMessage(challengeMsg);
+      if (sig) {
+        setSignatureResult(sig);
+        setChallengeStatus("Challenge signed successfully!");
+      } else {
+        setChallengeStatus("Signing failed or returned empty signature.");
+      }
+    } catch (err: any) {
+      setChallengeStatus("Signing error: " + (err?.message || "Unknown error"));
+    }
+  }
 
   if (!isOpen) return null;
 
@@ -158,6 +179,7 @@ export const WalletSelectModal: React.FC<WalletSelectModalProps> = ({
           </div>
           <button
             onClick={handleDisconnect}
+            data-testid="disconnect-wallet-btn"
             className="text-xs text-zinc-500 hover:text-red-400 transition-colors underline underline-offset-2 mt-1"
           >
             Disconnect
@@ -167,6 +189,7 @@ export const WalletSelectModal: React.FC<WalletSelectModalProps> = ({
         {/* Public key row */}
         <div className="flex items-center gap-2 bg-zinc-950 rounded-lg px-3 py-2.5 border border-zinc-800 mb-4">
           <span
+            data-testid="connected-public-key"
             className="text-zinc-300 font-mono text-xs flex-1 truncate"
             title={publicKey ?? ""}
           >
@@ -195,11 +218,33 @@ export const WalletSelectModal: React.FC<WalletSelectModalProps> = ({
         </div>
 
         {/* Balance pill */}
-        <div className="flex items-center justify-between text-sm">
+        <div className="flex items-center justify-between text-sm mb-3">
           <span className="text-zinc-500 text-xs font-medium">USDC Balance</span>
           <span className="text-cyan-400 font-semibold text-xs px-2.5 py-1 bg-cyan-500/10 border border-cyan-500/20 rounded-full">
             {usdcBalance != null ? `${usdcBalance} USDC` : "—"}
           </span>
+        </div>
+
+        {/* Challenge Signing Section */}
+        <div className="mt-4 pt-4 border-t border-zinc-800/80 space-y-2">
+          <button
+            onClick={handleSignChallenge}
+            data-testid="sign-challenge-btn"
+            className="w-full py-2 px-3 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            Sign Auth Challenge
+          </button>
+          {challengeStatus && (
+            <p className="text-[11px] text-zinc-400 text-center">{challengeStatus}</p>
+          )}
+          {signatureResult && (
+            <div
+              data-testid="signed-challenge-result"
+              className="p-2.5 bg-zinc-950 border border-emerald-500/30 rounded-lg text-emerald-400 text-[11px] font-mono break-all"
+            >
+              Signature: {signatureResult}
+            </div>
+          )}
         </div>
 
         {/* Ledger path info */}
@@ -218,6 +263,7 @@ export const WalletSelectModal: React.FC<WalletSelectModalProps> = ({
         {/* ── Freighter ── */}
         <button
           onClick={handleConnectFreighter}
+          data-testid="connect-freighter-btn"
           disabled={isConnecting}
           aria-label="Connect with Freighter"
           className="w-full flex items-center justify-between p-4 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-cyan-500/50 rounded-xl transition-all group disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"

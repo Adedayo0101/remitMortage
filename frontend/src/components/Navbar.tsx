@@ -298,6 +298,7 @@ function WalletButton({
     return (
       <button
         onClick={() => connect()}
+        data-testid="connect-wallet-button"
         disabled={isConnecting}
         className={`btn-cta ${compact ? "!py-2 !px-3 !text-xs" : "!py-2.5 !px-4 !text-xs md:!text-sm"} ${fullWidth ? "!w-full" : ""} shadow-cyan-500/20 disabled:opacity-50`}
       >
@@ -337,13 +338,18 @@ function WalletButton({
               </span>
             )}
             <span
+              data-testid="wallet-address-display"
               title={publicKey ?? "Connected"}
               className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs font-semibold text-slate-200 font-mono truncate"
             >
               {publicKey ? shorten(publicKey) : "Connected"}
             </span>
           </div>
-          <button onClick={disconnect} className="btn-ghost text-xs hover:text-red-400 shrink-0">
+          <button
+            onClick={disconnect}
+            data-testid="disconnect-wallet-button"
+            className="btn-ghost text-xs hover:text-red-400 shrink-0"
+          >
             {t("disconnect")}
           </button>
         </div>
@@ -375,13 +381,18 @@ function WalletButton({
         </div>
       )}
       <span
+        data-testid="wallet-address-display"
         title={publicKey ?? "Connected"}
         className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-[11px] sm:text-xs font-semibold text-slate-200 font-mono"
       >
         {publicKey ? shorten(publicKey) : "Conn"}
       </span>
       {!compact && (
-        <button onClick={disconnect} className="btn-ghost text-xs hover:text-red-400">
+        <button
+          onClick={disconnect}
+          data-testid="disconnect-wallet-button"
+          className="btn-ghost text-xs hover:text-red-400"
+        >
           {t("disconnect")}
         </button>
       )}

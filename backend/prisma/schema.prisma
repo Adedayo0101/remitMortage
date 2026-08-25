@@ -279,11 +279,34 @@ model LoanRepayment {
 }
 
 model EventIndexerState {
-  id                 String   @id @default(uuid())
-  key                String   @unique
+  id                  String   @id @default(uuid())
+  key                 String   @unique
   lastProcessedLedger Int      @default(0)
-  cursor             String?
-  updatedAt          DateTime @updatedAt
+  cursor              String?
+  updatedAt           DateTime @updatedAt
+}
+
+enum DataDeletionStatus {
+  PENDING
+  APPROVED
+  COMPLETED
+  REJECTED
+}
+
+model DataDeletionRequest {
+  id            String             @id @default(uuid())
+  walletAddress String
+  status        DataDeletionStatus @default(PENDING)
+  reason        String?
+  requestedAt   DateTime           @default(now())
+  processedAt   DateTime?
+  anonymizedAt  DateTime?
+  details       Json?
+
+  @@index([walletAddress])
+  @@index([status])
+}
+
 model BorrowerCredential {
   id             String   @id @default(uuid())
   applicantId    String
