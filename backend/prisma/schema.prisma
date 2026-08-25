@@ -401,3 +401,16 @@ model WebhookDelivery {
   @@index([success])
   @@index([nextRetryAt])
 }
+
+model ApiKey {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  name      String
+  scopes    String[]
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+  @@index([revoked])
+}
