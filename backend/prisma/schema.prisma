@@ -206,6 +206,8 @@ model LoanApplication {
   @@index([status])
   // Composite index for queries that filter by both applicant and status
   @@index([applicantId, status])
+  // Composite index for admin queue sorting: WHERE status = '...' ORDER BY createdAt
+  @@index([status, createdAt])
 }
 
 model AuditLog {

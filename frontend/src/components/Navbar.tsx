@@ -6,9 +6,10 @@ import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useWallet } from "../context/WalletContext";
 import { useNotifications } from "@/context/NotificationContext";
+import { useKeyboardShortcuts } from "@/context/KeyboardShortcutsContext";
 import { describeNetworkMismatch } from "../lib/wallet-errors";
 import { LocaleSwitcher } from "@/i18n/LocaleSwitcher";
-import { ChevronDown, Landmark, Menu, X } from "lucide-react";
+import { ChevronDown, Landmark, Menu, X, Keyboard } from "lucide-react";
 
 function shorten(pk: string) {
   return `${pk.slice(0, 6)}...${pk.slice(-4)}`;
@@ -48,6 +49,7 @@ function InnerNavbar() {
     isConnecting,
   } = useWallet();
   const { unreadCount, togglePanel } = useNotifications();
+  const { openCheatSheet } = useKeyboardShortcuts();
   const t = useTranslations("nav");
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -107,6 +109,16 @@ function InnerNavbar() {
 
           {/* Desktop Right Actions */}
           <div className="hidden xl:flex items-center gap-2 sm:gap-3">
+            <button
+              type="button"
+              onClick={openCheatSheet}
+              title="Keyboard Shortcuts (?)"
+              className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/80 transition-colors border border-slate-800 bg-slate-900/50 flex items-center gap-1 text-xs"
+              aria-label="Open keyboard shortcuts cheat-sheet"
+            >
+              <Keyboard className="w-4 h-4 text-emerald-400" />
+              <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 text-slate-300 rounded border border-slate-700">?</kbd>
+            </button>
             <LocaleSwitcher />
             <NotificationButton unreadCount={unreadCount} onClick={togglePanel} />
             <WalletButton
