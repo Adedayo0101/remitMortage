@@ -11,7 +11,6 @@ import { ToastContainer } from "@/components/ToastContainer";
 import { HotToaster } from "@/components/HotToaster";
 import WalletBanner from "@/components/WalletBanner";
 import Footer from "@/components/Footer";
-import { OfflineBootstrap } from "@/components/OfflineBootstrap";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
 
@@ -97,7 +96,6 @@ export default async function RootLayout({
     <html lang={locale} suppressHydrationWarning>
       <body className="min-h-screen font-sans antialiased flex flex-col justify-between">
         <NextIntlClientProvider messages={messages} locale={locale}>
-          <OfflineBootstrap />
           <WalletBanner />
           <ThemeProvider>
             <WalletProvider>

@@ -29,7 +29,6 @@ import { kycRouter } from "./routes/kyc.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
-import { featureFlagsRouter } from "./routes/featureFlags.js";
 import { workspaceRouter } from "./routes/workspace.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
@@ -188,7 +187,6 @@ app.use("/api/audit-logs", auditRouter);
 app.use("/api/kyc", kycRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
-app.use("/api/feature-flags", featureFlagsRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
