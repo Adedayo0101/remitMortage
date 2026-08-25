@@ -80,6 +80,30 @@ export interface Config {
   rpcMinLedgerRetention: number;
   /** Interval (ms) between background Soroban RPC health probes. */
   rpcHealthCheckIntervalMs: number;
+  /** Per-status SLA window in hours for loan applications. */
+  applicationSlaHours: Record<string, number>;
+  /** Fallback recipient email for ops SLA alerts. */
+  opsFallbackAlertEmail: string;
+  /** Incoming Slack webhook URL for ops SLA alerts. */
+  opsSlackWebhookUrl: string | null;
+}
+
+/** Parses APPLICATION_SLA_HOURS (a JSON map of status -> SLA hours). */
+function parseApplicationSlaHours(raw: string | undefined): Record<string, number> {
+  const defaults: Record<string, number> = {
+    Pending: 48,
+    Disbursing: 24,
+  };
+  if (!raw) return defaults;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...defaults, ...parsed };
+    }
+  } catch {
+    // fallback
+  }
+  return defaults;
 }
 
 /** Parses KMS_KEY_VERSIONS (a JSON map of version -> 64-hex-char key) with a dev-safe fallback. */
@@ -173,5 +197,15 @@ export function loadConfig(): Config {
       process.env.RPC_HEALTH_CHECK_INTERVAL_MS || "60000",
       10
     ),
+    applicationSlaHours: parseApplicationSlaHours(process.env.APPLICATION_SLA_HOURS),
+    opsFallbackAlertEmail:
+      process.env.OPS_FALLBACK_ALERT_EMAIL ||
+      process.env.ALERT_DEFAULT_RECIPIENT ||
+      "ops@remitmortgage.com",
+    opsSlackWebhookUrl:
+      process.env.OPS_SLACK_WEBHOOK_URL ||
+      process.env.SLACK_WEBHOOK_URL ||
+      process.env.ALERT_WEBHOOK_URL ||
+      null,
   };
 }
