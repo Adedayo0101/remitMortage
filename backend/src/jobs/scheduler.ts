@@ -1,7 +1,9 @@
 import cron from "node-cron";
 import { runRepaymentAudit } from "./repaymentAudit.js";
+import { runKycExpiryReminderJob } from "./kycExpiryReminder.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
+let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -9,20 +11,30 @@ export function startScheduler() {
     return;
   }
 
-  // Schedule to run every day at midnight server time: "0 0 * * *"
-  // For testing purposes, it could be scheduled more frequently, but we stick to midnight
+  // Daily at midnight UTC: repayment audit
   schedulerTask = cron.schedule("0 0 * * *", async () => {
     console.log("[Scheduler] Triggering repayment audit job...");
     await runRepaymentAudit();
-  });
+  }, { timezone: "UTC" });
 
-  console.log("[Scheduler] Started: daily repayment audit job scheduled.");
+  // Daily at 08:00 UTC: KYC document expiry reminders
+  const kycSchedule = process.env.KYC_EXPIRY_CRON_SCHEDULE || "0 8 * * *";
+  kycExpiryTask = cron.schedule(kycSchedule, async () => {
+    console.log("[Scheduler] Triggering KYC expiry reminder job...");
+    await runKycExpiryReminderJob();
+  }, { timezone: "UTC" });
+
+  console.log("[Scheduler] Started: daily repayment audit + KYC expiry reminder jobs scheduled.");
 }
 
 export function stopScheduler() {
   if (schedulerTask) {
     schedulerTask.stop();
     schedulerTask = null;
-    console.log("[Scheduler] Stopped.");
   }
+  if (kycExpiryTask) {
+    kycExpiryTask.stop();
+    kycExpiryTask = null;
+  }
+  console.log("[Scheduler] Stopped.");
 }

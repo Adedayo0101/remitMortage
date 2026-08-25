@@ -49,6 +49,28 @@ model UnpinnedCid {
   createdAt    DateTime @default(now())
 }
 
+/// A KYC document record tracking expiry and reminder state.
+model KycDocument {
+  id                String    @id @default(uuid())
+  applicantId       String
+  applicant         Applicant @relation(fields: [applicantId], references: [id])
+  documentId        String    @unique  // storage key in kycStorage
+  originalName      String
+  mimeType          String
+  uploadedAt        DateTime  @default(now())
+  /// When the document expires (set by operator or derived from document type)
+  expiresAt         DateTime?
+  /// Flags to prevent duplicate reminder emails
+  reminderSent30d   Boolean   @default(false)
+  reminderSent7d    Boolean   @default(false)
+  /// Whether this document is currently blocking loan submissions
+  expired           Boolean   @default(false)
+
+  @@index([applicantId])
+  @@index([expiresAt])
+  @@index([expired])
+}
+
 enum VerificationStatus {
   PENDING
   ELIGIBLE
@@ -122,6 +144,7 @@ model Applicant {
   verificationResults VerificationResult[]
   loanApplications    LoanApplication[]
   borrowerCredentials BorrowerCredential[]
+  kycDocuments        KycDocument[]
 }
 
 model VerificationResult {

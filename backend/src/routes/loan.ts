@@ -11,6 +11,8 @@ import {
   escrowTargetMetForAmount,
 } from "../services/loanStore.js";
 import { queueNotification } from "../services/notification.js";
+import { hasExpiredKycDocuments } from "../jobs/kycExpiryReminder.js";
+import { prisma } from "../services/db.js";
 
 export const loanRouter = Router();
 
@@ -27,6 +29,15 @@ loanRouter.post("/apply", validatePositiveNumber("amount"), async (req, res) => 
       StrKey.decodeEd25519PublicKey(borrowerAddress);
     } catch (err) {
       return res.status(400).json({ error: "invalid_address", field: "borrowerAddress", message: "Invalid Stellar G-address" });
+    }
+
+    // Block loan submissions when any KYC document is expired
+    const applicant = await prisma.applicant.findUnique({ where: { stellarAddress: borrowerAddress } });
+    if (applicant && await hasExpiredKycDocuments(applicant.id)) {
+      return res.status(403).json({
+        error: "kyc_documents_expired",
+        message: "One or more of your KYC documents have expired. Please renew them before submitting a loan application.",
+      });
     }
 
     const escrowOk = escrowTargetMetForAmount(amount);
