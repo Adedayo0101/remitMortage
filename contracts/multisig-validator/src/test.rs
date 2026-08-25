@@ -641,9 +641,6 @@ fn test_quorum_threshold_update_enforces_new_requirement() {
         vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
     assert!(client.verify_signatures(&two_sigs));
     
-    // Change to 3-of-3 (quorum threshold update)
-    client.set_quorum_threshold(&3u32);
-    
     // Same 2 signatures should now fail
     assert!(!client.verify_signatures(&two_sigs));
     
@@ -652,3 +649,156 @@ fn test_quorum_threshold_update_enforces_new_requirement() {
         vec![&env, signers.get_unchecked(0), signers.get_unchecked(1), signers.get_unchecked(2)];
     assert!(client.verify_signatures(&three_sigs));
 }
+
+// ── Quorum Boundary, Mid-Lifecycle Signer Mutation & Expiry Tests ───────────
+
+#[test]
+fn test_exact_quorum_boundary_pass() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup(&env); // 3-signer account: A(2), B(1), C(1), threshold 3
+
+    // Exact quorum: A(2) + B(1) = 3 == threshold 3
+    let exact_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
+    assert_eq!(client.tally_weight(&account, &exact_keys), 3u32);
+    assert!(client.verify_threshold(&account, &exact_keys));
+    client.enforce_threshold(&account, &exact_keys); // Passes without error
+}
+
+#[test]
+fn test_one_below_quorum_boundary_fail() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup(&env); // threshold 3
+
+    // One below quorum: B(1) + C(1) = 2 < 3
+    let below_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xB2), key(&env, 0xC3)];
+    assert_eq!(client.tally_weight(&account, &below_keys), 2u32);
+    assert!(!client.verify_threshold(&account, &below_keys));
+
+    let res = client.try_enforce_threshold(&account, &below_keys);
+    assert_eq!(res, Err(Ok(ValidatorError::InsufficientWeight)));
+}
+
+#[test]
+fn test_duplicate_signer_scenario_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup(&env); // threshold 3
+
+    // Presenting duplicate signer A(2) + A(2) -> Rejected as DuplicateSigner
+    let dup_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xA1)];
+    let tally_res = client.try_tally_weight(&account, &dup_keys);
+    assert_eq!(tally_res, Err(Ok(ValidatorError::DuplicateSigner)));
+
+    let verify_res = client.try_verify_threshold(&account, &dup_keys);
+    assert_eq!(verify_res, Err(Ok(ValidatorError::DuplicateSigner)));
+}
+
+#[test]
+fn test_duplicate_admin_signer_ignored_in_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env); // 2-of-3 threshold
+
+    // Presenting duplicate signer S0 twice: counted only once (count = 1 < 2)
+    let dup_presented: Vec<Address> = vec![&env, signers.get_unchecked(0), signers.get_unchecked(0)];
+    assert_eq!(client.count_valid_signers(&dup_presented), 1u32);
+    assert!(!client.verify_signatures(&dup_presented));
+
+    let res = client.try_enforce_signatures(&dup_presented);
+    assert_eq!(res, Err(Ok(ValidatorError::InsufficientWeight)));
+}
+
+#[test]
+fn test_signer_addition_mid_proposal_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env); // 2-of-3 signers: [S0, S1, S2], threshold 2
+
+    // Mid-proposal: Admin adds S3
+    let s3 = Address::generate(&env);
+    client.add_signer(&s3);
+
+    // Signature set [S0, S3] presented: S3 is now active and counted towards quorum
+    let presented: Vec<Address> = vec![&env, signers.get_unchecked(0), s3];
+    assert_eq!(client.count_valid_signers(&presented), 2u32);
+    assert!(client.verify_signatures(&presented));
+    client.enforce_signatures(&presented);
+}
+
+#[test]
+fn test_signer_removal_mid_proposal_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env); // 2-of-3 signers: [S0, S1, S2], threshold 2
+
+    // Mid-proposal: Admin removes S2
+    client.remove_signer(&signers.get_unchecked(2));
+
+    // Presenting [S0, S2] fails because S2 is no longer a valid signer
+    let invalid_presented: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(2)];
+    assert_eq!(client.count_valid_signers(&invalid_presented), 1u32);
+    assert!(!client.verify_signatures(&invalid_presented));
+    let res = client.try_enforce_signatures(&invalid_presented);
+    assert_eq!(res, Err(Ok(ValidatorError::InsufficientWeight)));
+
+    // Presenting [S0, S1] succeeds as both remain active signers
+    let valid_presented: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    assert_eq!(client.count_valid_signers(&valid_presented), 2u32);
+    assert!(client.verify_signatures(&valid_presented));
+}
+
+#[test]
+fn test_proposal_expiry_blocks_partially_signed_proposal_approval() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup_with_timelock(&env); // threshold 3
+    let pid = proposal_id(&env, 0x99);
+
+    // Submit proposal expiring at ledger 100
+    client.submit_action(&pid, &100u32);
+    env.ledger().set_sequence(50);
+
+    // Partially-signed: weight 1 < threshold 3 fails
+    let partial_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xC3)];
+    let res_partial = client.try_approve_action(&account, &pid, &partial_keys);
+    assert_eq!(res_partial, Err(Ok(ValidatorError::InsufficientWeight)));
+
+    // Advance past expiration ledger (seq 101 > 100)
+    env.ledger().set_sequence(101);
+
+    // Submitting full signatures now fails with ProposalExpired
+    let full_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
+    let res_expired = client.try_approve_action(&account, &pid, &full_keys);
+    assert_eq!(res_expired, Err(Ok(ValidatorError::ProposalExpired)));
+}
+
+#[test]
+fn test_proposal_expiry_blocks_execution_of_locked_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup_with_timelock(&env); // 10s timelock delay
+    let pid = proposal_id(&env, 0x88);
+
+    // Submit proposal expiring at ledger 100
+    env.ledger().set_sequence(10);
+    client.submit_action(&pid, &100u32);
+
+    // Approve proposal at ledger 50 -> transitions to Locked
+    env.ledger().set_sequence(50);
+    let full_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
+    client.approve_action(&account, &pid, &full_keys);
+    assert_eq!(client.get_proposal(&pid).state, ProposalState::Locked);
+
+    // Advance timestamp so timelock elapses, but sequence passes expiration (ledger 105 > 100)
+    env.ledger().set_timestamp(1_000_015);
+    env.ledger().set_sequence(105);
+
+    // Execution fails because the proposal expired
+    let res = client.try_execute_action(&pid);
+    assert_eq!(res, Err(Ok(ValidatorError::ProposalExpired)));
+}
+

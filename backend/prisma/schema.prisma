@@ -39,6 +39,21 @@ model Notification {
   @@index([status, nextRetryAt])
 }
 
+model InAppNotification {
+  id            String   @id @default(uuid())
+  walletAddress String
+  title         String
+  message       String?
+  variant       String   @default("info")
+  read          Boolean  @default(false)
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([walletAddress, createdAt(sort: Desc)])
+  @@index([walletAddress, read])
+}
+
 model UnpinnedCid {
   id           String   @id @default(uuid())
   cid          String
@@ -179,6 +194,11 @@ model LoanApplication {
   missedPayments     Int        @default(0)
   lateFeeBalance     Float      @default(0)
   gracePeriodEndsAt  DateTime?
+
+  // SLA and reviewer tracking fields
+  assignedReviewerEmail String?
+  statusUpdatedAt       DateTime   @default(now())
+  slaAlertSentAt        DateTime?
 
   // Index backing getApplicationsByBorrower(): filter by applicant then sort by createdAt
   @@index([applicantId, createdAt])

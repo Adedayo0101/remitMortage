@@ -468,6 +468,11 @@ impl MultisigValidator {
         Ok(())
     }
 
+    /// Update the required quorum signature threshold. Requires admin signature.
+    pub fn set_quorum_threshold(env: Env, threshold: u32) -> Result<(), ValidatorError> {
+        Self::set_threshold(env, threshold)
+    }
+
     /// Add an address to the admin-managed signer set. Requires the admin's
     /// signature. Fails with `SignerAlreadyExists` if the address is already a
     /// signer.

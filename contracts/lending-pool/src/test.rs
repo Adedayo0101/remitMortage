@@ -694,3 +694,136 @@ fn test_cancel_restructure_fails_no_proposal() {
     let res = client.try_cancel_restructure(&loan_id, &_admin);
     assert_eq!(res.err().unwrap().unwrap(), PoolError::NoRestructureProposal);
 }
+
+// ── Batch Disbursement Tests ───────────────────────────────────────────
+
+#[test]
+fn test_batch_disburse_full_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+    let contractor = Address::generate(&env);
+    client.add_contractor_to_whitelist(&contractor);
+
+    // Deposit 200k liquidity
+    client.deposit(&investor, &200_000_0000000i128, &Tranche::Senior);
+
+    // Create and approve 3 loans
+    let borrower1 = Address::generate(&env);
+    let borrower2 = Address::generate(&env);
+    let borrower3 = Address::generate(&env);
+
+    let loan1 = BytesN::from_array(&env, &[31u8; 32]);
+    let loan2 = BytesN::from_array(&env, &[32u8; 32]);
+    let loan3 = BytesN::from_array(&env, &[33u8; 32]);
+
+    client.request_loan(&borrower1, &loan1, &40_000_0000000i128);
+    client.request_loan(&borrower2, &loan2, &40_000_0000000i128);
+    client.request_loan(&borrower3, &loan3, &40_000_0000000i128);
+
+    client.approve_loan(&loan1);
+    client.approve_loan(&loan2);
+    client.approve_loan(&loan3);
+
+    // Prepare batch disbursement items
+    let items = soroban_sdk::vec![
+        &env,
+        BatchDisburseItem {
+            loan_id: loan1.clone(),
+            recipient: contractor.clone(),
+            amount: 15_000_0000000i128,
+        },
+        BatchDisburseItem {
+            loan_id: loan2.clone(),
+            recipient: contractor.clone(),
+            amount: 20_000_0000000i128,
+        },
+        BatchDisburseItem {
+            loan_id: loan3.clone(),
+            recipient: contractor.clone(),
+            amount: 25_000_0000000i128,
+        },
+    ];
+
+    // Execute batch disbursement
+    let count = client.batch_disburse(&items);
+    assert_eq!(count, 3u32);
+
+    // Verify individual loan records were updated
+    assert_eq!(client.get_loan_info(&loan1).disbursed, 15_000_0000000i128);
+    assert_eq!(client.get_loan_info(&loan2).disbursed, 20_000_0000000i128);
+    assert_eq!(client.get_loan_info(&loan3).disbursed, 25_000_0000000i128);
+
+    // Verify recipient received total funds (60,000)
+    let token = token::Client::new(&env, &token_address);
+    assert_eq!(token.balance(&contractor), 60_000_0000000i128);
+}
+
+#[test]
+fn test_batch_disburse_partial_failure() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+    let contractor = Address::generate(&env);
+    client.add_contractor_to_whitelist(&contractor);
+
+    client.deposit(&investor, &200_000_0000000i128, &Tranche::Senior);
+
+    let borrower1 = Address::generate(&env);
+    let borrower2 = Address::generate(&env);
+    let borrower4 = Address::generate(&env);
+
+    let loan1 = BytesN::from_array(&env, &[41u8; 32]);
+    let loan2 = BytesN::from_array(&env, &[42u8; 32]); // Requested but NOT approved
+    let loan3 = BytesN::from_array(&env, &[43u8; 32]); // Non-existent
+    let loan4 = BytesN::from_array(&env, &[44u8; 32]);
+
+    client.request_loan(&borrower1, &loan1, &50_000_0000000i128);
+    client.request_loan(&borrower2, &loan2, &50_000_0000000i128);
+    client.request_loan(&borrower4, &loan4, &50_000_0000000i128);
+
+    // Only approve loan1 and loan4
+    client.approve_loan(&loan1);
+    client.approve_loan(&loan4);
+
+    let items = soroban_sdk::vec![
+        &env,
+        BatchDisburseItem {
+            loan_id: loan1.clone(),
+            recipient: contractor.clone(),
+            amount: 10_000_0000000i128,
+        },
+        BatchDisburseItem {
+            loan_id: loan2.clone(), // Invalid: not approved
+            recipient: contractor.clone(),
+            amount: 10_000_0000000i128,
+        },
+        BatchDisburseItem {
+            loan_id: loan3.clone(), // Invalid: non-existent
+            recipient: contractor.clone(),
+            amount: 10_000_0000000i128,
+        },
+        BatchDisburseItem {
+            loan_id: loan4.clone(),
+            recipient: contractor.clone(),
+            amount: 20_000_0000000i128,
+        },
+    ];
+
+    // Batch disburse should succeed for valid loans (1 and 4) and skip invalid ones (2 and 3)
+    let count = client.batch_disburse(&items);
+    assert_eq!(count, 2u32);
+
+    // Verify valid loans were disbursed
+    assert_eq!(client.get_loan_info(&loan1).disbursed, 10_000_0000000i128);
+    assert_eq!(client.get_loan_info(&loan4).disbursed, 20_000_0000000i128);
+
+    // Verify invalid loan was not disbursed
+    assert_eq!(client.get_loan_info(&loan2).disbursed, 0i128);
+
+    // Contractor received 30,000 total (10k from loan1 + 20k from loan4)
+    let token = token::Client::new(&env, &token_address);
+    assert_eq!(token.balance(&contractor), 30_000_0000000i128);
+}

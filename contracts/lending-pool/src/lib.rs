@@ -7,7 +7,7 @@ mod types;
 mod fuzz;
 
 pub use crate::errors::PoolError;
-pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo};
+pub use crate::types::{BatchDisburseItem, DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo};
 use soroban_sdk::{contract, contractimpl, symbol_short, IntoVal, Symbol, token, Address, BytesN, Env, Vec};
 use insurance_pool::{premium_for, InsurancePoolContractClient};
 use multisig_validator::MultisigValidatorClient;
@@ -1460,6 +1460,171 @@ impl LendingPoolContract {
 
         Ok(())
         }) // non_reentrant
+    }
+
+    /// Disburse funds across multiple loan records in a single transaction.
+    ///
+    /// Validates each loan independently. If an individual loan fails validation
+    /// (e.g. non-existent, not approved, amount exceeds principal, contractor not whitelisted,
+    /// or insufficient pool liquidity), that loan is skipped with a logged event (`batch_skip`),
+    /// and processing continues for the remaining items in the batch.
+    ///
+    /// Admin-only. Returns the number of successfully disbursed loans.
+    pub fn batch_disburse(
+        env: Env,
+        requests: Vec<BatchDisburseItem>,
+    ) -> Result<u32, PoolError> {
+        Self::check_not_paused(&env)?;
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        let mut success_count: u32 = 0;
+        let len = requests.len();
+
+        for i in 0..len {
+            let item = requests.get_unchecked(i);
+
+            if item.amount <= 0 {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("amt_inval"),
+                );
+                continue;
+            }
+
+            let mut loan = match env
+                .storage()
+                .persistent()
+                .get::<DataKey, LoanRecord>(&DataKey::Loan(item.loan_id.clone()))
+            {
+                Some(l) => l,
+                None => {
+                    env.events().publish(
+                        (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                        symbol_short!("not_found"),
+                    );
+                    continue;
+                }
+            };
+
+            if loan.status != LoanStatus::Approved {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("not_appr"),
+                );
+                continue;
+            }
+
+            if loan.disbursed + item.amount > loan.principal {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("exc_prnc"),
+                );
+                continue;
+            }
+
+            let liquidity = Self::read_total_liquidity(&env);
+            if liquidity < item.amount {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("no_liq"),
+                );
+                continue;
+            }
+
+            if !Self::is_contractor_whitelisted(&env, &item.recipient) {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("unauth_c"),
+                );
+                continue;
+            }
+
+            // Daily borrow limit check
+            let limit: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::DailyBorrowLimit)
+                .unwrap_or(0);
+            if limit > 0 {
+                let day_id = env.ledger().sequence() / LEDGERS_PER_DAY;
+                let current_day_borrowed: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::DailyBorrowed(day_id))
+                    .unwrap_or(0);
+                if current_day_borrowed.saturating_add(item.amount) > limit {
+                    env.events().publish(
+                        (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                        symbol_short!("lim_exc"),
+                    );
+                    continue;
+                }
+                env.storage()
+                    .instance()
+                    .set(&DataKey::DailyBorrowed(day_id), &(current_day_borrowed + item.amount));
+            }
+
+            // Perform disbursement for valid item
+            let token = Self::token_client(&env, &config.token);
+            let insurance_pool = Self::read_insurance_pool(&env).filter(|_| premium_for(item.amount) > 0);
+            let premium = if insurance_pool.is_some() {
+                premium_for(item.amount)
+            } else {
+                0
+            };
+
+            token.transfer(
+                &env.current_contract_address(),
+                &item.recipient,
+                &(item.amount - premium),
+            );
+
+            if let Some(insurance_addr) = insurance_pool {
+                token.transfer(&env.current_contract_address(), &insurance_addr, &premium);
+                InsurancePoolContractClient::new(&env, &insurance_addr)
+                    .record_premium(&env.current_contract_address(), &premium);
+
+                let total_premiums: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::TotalInsurancePremiums)
+                    .unwrap_or(0);
+                env.storage().instance().set(
+                    &DataKey::TotalInsurancePremiums,
+                    &(total_premiums + premium),
+                );
+            }
+
+            Self::accrue_interest(&env, &mut loan);
+            loan.disbursed += item.amount;
+            loan.outstanding_debt = loan.outstanding_debt.saturating_add(item.amount);
+            Self::set_loan(&env, &item.loan_id, &loan);
+
+            let new_liquidity = liquidity - item.amount;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalLiquidity, &new_liquidity);
+
+            let active_commitments = Self::read_active_commitments(&env);
+            env.storage().instance().set(
+                &DataKey::ActiveLoanCommitments,
+                &(active_commitments - item.amount),
+            );
+
+            env.events().publish(
+                (symbol_short!("disburse"),),
+                (item.loan_id.clone(), item.recipient.clone(), item.amount),
+            );
+
+            success_count += 1;
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(success_count)
     }
 
     /// Refund disputed milestone funds back to the pool.

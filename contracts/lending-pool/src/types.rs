@@ -195,6 +195,15 @@ pub struct RestructureProposal {
     pub proposed_at_ledger: u32,
 }
 
+/// An individual item in a batch disbursement request.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchDisburseItem {
+    pub loan_id: BytesN<32>,
+    pub recipient: Address,
+    pub amount: i128,
+}
+
 /// Storage keys for the lending pool contract.
 #[contracttype]
 #[derive(Clone)]
