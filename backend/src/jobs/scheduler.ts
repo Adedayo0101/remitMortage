@@ -6,12 +6,14 @@ import { runKycExpiryReminderJob } from "./kycExpiryReminder.js";
 import { runEscrowReconciliation } from "./escrowReconciliation.js";
 import { runApplicationSlaMonitorJob } from "./applicationSlaMonitor.js";
 import { runAdminPortfolioDigestJob } from "./adminPortfolioDigest.js";
+import { runSessionTokenPurgeJob } from "./sessionTokenPurge.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
 let escrowReconciliationTask: ReturnType<typeof cron.schedule> | null = null;
 let applicationSlaTask: ReturnType<typeof cron.schedule> | null = null;
 let adminDigestTask: ReturnType<typeof cron.schedule> | null = null;
+let sessionTokenPurgeTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -25,6 +27,13 @@ export function startScheduler() {
   schedulerTask = cron.schedule("0 0 * * *", async () => {
     console.log("[Scheduler] Triggering repayment audit job...");
     await runRepaymentAudit();
+  }, { timezone: "UTC" });
+
+  // Daily at 04:00 UTC: Session token auto-purge (configurable retention)
+  const sessionPurgeSchedule = process.env.SESSION_TOKEN_PURGE_CRON_SCHEDULE || "0 4 * * *";
+  sessionTokenPurgeTask = cron.schedule(sessionPurgeSchedule, async () => {
+    console.log("[Scheduler] Triggering session token purge job...");
+    await runSessionTokenPurgeJob();
   }, { timezone: "UTC" });
 
   // Daily at 08:00 UTC: KYC document expiry reminders
@@ -59,6 +68,7 @@ export function startScheduler() {
 
   console.log(
     "[Scheduler] Started: repayment audit, KYC expiry reminder, escrow reconciliation, application SLA monitor, and admin portfolio digest jobs scheduled."
+    "[Scheduler] Started: repayment audit, session token purge, KYC expiry reminder, escrow reconciliation, and application SLA monitor jobs scheduled."
   );
 }
 
@@ -66,6 +76,10 @@ export function stopScheduler() {
   if (schedulerTask) {
     schedulerTask.stop();
     schedulerTask = null;
+  }
+  if (sessionTokenPurgeTask) {
+    sessionTokenPurgeTask.stop();
+    sessionTokenPurgeTask = null;
   }
   if (kycExpiryTask) {
     kycExpiryTask.stop();
