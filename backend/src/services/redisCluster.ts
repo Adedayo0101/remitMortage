@@ -54,7 +54,7 @@ export async function initializeRedisCluster(): Promise<RedisClient | null> {
       const options = buildClusterOptions();
 
       logger.info("[redis-cluster] initializing cluster connection", {
-        nodes: nodes.map((n) => `${n.host}:${n.port}`),
+        nodes: nodes.map((n: any) => `${n.host}:${n.port}`),
       });
 
       clusterClient = new Cluster(nodes, options);
