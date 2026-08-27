@@ -77,6 +77,7 @@
     "description": "Sigue tus ahorros de enganche del 30 %, el rendimiento acumulado del protocolo y los desembolsos de hitos hipotecarios.",
     "downloadStatement": "Descargar estado de cuenta",
     "depositUsdc": "Depositar USDC",
+    "startOnboarding": "Comenzar onboarding",
     "earlyExit": "Salida anticipada"
   }
 }

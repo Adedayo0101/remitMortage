@@ -2,6 +2,7 @@ import { Router } from "express";
 import { StrKey } from "@stellar/stellar-sdk";
 import logger from "../utils/logger.js";
 import { validatePositiveNumber } from "../middleware/validate.js";
+import { idempotencyMiddleware } from "../middleware/idempotency.js";
 import {
   createApplication,
   getApplication,
@@ -16,10 +17,16 @@ import { prisma } from "../services/db.js";
 
 export const loanRouter = Router();
 
+import {
+  checkDuplicateApplicants,
+  logReviewerDecision,
+  ApplicantFields,
+} from "../utils/fuzzyMatch.js";
+
 // POST /api/loan/apply
-loanRouter.post("/apply", validatePositiveNumber("amount"), async (req, res) => {
+loanRouter.post("/apply", idempotencyMiddleware, validatePositiveNumber("amount"), async (req, res) => {
   try {
-    const { borrowerAddress, amount } = req.body ?? {};
+    const { borrowerAddress, amount, fullName, address, idDocumentNumber, taxId } = req.body ?? {};
 
     if (!borrowerAddress) {
       return res.status(400).json({ error: "missing_field", field: "borrowerAddress", message: "borrowerAddress is required" });
@@ -32,7 +39,7 @@ loanRouter.post("/apply", validatePositiveNumber("amount"), async (req, res) => 
     }
 
     // Block loan submissions when any KYC document is expired
-    const applicant = await prisma.applicant.findUnique({ where: { stellarAddress: borrowerAddress } });
+    const applicant = await prisma.applicant.findFirst({ where: { stellarAddress: borrowerAddress, deletedAt: null } });
     if (applicant && await hasExpiredKycDocuments(applicant.id)) {
       return res.status(403).json({
         error: "kyc_documents_expired",
@@ -45,8 +52,42 @@ loanRouter.post("/apply", validatePositiveNumber("amount"), async (req, res) => 
       return res.status(400).json({ error: "escrow_target_not_met", message: "Escrow target not reached for borrower" });
     }
 
+    // Issue #496: Duplicate Applicant Detection via Fuzzy Matching
+    const currentFields: ApplicantFields = {
+      fullName: fullName || applicant?.taxId || undefined,
+      address: address || undefined,
+      idDocumentNumber: idDocumentNumber || undefined,
+      taxId: taxId || applicant?.taxId || undefined,
+    };
+
+    let dupStatus: "Pending" | "MANUAL_REVIEW" = "Pending";
+    let dupDetails: any = null;
+
+    if (currentFields.fullName || currentFields.address || currentFields.idDocumentNumber || currentFields.taxId) {
+      const allApplicants = await prisma.applicant.findMany({ where: { deletedAt: null } });
+      const candidates: ApplicantFields[] = allApplicants.map((a: any) => ({
+        id: a.id,
+        fullName: a.taxId || undefined,
+        taxId: a.taxId || undefined,
+      }));
+
+      const dupCheck = checkDuplicateApplicants(currentFields, candidates);
+      if (dupCheck.isDuplicate) {
+        dupStatus = "MANUAL_REVIEW";
+        dupDetails = dupCheck;
+        logger.warn(
+          `Application for borrower ${borrowerAddress} flagged for MANUAL_REVIEW due to high similarity duplicate (score: ${dupCheck.highestScore})`
+        );
+      }
+    }
+
     const app = await createApplication(borrowerAddress, String(amount));
-    return res.status(201).json(app);
+    if (dupStatus === "MANUAL_REVIEW") {
+      await updateApplication(app.id, { status: "MANUAL_REVIEW" });
+      app.status = "MANUAL_REVIEW";
+    }
+
+    return res.status(201).json({ ...app, duplicateCheck: dupDetails });
   } catch (error) {
     logger.error("Loan apply error", { error });
     return res.status(500).json({ error: "failed_to_create_application" });
@@ -72,7 +113,7 @@ loanRouter.get("/pending", async (req, res) => {
 });
 
 // POST /api/loan/:id/approve
-loanRouter.post("/:id/approve", async (req, res) => {
+loanRouter.post("/:id/approve", idempotencyMiddleware, async (req, res) => {
   const { id } = req.params;
   const app = await getApplication(id);
   if (!app) return res.status(404).json({ error: "not_found" });
@@ -194,3 +235,62 @@ loanRouter.post("/:id/trigger-payment-due", async (req, res) => {
     return res.status(500).json({ error: "failed_to_trigger_notifications", message: error.message });
   }
 });
+
+// POST /api/loan/check-duplicate
+// Checks incoming KYC/applicant fields against existing applicants for potential duplicates.
+loanRouter.post("/check-duplicate", async (req, res) => {
+  try {
+    const { fullName, address, idDocumentNumber, taxId, applicantId } = req.body ?? {};
+    const source: ApplicantFields = { id: applicantId, fullName, address, idDocumentNumber, taxId };
+
+    const allApplicants = await prisma.applicant.findMany({ where: { deletedAt: null } });
+    const candidates: ApplicantFields[] = allApplicants.map((a: any) => ({
+      id: a.id,
+      fullName: a.taxId || undefined,
+      taxId: a.taxId || undefined,
+    }));
+
+    const result = checkDuplicateApplicants(source, candidates);
+    return res.json(result);
+  } catch (error: any) {
+    logger.error("Check duplicate error", { error });
+    return res.status(500).json({ error: "failed_to_check_duplicates", message: error.message });
+  }
+});
+
+// POST /api/loan/:id/review
+// Logs manual reviewer decision (APPROVED or REJECTED) and updates loan application status.
+loanRouter.post("/:id/review", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reviewerId, decision, reason } = req.body ?? {};
+
+    if (!reviewerId || !decision || (decision !== "APPROVED" && decision !== "REJECTED")) {
+      return res.status(400).json({
+        error: "invalid_request",
+        message: "reviewerId and decision ('APPROVED' or 'REJECTED') are required.",
+      });
+    }
+
+    const app = await getApplication(id);
+    if (!app) return res.status(404).json({ error: "not_found" });
+
+    const auditLog = logReviewerDecision(id, reviewerId, decision, reason);
+
+    const newStatus = decision === "APPROVED" ? "Pending" : "Rejected";
+    const updated = await updateApplication(id, {
+      status: newStatus,
+      reason: reason || (decision === "APPROVED" ? "Manual review approved" : "Manual review rejected duplicate"),
+    });
+
+    return res.json({
+      message: `Application reviewed successfully: set status to ${newStatus}`,
+      application: updated,
+      auditLog,
+    });
+  } catch (error: any) {
+    logger.error("Manual review decision error", { error });
+    return res.status(500).json({ error: "failed_to_process_review", message: error.message });
+  }
+});
+

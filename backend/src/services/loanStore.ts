@@ -12,7 +12,8 @@ export type LoanStatus =
   | "Rejected"
   | "Disbursing"
   | "Repaying"
-  | "Completed";
+  | "Completed"
+  | "MANUAL_REVIEW";
 
 export interface LoanApplication {
   id: string;
@@ -39,7 +40,7 @@ function mapLoanApplication(record: any): LoanApplication {
 async function findOrCreateApplicant(stellarAddress: string) {
   return prisma.applicant.upsert({
     where: { stellarAddress },
-    update: {},
+    update: { deletedAt: null },
     create: { stellarAddress },
   });
 }
@@ -64,8 +65,8 @@ export async function createApplication(borrowerAddress: string, amount: string)
 }
 
 export async function getApplication(id: string) {
-  const record = await prisma.loanApplication.findUnique({
-    where: { id },
+  const record = await prisma.loanApplication.findFirst({
+    where: { id, deletedAt: null },
     include: { applicant: true },
   });
 
@@ -74,7 +75,7 @@ export async function getApplication(id: string) {
 
 export async function getApplicationsByBorrower(address: string) {
   const records = await prisma.loanApplication.findMany({
-    where: { applicant: { stellarAddress: address } },
+    where: { deletedAt: null, applicant: { stellarAddress: address, deletedAt: null } },
     include: { applicant: true },
   });
 
@@ -83,7 +84,7 @@ export async function getApplicationsByBorrower(address: string) {
 
 export async function getPendingApplications() {
   const records = await prisma.loanApplication.findMany({
-    where: { status: "Pending" },
+    where: { status: "Pending", deletedAt: null },
     include: { applicant: true },
   });
 
@@ -92,14 +93,15 @@ export async function getPendingApplications() {
 
 export async function listApplications() {
   const records = await prisma.loanApplication.findMany({
+    where: { deletedAt: null },
     include: { applicant: true },
   });
   return records.map(mapLoanApplication);
 }
 
 export async function updateApplication(id: string, patch: Partial<LoanApplication>) {
-  const existing = await prisma.loanApplication.findUnique({
-    where: { id },
+  const existing = await prisma.loanApplication.findFirst({
+    where: { id, deletedAt: null },
   });
   if (!existing) return null;
 
@@ -126,12 +128,91 @@ export async function updateApplication(id: string, patch: Partial<LoanApplicati
         data: updateData,
         include: { applicant: true },
       })
-    : await prisma.loanApplication.findUnique({
-        where: { id },
+    : await prisma.loanApplication.findFirst({
+        where: { id, deletedAt: null },
         include: { applicant: true },
       });
 
   return record ? mapLoanApplication(record) : null;
+}
+
+export type BulkReviewDecision = "approve" | "reject";
+
+export interface BulkReviewItem {
+  applicationId: string;
+  decision: BulkReviewDecision;
+  reason?: string;
+}
+
+export interface BulkReviewResult {
+  applicationId: string;
+  decision: BulkReviewDecision;
+  status: LoanStatus;
+}
+
+/**
+ * Review applications independently while keeping each state change and its
+ * compliance audit event in one database transaction. A rejected item does
+ * not roll back successful decisions for other applications in the batch.
+ */
+export async function bulkReviewApplications(
+  items: BulkReviewItem[],
+  reviewerAddress: string,
+  ipAddress?: string,
+) {
+  const results: BulkReviewResult[] = [];
+  const failures: Array<{ applicationId: string; error: string }> = [];
+
+  for (const item of items) {
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const application = await tx.loanApplication.findFirst({
+          where: { id: item.applicationId, deletedAt: null },
+          include: { applicant: true },
+        });
+
+        if (!application) throw new Error("not_found");
+        if (application.status !== "Pending") throw new Error("invalid_state");
+        if (application.principal <= 0 || application.applicant.deletedAt !== null) {
+          throw new Error("ineligible");
+        }
+        if (application.applicant.verificationStatus === "INELIGIBLE") {
+          throw new Error("ineligible");
+        }
+
+        const status = item.decision === "approve" ? "Approved" : "Rejected";
+        const updated = await tx.loanApplication.update({
+          where: { id: item.applicationId },
+          data: { status, statusUpdatedAt: new Date() },
+          include: { applicant: true },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            action: `loan_application.bulk_${item.decision}d`,
+            actorAddress: reviewerAddress,
+            ipAddress,
+            metadata: {
+              applicationId: item.applicationId,
+              previousStatus: application.status,
+              newStatus: status,
+              decision: item.decision,
+              reason: item.reason ?? null,
+              reviewedAt: new Date().toISOString(),
+            },
+          },
+        });
+
+        return { applicationId: updated.id, decision: item.decision, status };
+      });
+      results.push(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "review_failed";
+      failures.push({ applicationId: item.applicationId, error: message });
+    }
+  }
+
+  return { results, failures };
 }
 
 // Simple escrow check: for demo purposes consider escrow "met" when requested amount is <= 5000

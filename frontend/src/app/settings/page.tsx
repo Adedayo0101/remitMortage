@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { getProductTourStore } from "@/hooks/useProductTourState";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 // Push relies on browser-only APIs (ServiceWorker, PushManager, Notification),
@@ -379,6 +380,22 @@ export default function SettingsPage() {
                         Used for urgent SMS notifications (e.g. escrow target reached, missed payment warnings).
                       </span>
                     </label>
+                  </div>
+                  <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/60 p-5">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                      <div>
+                        <h3 className="text-sm font-semibold text-white">Guided Product Tour</h3>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Re-run the first-time walkthrough of the dashboard features.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => getProductTourStore().getState().reset()}
+                        className="btn-outline-blue whitespace-nowrap"
+                      >
+                        Replay Tour
+                      </button>
+                    </div>
                   </div>
                 </section>
               )}

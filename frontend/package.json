@@ -1,5 +1,5 @@
 {
-  "name": "frontend",
+  "name": "@remitmortgage/frontend",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -36,7 +36,8 @@
     "react-hot-toast": "^2.6.0",
     "recharts": "^2.15.0",
     "zod": "^4.4.3",
-    "zustand": "^5.0.15"
+    "zustand": "^5.0.14",
+    "react-joyride": "^3.2.0"
   },
   "devDependencies": {
     "@babel/core": "^7.27.4",

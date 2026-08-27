@@ -45,6 +45,9 @@ pub struct PoolConfig {
     /// off so every unit of interest flows to the tranches. Mutable only via
     /// `set_fee_switch_bps`, which is gated behind the governance multisig.
     pub fee_switch_bps: u32,
+    /// Loan origination fee, in basis points, deducted from each disbursement
+    /// and routed to `treasury_address`. Loan accounting remains gross.
+    pub origination_fee_bps: u32,
     /// Minimum number of ledgers an LP's deposit must remain in the pool
     /// before a withdrawal is allowed. 0 means no lockup.
     pub lockup_duration_ledgers: u32,
@@ -57,6 +60,10 @@ pub struct PoolConfig {
     /// behaviour is unchanged until an admin opts in via
     /// `set_min_deposit_amount`.
     pub min_deposit_amount: i128,
+    /// Minimum number of ledgers between consecutive refinancing requests on
+    /// the same loan. Prevents borrowers from repeatedly refinancing in short
+    /// succession to game interest rate timing. `0` disables the cooldown.
+    pub refinance_cooldown_ledgers: u32,
 }
 
 /// Tracks an individual investor's capital contribution.
