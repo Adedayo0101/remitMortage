@@ -1,5 +1,11 @@
 import { StrKey } from "@stellar/stellar-sdk";
 import { prisma } from "./db.js";
+import {
+  diffLoanSnapshot,
+  recordLoanChange,
+  recordLoanCreation,
+  type LoanSnapshot,
+} from "./loanHistory.js";
 
 // lightweight id generator to avoid adding dependencies
 function makeId() {
@@ -61,7 +67,23 @@ export async function createApplication(borrowerAddress: string, amount: string)
     include: { applicant: true },
   });
 
-  return mapLoanApplication(record);
+  const application = mapLoanApplication(record);
+
+  // Seed the audit trail with the creation snapshot so later point-in-time
+  // reconstructions have a base state to replay changes onto.
+  await recordLoanCreation(application.id, snapshotOf(application));
+
+  return application;
+}
+
+/** The mutable slice of a loan application tracked by the audit trail. */
+function snapshotOf(app: LoanApplication): LoanSnapshot {
+  return {
+    borrowerAddress: app.borrowerAddress,
+    amount: app.amount,
+    status: app.status,
+    reason: app.reason,
+  };
 }
 
 export async function getApplication(id: string) {
@@ -102,8 +124,16 @@ export async function listApplications() {
 export async function updateApplication(id: string, patch: Partial<LoanApplication>) {
   const existing = await prisma.loanApplication.findFirst({
     where: { id, deletedAt: null },
+    include: { applicant: true },
   });
   if (!existing) return null;
+
+  const before: LoanSnapshot = {
+    borrowerAddress: existing.applicant.stellarAddress,
+    amount: existing.principal,
+    status: existing.status,
+    reason: existing.reason ?? undefined,
+  };
 
   if (patch.borrowerAddress) {
     await prisma.applicant.update({
@@ -133,7 +163,16 @@ export async function updateApplication(id: string, patch: Partial<LoanApplicati
         include: { applicant: true },
       });
 
-  return record ? mapLoanApplication(record) : null;
+  if (!record) return null;
+
+  const application = mapLoanApplication(record);
+
+  // Append the field-level diff to the audit trail so this state transition
+  // can be replayed during point-in-time reconstruction. No-op when nothing
+  // tracked actually changed.
+  await recordLoanChange(id, diffLoanSnapshot(before, snapshotOf(application)));
+
+  return application;
 }
 
 export type BulkReviewDecision = "approve" | "reject";
@@ -199,6 +238,10 @@ export async function bulkReviewApplications(
               decision: item.decision,
               reason: item.reason ?? null,
               reviewedAt: new Date().toISOString(),
+              // Field-level change set, so point-in-time reconstruction can
+              // replay this transition the same way it replays updates from
+              // `updateApplication`.
+              changes: { status: { from: application.status, to: status } },
             },
           },
         });
