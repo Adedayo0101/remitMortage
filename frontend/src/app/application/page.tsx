@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { ArrowRight, CheckCircle2, FileText, Landmark, WalletCards } from "lucide-react";
 import { useWallet, OptionalWalletProvider } from "@/context/WalletContext";
+import { track } from "@/lib/analytics";
 
 const Navbar = dynamic(() => import("@/components/Navbar"), { ssr: false });
 
@@ -28,11 +29,13 @@ function ApplicationPageInner() {
     event.preventDefault();
     if (!publicKey || !amount) return;
     setLoading(true); setMessage(null);
+    track("loan_application_started");
     try {
       const response = await fetch("/api/loan/applications", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ borrowerAddress: publicKey, amount }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.message || data.error || "Application failed");
       setApplications((current) => [data, ...current]); setAmount(""); setMessage("Application submitted for underwriting review.");
+      track("loan_application_submitted");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Application failed"); }
     finally { setLoading(false); }
   }

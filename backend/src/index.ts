@@ -64,6 +64,7 @@ import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js
 import { queueService } from "./services/queueService.js";
 import { startNotificationWorker, stopNotificationWorker } from "./workers/notificationWorker.js";
 import { startWebhookWorker, stopWebhookWorker } from "./workers/webhookWorker.js";
+import { startAnalyticsWorker, stopAnalyticsWorker } from "./workers/analyticsWorker.js";
 
 const app = express();
 const config = loadConfig();
@@ -106,6 +107,7 @@ void (async () => {
     await Promise.all([
       startNotificationWorker(),
       startWebhookWorker(),
+      startAnalyticsWorker(),
     ]);
     logger.info("[queue] BullMQ workers started", {
       mode: config.redisClusterEnabled ? "cluster" : "single",
@@ -231,6 +233,7 @@ async function shutdown(signal: string) {
   await Promise.allSettled([
     stopNotificationWorker(),
     stopWebhookWorker(),
+    stopAnalyticsWorker(),
     queueService.close(),
     closeCluster(),
   ]);
