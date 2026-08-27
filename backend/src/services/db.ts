@@ -22,15 +22,10 @@ export type VerificationStatus = "PENDING" | "ELIGIBLE" | "INELIGIBLE";
 //
 const dbUrl = buildDatabaseUrl();
 
-const baseClient = new PrismaClient(
-  dbUrl
-    ? {
-        datasources: {
-          db: { url: dbUrl },
-        },
-      }
-    : undefined
-);
+if (dbUrl) {
+  process.env.DATABASE_URL = dbUrl;
+}
+const baseClient = new PrismaClient();
 
 // Route every operation through the pool-saturation instrumentation. The
 // extension is applied defensively: `$extends` is unavailable on some mocked
@@ -125,20 +120,20 @@ export async function getBorrower(stellarAddress: string) {
 
 // ── In-app notification helpers ─────────────────────────────────────
 export async function getUserInAppNotifications(address: string) {
-  return prisma.notification.findMany({ where: { recipient: address }, orderBy: { createdAt: "desc" } });
+  return prisma.inAppNotification.findMany({ where: { walletAddress: address }, orderBy: { createdAt: "desc" } });
 }
 
 export async function markInAppNotificationRead(id: string, address: string) {
-  return prisma.notification.updateMany({ where: { id, recipient: address }, data: { read: true } });
+  return prisma.inAppNotification.updateMany({ where: { id, walletAddress: address }, data: { read: true } });
 }
 
 export async function markAllInAppNotificationsRead(address: string) {
-  return prisma.notification.updateMany({ where: { recipient: address }, data: { read: true } });
+  return prisma.inAppNotification.updateMany({ where: { walletAddress: address }, data: { read: true } });
 }
 
 export async function createInAppNotification(data: { walletAddress: string; title: string; message?: string; variant?: string; metadata?: any }) {
   const { walletAddress, title, message, variant, metadata } = data;
-  return prisma.notification.create({ data: { recipient: walletAddress, title, content: message || "", variant: variant || null, metadata: metadata || null } });
+  return prisma.inAppNotification.create({ data: { walletAddress, title, message: message || "", variant: variant || "info", metadata: metadata || null } });
 }
 
 export async function getBorrowerStatus(stellarAddress: string) {

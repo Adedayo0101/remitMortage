@@ -25,7 +25,7 @@ notificationsRouter.get("/", async (req: Request, res: Response) => {
 
   try {
     const notifications = await getUserInAppNotifications(address);
-    const unreadCount = notifications.filter((n) => !n.read).length;
+    const unreadCount = notifications.filter((n: any) => n.status !== "Sent").length;
 
     return res.json({
       notifications,
@@ -50,6 +50,8 @@ notificationsRouter.patch("/:id/read", async (req: Request, res: Response) => {
   }
 
   try {
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
     await markInAppNotificationRead(id, address);
     return res.json({ success: true, message: `Notification ${id} marked as read.` });
   } catch (error: any) {

@@ -28,7 +28,7 @@ function mapLoanApplication(record: any): LoanApplication {
   return {
     id: record.id,
     borrowerAddress: record.applicant.stellarAddress,
-    amount: record.principal,
+    amount: String(record.principal),
     status: record.status,
     reason: record.reason ?? undefined,
     createdAt: record.createdAt.toISOString(),
@@ -54,7 +54,7 @@ export async function createApplication(borrowerAddress: string, amount: string)
     data: {
       id,
       applicantId: applicant.id,
-      principal: amount,
+      principal: Number(amount),
       status: "Pending",
     },
     include: { applicant: true },
@@ -112,12 +112,12 @@ export async function updateApplication(id: string, patch: Partial<LoanApplicati
   }
 
   const updateData: {
-    principal?: string;
+    principal?: number;
     status?: LoanStatus;
     reason?: string | null;
   } = {};
 
-  if (patch.amount !== undefined) updateData.principal = patch.amount;
+  if (patch.amount !== undefined) updateData.principal = Number(patch.amount);
   if (patch.status !== undefined) updateData.status = patch.status;
   if (patch.reason !== undefined) updateData.reason = patch.reason ?? null;
 
@@ -164,7 +164,7 @@ export async function bulkReviewApplications(
 
   for (const item of items) {
     try {
-      const result = await prisma.$transaction(async (tx) => {
+      const result = await (prisma.$transaction as any)(async (tx: any) => {
         const application = await tx.loanApplication.findFirst({
           where: { id: item.applicationId, deletedAt: null },
           include: { applicant: true },
@@ -204,7 +204,7 @@ export async function bulkReviewApplications(
 
         return { applicationId: updated.id, decision: item.decision, status };
       });
-      results.push(result);
+      results.push(result as BulkReviewResult);
     } catch (error) {
       const message = error instanceof Error ? error.message : "review_failed";
       failures.push({ applicationId: item.applicationId, error: message });

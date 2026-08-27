@@ -39,9 +39,7 @@ export async function enqueueAnalyticsEvents(userId: string, inputs: AnalyticsIn
 export async function persistAnalyticsEvents(events: AnalyticsEventRecord[]): Promise<void> {
   if (!events.length) return;
   await prisma.analyticsEvent.createMany({
-    data: events.map(({ id, event, userId, properties, timestamp }) => ({
-      id, event, userId, properties, timestamp: new Date(timestamp),
-    })),
+    data: events.map(({ id, event, userId, properties, timestamp }) => ({ id, event, userId, properties: properties as any, timestamp: new Date(timestamp) })),
     skipDuplicates: true,
   });
 }
@@ -56,7 +54,7 @@ export async function processAnalyticsJob(data: AnalyticsJobData): Promise<void>
 }
 
 export async function getAnalyticsCounts(start: Date, end: Date, event?: string) {
-  const rows = await prisma.analyticsEvent.groupBy({
+  const rows = await (prisma.analyticsEvent as any).groupBy({
     by: ["event"],
     where: { timestamp: { gte: start, lt: end }, ...(event ? { event } : {}) },
     _count: { _all: true },
@@ -66,9 +64,6 @@ export async function getAnalyticsCounts(start: Date, end: Date, event?: string)
 }
 
 export async function getAnalyticsFunnel(start: Date, end: Date, events: string[]) {
-  const rows = await Promise.all(events.map((event) => prisma.analyticsEvent.count({
-    where: { event, timestamp: { gte: start, lt: end } },
-    distinct: ["userId"],
-  })));
+  const rows = await Promise.all(events.map((event) => (prisma.analyticsEvent as any).count({ where: { event, timestamp: { gte: start, lt: end } }, distinct: ["userId"] })));
   return { steps: events.map((event, index) => ({ event, count: rows[index] })) };
 }

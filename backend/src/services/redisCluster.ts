@@ -21,8 +21,8 @@ function buildClusterNodes(): ClusterNode[] {
   });
 }
 
-function buildClusterOptions(): ClusterOptions {
-  return {
+function buildClusterOptions(): any {
+  const opts: any = {
     lazyConnect: true,
     enableReadyCheck: true,
     enableOfflineQueue: true,
@@ -30,21 +30,16 @@ function buildClusterOptions(): ClusterOptions {
     retryDelayOnClusterDown: 1000,
     retryDelayOnTryAgain: 100,
     maxRetriesPerRequest: 3,
-    clusterRetryStrategy: (times: number) => {
-      const delay = Math.min(times * 200, 5000);
-      return delay;
-    },
+    clusterRetryStrategy: (times: number) => Math.min(times * 200, 5000),
     redisOptions: {
-      retryStrategy: (times: number) => {
-        const delay = Math.min(times * 100, 3000);
-        return delay;
-      },
+      retryStrategy: (times: number) => Math.min(times * 100, 3000),
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       enableOfflineQueue: true,
       lazyConnect: true,
     },
   };
+  return opts;
 }
 
 export async function initializeRedisCluster(): Promise<RedisClient | null> {

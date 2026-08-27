@@ -306,7 +306,7 @@ export class DatabaseBackupService {
       const file = bucket.file(key);
       const archiveFile = bucket.file(key.replace("backups/", "cold-storage/"));
 
-      await file.copy(archiveFile, { destination: archiveFile });
+      await file.copy(archiveFile);
       await file.delete();
     } else {
       throw new Error(`Unsupported cloud provider: ${this.options.provider}`);
@@ -379,7 +379,7 @@ export class DatabaseBackupService {
       const writeStream = require("fs").createWriteStream(outputPath);
 
       await new Promise((resolve, reject) => {
-        response.Body.pipe(writeStream)
+        (response as any).Body.pipe(writeStream)
           .on("finish", resolve)
           .on("error", reject);
       });
