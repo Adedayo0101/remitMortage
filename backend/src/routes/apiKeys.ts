@@ -1,10 +1,9 @@
 import { Router } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../services/db.js";
 import { requireAdmin } from "../middleware/auth.js";
 import crypto from "crypto";
 
 const router = Router();
-const prisma = new PrismaClient();
 
 function generateApiKey() {
   return "rm_" + crypto.randomBytes(32).toString("hex");

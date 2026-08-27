@@ -91,10 +91,10 @@ async function handleMissedPayment(loanId: string, applicantId: string, currentM
   const newLateFee = currentLateFee + DEFAULT_LATE_FEE;
 
     if (newMissedPayments >= 3) {
-    // Transition to default (map to existing enum 'Rejected' for now)
+    // Transition to default
     await prisma.loanApplication.update({
       where: { id: loanId },
-      data: { missedPayments: newMissedPayments, lateFeeBalance: newLateFee, gracePeriodEndsAt: null, status: "Rejected" },
+      data: { missedPayments: newMissedPayments, lateFeeBalance: newLateFee, gracePeriodEndsAt: null, status: "DEFAULTED" },
     });
 
     const applicant = await prisma.applicant.findUnique({ where: { id: applicantId } });
@@ -132,7 +132,7 @@ async function handleMissedPayment(loanId: string, applicantId: string, currentM
 }
 
 async function handleDefault(loanId: string, applicantId: string) {
-  await prisma.loanApplication.update({ where: { id: loanId }, data: { status: "Rejected", gracePeriodEndsAt: null } });
+  await prisma.loanApplication.update({ where: { id: loanId }, data: { status: "DEFAULTED", gracePeriodEndsAt: null } });
   
   const applicant = await prisma.applicant.findUnique({ where: { id: applicantId } });
   if (applicant) {
