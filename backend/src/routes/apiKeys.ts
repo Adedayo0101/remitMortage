@@ -34,7 +34,8 @@ router.post("/", requireAdmin, async (req, res) => {
 });
 
 router.post("/:id/revoke", requireAdmin, async (req, res) => {
-  const { id } = req.params;
+  const rawId = req.params.id;
+  const id = Array.isArray(rawId) ? rawId[0] : rawId;
 
   try {
     const apiKey = await prisma.apiKey.update({

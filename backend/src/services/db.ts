@@ -1,6 +1,5 @@
-const { PrismaClient } = require("@prisma/client") as {
-  PrismaClient: new (options?: Record<string, unknown>) => any;
-};
+import { PrismaClient, Prisma } from "@prisma/client";
+import { createHash } from "crypto";
 
 import { encrypt, decrypt } from "../utils/crypto.js";
 import { buildDatabaseUrl } from "./dbPoolConfig.js";
@@ -122,6 +121,24 @@ export async function getBorrower(stellarAddress: string) {
   return prisma.borrower.findFirst({
     where: { stellarAddress, deletedAt: null },
   });
+}
+
+// ── In-app notification helpers ─────────────────────────────────────
+export async function getUserInAppNotifications(address: string) {
+  return prisma.notification.findMany({ where: { recipient: address }, orderBy: { createdAt: "desc" } });
+}
+
+export async function markInAppNotificationRead(id: string, address: string) {
+  return prisma.notification.updateMany({ where: { id, recipient: address }, data: { read: true } });
+}
+
+export async function markAllInAppNotificationsRead(address: string) {
+  return prisma.notification.updateMany({ where: { recipient: address }, data: { read: true } });
+}
+
+export async function createInAppNotification(data: { walletAddress: string; title: string; message?: string; variant?: string; metadata?: any }) {
+  const { walletAddress, title, message, variant, metadata } = data;
+  return prisma.notification.create({ data: { recipient: walletAddress, title, content: message || "", variant: variant || null, metadata: metadata || null } });
 }
 
 export async function getBorrowerStatus(stellarAddress: string) {
