@@ -37,8 +37,8 @@ fn setup(env: &Env) -> (Address, Address, Address, EscrowContractClient<'_>, Sym
         persistent_lifetime_threshold: 100,
         yield_vault: None,
     });
-    client.set_beneficiary_inactivity_period(&10);
-    client.configure_beneficiary_attestors(&Vec::from_array(env, [attestor]), &1);
+    client.set_beneficiary_inactivity(&10);
+    client.configure_beneficiary_attestors(&Vec::from_array(env, [attestor.clone()]), &1);
     let goal = Symbol::new(env, "home");
     client.deposit(&owner, &goal, &500);
     (owner, beneficiary, attestor, client, goal)
@@ -89,4 +89,88 @@ fn beneficiary_claim_transfers_once_after_inactivity_and_quorum() {
     assert!(client
         .try_claim_as_beneficiary(&owner, &goal, &beneficiary, &attestations)
         .is_err());
+}
+
+#[test]
+fn claim_requires_both_inactivity_and_quorum() {
+    let env = Env::default();
+    let (owner, beneficiary, attestor, client, goal) = setup(&env);
+    client.set_beneficiary(&owner, &goal, &Some(beneficiary.clone()));
+
+    let second_attestor = Address::generate(&env);
+    client.configure_beneficiary_attestors(
+        &Vec::from_array(&env, [attestor.clone(), second_attestor.clone()]),
+        &2,
+    );
+
+    // A valid single attestation is insufficient before the inactivity window.
+    let one = Vec::from_array(&env, [attestor.clone()]);
+    assert!(client
+        .try_claim_as_beneficiary(&owner, &goal, &beneficiary, &one)
+        .is_err());
+
+    // At the exact inactivity boundary, the full quorum succeeds.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 10);
+    let full = Vec::from_array(&env, [attestor, second_attestor]);
+    assert_eq!(client.claim_as_beneficiary(&owner, &goal, &beneficiary, &full), 500);
+}
+
+#[test]
+fn invalid_attestor_sets_are_rejected() {
+    let env = Env::default();
+    let (owner, beneficiary, attestor, client, goal) = setup(&env);
+    client.set_beneficiary(&owner, &goal, &Some(beneficiary.clone()));
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 10);
+
+    let unknown = Address::generate(&env);
+    let unknown_set = Vec::from_array(&env, [unknown]);
+    assert!(client
+        .try_claim_as_beneficiary(&owner, &goal, &beneficiary, &unknown_set)
+        .is_err());
+
+    let duplicate = Vec::from_array(&env, [attestor.clone(), attestor]);
+    assert!(client
+        .try_claim_as_beneficiary(&owner, &goal, &beneficiary, &duplicate)
+        .is_err());
+}
+
+#[test]
+fn replaced_beneficiary_cannot_claim() {
+    let env = Env::default();
+    let (owner, old_beneficiary, attestor, client, goal) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
+    client.set_beneficiary(&owner, &goal, &Some(old_beneficiary.clone()));
+    client.set_beneficiary(&owner, &goal, &Some(new_beneficiary.clone()));
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 10);
+    let attestations = Vec::from_array(&env, [attestor]);
+
+    assert!(client
+        .try_claim_as_beneficiary(&owner, &goal, &old_beneficiary, &attestations)
+        .is_err());
+    assert_eq!(client.claim_as_beneficiary(&owner, &goal, &new_beneficiary, &attestations), 500);
+}
+
+#[test]
+fn owner_activity_resets_exact_deadline() {
+    let env = Env::default();
+    let (owner, beneficiary, attestor, client, goal) = setup(&env);
+    client.set_beneficiary(&owner, &goal, &Some(beneficiary.clone()));
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 9);
+
+    // A deposit at the old deadline records new owner activity.
+    client.deposit(&owner, &goal, &100);
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 9);
+    let attestations = Vec::from_array(&env, [attestor]);
+    assert!(client
+        .try_claim_as_beneficiary(&owner, &goal, &beneficiary, &attestations)
+        .is_err());
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 1);
+    assert_eq!(client.claim_as_beneficiary(&owner, &goal, &beneficiary, &attestations), 600);
 }

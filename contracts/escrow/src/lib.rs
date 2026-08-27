@@ -675,10 +675,6 @@ impl EscrowContract {
                 return Err(EscrowError::UnauthorizedBeneficiary);
             }
         }
-        let record = Self::get_borrower(&env, &borrower, &goal_id);
-        if record.deposited == 0 || record.released || record.withdrawn || record.seized {
-            return Err(EscrowError::BorrowerNotFound);
-        }
         let key = DataKey::Beneficiary(borrower.clone(), goal_id.clone());
         match beneficiary.clone() {
             Some(address) => {
@@ -689,7 +685,7 @@ impl EscrowContract {
         }
         Self::owner_activity(&env, &borrower, &goal_id);
         env.events().publish(
-            (symbol_short!("beneficiary"), goal_id),
+            (symbol_short!("benefic"), goal_id),
             (borrower, beneficiary),
         );
         Self::extend_instance_ttl(&env);
@@ -734,7 +730,7 @@ impl EscrowContract {
     /// Configure inactivity in ledger-sequence units. Only the escrow admin
     /// can change this value; zero is rejected because it would permit an
     /// immediate beneficiary takeover.
-    pub fn set_beneficiary_inactivity_period(
+    pub fn set_beneficiary_inactivity(
         env: Env,
         period_ledgers: u32,
     ) -> Result<(), EscrowError> {
@@ -756,7 +752,7 @@ impl EscrowContract {
         Ok(())
     }
 
-    pub fn get_beneficiary_inactivity_period(env: Env) -> Result<u32, EscrowError> {
+    pub fn get_beneficiary_inactivity(env: Env) -> Result<u32, EscrowError> {
         env.storage()
             .instance()
             .get(&DataKey::BeneficiaryInactivityPeriod)
@@ -792,7 +788,7 @@ impl EscrowContract {
         attestations: soroban_sdk::Vec<Address>,
     ) -> Result<i128, EscrowError> {
         Self::non_reentrant(&env, || {
-            let configured = env
+            let configured: Address = env
                 .storage()
                 .persistent()
                 .get(&DataKey::Beneficiary(borrower.clone(), goal_id.clone()))
@@ -877,6 +873,7 @@ impl EscrowContract {
                         .remove(&DataKey::YieldShares(borrower.clone(), goal_id.clone()));
                 }
             }
+            let principal = record.deposited;
             // State is changed before the external token call; Soroban rolls
             // back both changes if the transfer fails.
             record.deposited = 0;
@@ -885,7 +882,9 @@ impl EscrowContract {
                 &true,
             );
             Self::set_borrower(&env, &borrower, &goal_id, &record);
-            let total = Self::read_total_pooled(&env).saturating_sub(amount);
+            // `TotalPooled` tracks deposited principal, not accrued yield.
+            // Remove exactly the principal recorded for this escrow.
+            let total = Self::read_total_pooled(&env).saturating_sub(principal);
             env.storage().instance().set(&DataKey::TotalPooled, &total);
             get_token_client(&env, &config.token).transfer(
                 &env.current_contract_address(),
