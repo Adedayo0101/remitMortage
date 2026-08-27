@@ -46,4 +46,15 @@ pub enum EscrowError {
     ReentrancyGuard = 20,
     /// TTL bump amounts and lifetime thresholds must be greater than zero.
     InvalidTtlConfig = 21,
+    BeneficiaryNotConfigured = 22,
+    UnauthorizedBeneficiary = 23,
+    BeneficiaryInactivityNotElapsed = 24,
+    InsufficientAttestationQuorum = 25,
+    InvalidAttestation = 26,
+    BeneficiaryAlreadyClaimed = 27,
+    NoClaimableFunds = 28,
+    InvalidInactivityPeriod = 29,
+    InvalidAttestorConfig = 30,
+    ActivityNotRecorded = 31,
+    PenaltyProposalNotPending = 32,
 }

@@ -1,4 +1,12 @@
-use soroban_sdk::{contracttype, Address, BytesN, Symbol};
+use soroban_sdk::{contracttype, Address, BytesN, Symbol, Vec};
+
+/// Admin-controlled signer set used for death/incapacity attestations.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeneficiaryAttestorConfig {
+    pub signers: Vec<Address>,
+    pub threshold: u32,
+}
 
 /// Configuration set during contract initialization.
 #[contracttype]
@@ -108,4 +116,12 @@ pub enum DataKey {
     /// Optional LendingPool contract address that early-exit penalty fees are
     /// routed to as investor yield. Unset means penalties stay in the contract.
     LendingPool,
+    Beneficiary(Address, Symbol),
+    LastOwnerActivity(Address, Symbol),
+    BeneficiaryClaimed(Address, Symbol),
+    BeneficiaryInactivityPeriod,
+    BeneficiaryAttestors,
+    ReentrancyGuard,
+    TotalYieldShares,
+    YieldShares(Address, Symbol),
 }
