@@ -25,7 +25,8 @@ notificationsRouter.get("/", async (req: Request, res: Response) => {
 
   try {
     const notifications = await getUserInAppNotifications(address);
-    const unreadCount = notifications.filter((n: any) => n.status !== "Sent").length;
+    // Support both the older `status` field and a boolean `read` flag used by tests.
+    const unreadCount = notifications.filter((n: any) => (typeof n.read === 'boolean' ? !n.read : n.status !== "Sent")).length;
 
     return res.json({
       notifications,

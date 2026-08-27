@@ -14,6 +14,7 @@ jest.mock("../services/db.js", () => ({
       findMany: jest.fn(),
       update: jest.fn(),
     },
+    getNotificationPreference: jest.fn(),
   },
 }));
 
