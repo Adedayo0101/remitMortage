@@ -521,3 +521,18 @@ model SessionToken {
   @@index([expiresAt])
   @@index([createdAt])
 }
+
+/// Structured product-usage events. `userId` is the authenticated wallet
+/// identity at ingestion time; properties must not contain sensitive data.
+model AnalyticsEvent {
+  id         String   @id @default(uuid())
+  event      String
+  userId     String
+  properties Json
+  timestamp  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([event, timestamp])
+  @@index([userId, timestamp])
+  @@index([timestamp])
+}
