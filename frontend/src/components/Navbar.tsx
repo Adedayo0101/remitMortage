@@ -121,15 +121,17 @@ function InnerNavbar() {
             </button>
             <LocaleSwitcher />
             <NotificationButton unreadCount={unreadCount} onClick={togglePanel} />
-            <WalletButton
-              isConnected={isConnected}
-              publicKey={publicKey}
-              usdcBalance={usdcBalance}
-              walletType={walletType}
-              isConnecting={isConnecting}
-              connect={connect}
-              disconnect={disconnect}
-            />
+            <span id="tour-wallet">
+              <WalletButton
+                isConnected={isConnected}
+                publicKey={publicKey}
+                usdcBalance={usdcBalance}
+                walletType={walletType}
+                isConnecting={isConnecting}
+                connect={connect}
+                disconnect={disconnect}
+              />
+            </span>
           </div>
 
           {/* Tablet (lg only) - show condensed: locale, notification, wallet, hamburger */}
