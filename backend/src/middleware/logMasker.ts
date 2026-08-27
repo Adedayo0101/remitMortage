@@ -52,7 +52,7 @@ function maskSensitiveValues(value: unknown, depth = 0): unknown {
     const masked: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
       const keyLower = key.toLowerCase();
-      if (SENSITIVE_FIELD_NAMES.has(keyLower)) {
+      if (SENSITIVE_PATTERNS.some((p) => p.test(keyLower))) {
         masked[key] = MASK;
       } else if (typeof val === "string" && SENSITIVE_PATTERNS.some((p) => p.test(val))) {
         masked[key] = MASK;
