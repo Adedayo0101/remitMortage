@@ -92,6 +92,7 @@ export interface Config {
   borrowerRecordRetentionDays: number;
   /** Compliance-reviewed retention window for soft-deleted loan applications. */
   loanRecordRetentionDays: number;
+  analyticsEnabled: boolean;
 }
 
 /** Parses APPLICATION_SLA_HOURS (a JSON map of status -> SLA hours). */
@@ -227,5 +228,6 @@ export function loadConfig(): Config {
       process.env.LOAN_RECORD_RETENTION_DAYS || "2555",
       10
     ),
+    analyticsEnabled: process.env.ANALYTICS_ENABLED !== "false",
   };
 }
