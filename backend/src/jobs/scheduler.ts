@@ -17,6 +17,7 @@ let applicationSlaTask: ReturnType<typeof cron.schedule> | null = null;
 let adminDigestTask: ReturnType<typeof cron.schedule> | null = null;
 let sessionTokenPurgeTask: ReturnType<typeof cron.schedule> | null = null;
 let orphanedRecordCleanupTask: ReturnType<typeof cron.schedule> | null = null;
+let staleDraftCleanupTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
