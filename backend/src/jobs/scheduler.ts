@@ -8,6 +8,7 @@ import { runApplicationSlaMonitorJob } from "./applicationSlaMonitor.js";
 import { runAdminPortfolioDigestJob } from "./adminPortfolioDigest.js";
 import { runSessionTokenPurgeJob } from "./sessionTokenPurge.js";
 import { runOrphanedRecordCleanupJob } from "./orphanedRecordCleanup.js";
+import { runStaleDraftCleanupJob } from "./staleDraftCleanup.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
@@ -16,6 +17,7 @@ let applicationSlaTask: ReturnType<typeof cron.schedule> | null = null;
 let adminDigestTask: ReturnType<typeof cron.schedule> | null = null;
 let sessionTokenPurgeTask: ReturnType<typeof cron.schedule> | null = null;
 let orphanedRecordCleanupTask: ReturnType<typeof cron.schedule> | null = null;
+let staleDraftCleanupTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -75,8 +77,15 @@ export function startScheduler() {
     await runAdminPortfolioDigestJob();
   }, { timezone: "UTC" });
 
+  // Daily at 06:00 UTC: flag/notify and expire stale Draft loan applications
+  const staleDraftSchedule = process.env.DRAFT_STALE_CLEANUP_CRON_SCHEDULE || "0 6 * * *";
+  staleDraftCleanupTask = cron.schedule(staleDraftSchedule, async () => {
+    console.log("[Scheduler] Triggering stale draft cleanup job...");
+    await runStaleDraftCleanupJob();
+  }, { timezone: "UTC" });
+
   console.log(
-    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, and admin portfolio digest jobs scheduled."
+    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, and stale draft cleanup jobs scheduled."
   );
 }
 
@@ -108,6 +117,10 @@ export function stopScheduler() {
   if (adminDigestTask) {
     adminDigestTask.stop();
     adminDigestTask = null;
+  }
+  if (staleDraftCleanupTask) {
+    staleDraftCleanupTask.stop();
+    staleDraftCleanupTask = null;
   }
   console.log("[Scheduler] Stopped.");
 }
