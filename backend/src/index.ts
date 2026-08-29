@@ -36,6 +36,7 @@ import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { incidentWebhookRouter } from "./routes/incidentWebhooks.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
+import { referralRouter } from "./routes/referral.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { logMasker } from "./middleware/logMasker.js";
@@ -196,6 +197,7 @@ app.use("/api/audit-logs", auditRouter);
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
 app.use("/api/notifications", notificationsRouter);
+app.use("/api/referral", referralRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
 app.use("/api/admin", adminAuthRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);

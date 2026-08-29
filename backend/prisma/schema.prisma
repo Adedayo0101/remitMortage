@@ -521,3 +521,25 @@ model SessionToken {
   @@index([expiresAt])
   @@index([createdAt])
 }
+
+model ReferralCode {
+  id           String               @id @default(uuid())
+  ownerAddress String               @unique
+  code         String               @unique
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  attributions ReferralAttribution[]
+
+  @@index([code])
+}
+
+model ReferralAttribution {
+  id              String       @id @default(uuid())
+  referralCodeId  String
+  referralCode    ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
+  referredAddress String       @unique
+  createdAt       DateTime     @default(now())
+
+  @@index([referralCodeId])
+  @@index([createdAt])
+}
