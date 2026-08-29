@@ -21,6 +21,10 @@ export interface Config {
   usdcTokenId: string;
   pinataApiKey: string;
   pinataSecretApiKey: string;
+  /** Secondary IPFS provider API key for redundancy (e.g., NFT.storage or Web3.storage). */
+  secondaryIpfsProvider: "nft.storage" | "web3.storage" | null;
+  /** Secondary IPFS provider API key. */
+  secondaryIpfsApiKey: string | null;
   smtpHost: string;
   smtpPort: number;
   smtpUser: string;
@@ -166,6 +170,8 @@ export function loadConfig(): Config {
     usdcTokenId: process.env.USDC_TOKEN_ID || "",
     pinataApiKey: process.env.PINATA_API_KEY || "",
     pinataSecretApiKey: process.env.PINATA_SECRET_API_KEY || "",
+    secondaryIpfsProvider: (process.env.SECONDARY_IPFS_PROVIDER as "nft.storage" | "web3.storage") || null,
+    secondaryIpfsApiKey: process.env.SECONDARY_IPFS_API_KEY || null,
     smtpHost: process.env.SMTP_HOST || "localhost",
     smtpPort: parseInt(process.env.SMTP_PORT || "587", 10),
     smtpUser: process.env.SMTP_USER || "",
