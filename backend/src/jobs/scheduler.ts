@@ -9,12 +9,13 @@ export function startScheduler() {
     return;
   }
 
-  // Schedule to run every day at midnight server time: "0 0 * * *"
-  // For testing purposes, it could be scheduled more frequently, but we stick to midnight
+  // Schedule to run every day at UTC midnight. The explicit timezone: "UTC"
+  // option prevents node-cron from firing at local-wall-clock midnight, which
+  // would shift by ±1 hour across DST transitions on non-UTC servers.
   schedulerTask = cron.schedule("0 0 * * *", async () => {
     console.log("[Scheduler] Triggering repayment audit job...");
     await runRepaymentAudit();
-  });
+  }, { timezone: "UTC" });
 
   console.log("[Scheduler] Started: daily repayment audit job scheduled.");
 }

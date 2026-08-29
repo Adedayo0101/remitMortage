@@ -65,8 +65,10 @@ export async function runRepaymentAudit() {
 }
 
 async function handleEnterGracePeriod(loanId: string, applicantId: string) {
+  // Use UTC-based arithmetic so the result is the same regardless of the
+  // server's local timezone or whether a DST transition occurs in the window.
   const gracePeriodEndsAt = new Date();
-  gracePeriodEndsAt.setDate(gracePeriodEndsAt.getDate() + GRACE_PERIOD_DAYS);
+  gracePeriodEndsAt.setUTCDate(gracePeriodEndsAt.getUTCDate() + GRACE_PERIOD_DAYS);
 
   await prisma.loanApplication.update({
     where: { id: loanId },
@@ -110,9 +112,10 @@ async function handleMissedPayment(loanId: string, applicantId: string, currentM
       );
     }
   } else {
-    // Just a missed payment, set next due date to e.g., 30 days from now
+    // Just a missed payment, set next due date to 30 days from now.
+    // Use UTC-based arithmetic so the result is DST-safe.
     const nextDueDate = new Date();
-    nextDueDate.setDate(nextDueDate.getDate() + 30);
+    nextDueDate.setUTCDate(nextDueDate.getUTCDate() + 30);
 
     await prisma.loanApplication.update({
       where: { id: loanId },
