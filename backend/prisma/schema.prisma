@@ -214,6 +214,11 @@ model LoanApplication {
   // Cleared on resume, so it also marks whether a notice is outstanding.
   draftStaleNotifiedAt   DateTime?
 
+  // Human-readable rejection reason (manual or auto-rejection).
+  reason                 String?
+  autoRejectedAt         DateTime?
+  autoRejectionLogs      LoanAutoRejectionLog[]
+
   // Index backing getApplicationsByBorrower(): filter by applicant then sort by createdAt
   @@index([applicantId, createdAt])
   // Index backing getPendingApplications(): WHERE status = 'Pending' — avoids full table scan
@@ -519,5 +524,43 @@ model SessionToken {
 
   @@index([walletAddress])
   @@index([expiresAt])
+  @@index([createdAt])
+}
+
+enum AutoRejectionRuleType {
+  MIN_CREDIT_SCORE
+  MAX_DEBT_TO_INCOME
+  REQUIRES_VERIFICATION
+}
+
+/// Configurable baseline eligibility rules evaluated at loan submission time.
+model LoanAutoRejectionRule {
+  id        String                @id @default(uuid())
+  name      String
+  ruleType  AutoRejectionRuleType
+  /// Rule-specific JSON payload, e.g. `{ "minCreditScore": 620 }`.
+  config    Json
+  active    Boolean               @default(true)
+  priority  Int                   @default(0)
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  logs      LoanAutoRejectionLog[]
+
+  @@index([active, priority])
+}
+
+/// Audit trail of auto-rejections applied to a loan application.
+model LoanAutoRejectionLog {
+  id            String              @id @default(uuid())
+  applicationId String
+  application   LoanApplication     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  ruleId        String
+  rule          LoanAutoRejectionRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  reason        String
+  createdAt     DateTime            @default(now())
+
+  @@index([applicationId])
+  @@index([ruleId])
   @@index([createdAt])
 }

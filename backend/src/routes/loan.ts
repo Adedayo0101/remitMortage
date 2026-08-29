@@ -16,6 +16,7 @@ import {
 import { queueNotification } from "../services/notification.js";
 import { hasExpiredKycDocuments } from "../jobs/kycExpiryReminder.js";
 import { prisma } from "../services/db.js";
+import { applyAutoRejectionIfNeeded } from "../services/autoRejectionRuleStore.js";
 
 export const loanRouter = Router();
 
@@ -87,6 +88,30 @@ loanRouter.post("/apply", idempotencyMiddleware, validatePositiveNumber("amount"
     if (dupStatus === "MANUAL_REVIEW") {
       await updateApplication(app.id, { status: "MANUAL_REVIEW" });
       app.status = "MANUAL_REVIEW";
+      return res.status(201).json({ ...app, duplicateCheck: dupDetails });
+    }
+
+    const applicantRecord = await prisma.applicant.findFirst({
+      where: { stellarAddress: borrowerAddress, deletedAt: null },
+    });
+    if (applicantRecord) {
+      const notifyEmail = req.body?.email || `${borrowerAddress}@example.com`;
+      const { autoRejected, evaluation } = await applyAutoRejectionIfNeeded(
+        app.id,
+        applicantRecord.id,
+        Number(amount),
+        notifyEmail
+      );
+
+      if (autoRejected) {
+        const rejected = await getApplication(app.id);
+        return res.status(422).json({
+          error: "auto_rejected",
+          message: "Application failed baseline eligibility rules.",
+          application: rejected,
+          autoRejection: evaluation,
+        });
+      }
     }
 
     return res.status(201).json({ ...app, duplicateCheck: dupDetails });
