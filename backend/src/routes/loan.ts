@@ -16,6 +16,7 @@ import {
 import { queueNotification } from "../services/notification.js";
 import { hasExpiredKycDocuments } from "../jobs/kycExpiryReminder.js";
 import { prisma } from "../services/db.js";
+import { reconstructLoanApplicationAt } from "../services/loanHistory.js";
 
 export const loanRouter = Router();
 
@@ -200,8 +201,41 @@ loanRouter.post("/:id/discard", async (req, res) => {
 });
 
 // GET /api/loan/:id
+// Optional `?asOf=<ISO timestamp>` reconstructs the loan's historical state
+// from the audit trail as it stood at that instant. Without `asOf`, the
+// current record is returned unchanged.
 loanRouter.get("/:id", async (req, res) => {
   const { id } = req.params;
+  const asOfRaw = req.query.asOf;
+
+  if (asOfRaw !== undefined) {
+    if (typeof asOfRaw !== "string") {
+      return res.status(400).json({ error: "invalid_asof", field: "asOf", message: "asOf must be a single ISO timestamp" });
+    }
+    const asOf = new Date(asOfRaw);
+    if (Number.isNaN(asOf.getTime())) {
+      return res.status(400).json({ error: "invalid_asof", field: "asOf", message: "asOf must be a valid ISO timestamp" });
+    }
+
+    const current = await getApplication(id);
+    if (!current) return res.status(404).json({ error: "not_found" });
+
+    const historical = await reconstructLoanApplicationAt(id, asOf, {
+      // Loans created before the audit trail carried a creation snapshot fall
+      // back to their current identity fields as the replay seed.
+      fallbackSeed: {
+        borrowerAddress: current.borrowerAddress,
+        amount: current.amount,
+        status: current.status,
+        reason: current.reason,
+      },
+    });
+    if (!historical) {
+      return res.status(404).json({ error: "not_found_asof", message: "Loan did not exist at the requested timestamp" });
+    }
+    return res.json({ ...historical, asOf: asOf.toISOString() });
+  }
+
   const app = await getApplication(id);
   if (!app) return res.status(404).json({ error: "not_found" });
   return res.json(app);
