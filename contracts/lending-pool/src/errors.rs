@@ -98,4 +98,14 @@ pub enum PoolError {
     /// Borrower already holds the maximum number of active loans permitted by
     /// `max_active_loans_per_borrower`.
     BorrowerLoanCapExceeded = 46,
+    /// Refinancing request was submitted before the cooldown window elapsed.
+    RefinanceCooldownActive = 46,
+    /// Loan assumption is not authorized by borrower or new borrower.
+    AssumptionNotAuthorized = 47,
+    /// No pending loan assumption request found for this loan.
+    AssumptionNotFound = 48,
+    /// A loan assumption request already exists for this loan.
+    AssumptionAlreadyRequested = 49,
+    /// Withdrawal amount exceeds the pool's configured per-transaction limit.
+    WithdrawalExceedsMaxSingleLimit = 50,
 }

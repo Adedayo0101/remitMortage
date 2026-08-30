@@ -29,6 +29,7 @@ import { kycRouter } from "./routes/kyc.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
+import { adminAuthRouter } from "./routes/adminAuth.js";
 import { workspaceRouter } from "./routes/workspace.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
@@ -42,6 +43,7 @@ import { correlationId } from "./middleware/correlationId.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { rlsMiddleware } from "./middleware/rls.js";
 import { startEventIndexer } from "./services/eventIndexer.js";
 import {
   globalRateLimiter,
@@ -160,6 +162,11 @@ app.get("/api/csrf-token", (req, res) => {
   res.json({ csrfToken, cookieName: CSRF_COOKIE });
 });
 
+// Row-Level Security: sets PostgreSQL session tenant context per-request.
+// Runs after cookie parsing so the auth token is available, but before any
+// route handlers execute database queries.
+app.use(rlsMiddleware);
+
 // Basic rate limiter for verification endpoints: 100 requests per minute per IP
 const verificationLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -190,6 +197,7 @@ app.use("/api/audit-logs", auditRouter);
 app.use("/api/kyc", kycRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
+app.use("/api/admin", adminAuthRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/webhooks/pagerduty", incidentWebhookRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
