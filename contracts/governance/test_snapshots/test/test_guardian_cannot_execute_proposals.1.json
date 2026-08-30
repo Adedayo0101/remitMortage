@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 6,
+    "address": 5,
     "nonce": 0
   },
   "auth": [
@@ -19,10 +19,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "u32": 42
+                  "u32": 1
                 },
                 {
-                  "bytes": "516d45766964656e63654861736831323334353637383930"
+                  "bytes": "516d45766964656e636548617368"
                 }
               ]
             }
@@ -31,8 +31,6 @@
         }
       ]
     ],
-    [],
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
@@ -55,8 +53,6 @@
         }
       ]
     ],
-    [],
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
@@ -79,7 +75,6 @@
         }
       ]
     ],
-    [],
     []
   ],
   "ledger": {
@@ -146,7 +141,7 @@
                                 "symbol": "quorum_bps"
                               },
                               "val": {
-                                "u32": 6000
+                                "u32": 10000
                               }
                             },
                             {
@@ -160,9 +155,6 @@
                                   },
                                   {
                                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                                  },
-                                  {
-                                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                                   }
                                 ]
                               }
@@ -200,7 +192,7 @@
                                 "symbol": "evidence_hash"
                               },
                               "val": {
-                                "bytes": "516d45766964656e63654861736831323334353637383930"
+                                "bytes": "516d45766964656e636548617368"
                               }
                             },
                             {
@@ -208,7 +200,7 @@
                                 "symbol": "milestone_id"
                               },
                               "val": {
-                                "u32": 42
+                                "u32": 1
                               }
                             },
                             {
