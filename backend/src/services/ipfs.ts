@@ -2,7 +2,6 @@ import axios from "axios";
 import logger from "../utils/logger.js";
 import { loadConfig } from "../config.js";
 
-const config = loadConfig();
 export const PINATA_MAX_RETRIES = 3;
 export const PINATA_RETRY_BASE_DELAY_MS = 1000;
 
@@ -104,6 +103,7 @@ async function executePinataRequest<T>(
  * Pins a file to Pinata IPFS.
  */
 async function pinFileToPinata(fileBuffer: Buffer, fileName: string): Promise<string> {
+  const config = loadConfig();
   const url = "https://api.pinata.cloud/pinning/pinFileToIPFS";
 
   if (!config.pinataApiKey || !config.pinataSecretApiKey) {
@@ -149,6 +149,7 @@ async function pinFileToPinata(fileBuffer: Buffer, fileName: string): Promise<st
  * Pins a file to NFT.storage.
  */
 async function pinFileToNFTStorage(fileBuffer: Buffer, fileName: string): Promise<string> {
+  const config = loadConfig();
   const url = "https://api.nft.storage/upload";
 
   if (!config.secondaryIpfsApiKey) {
@@ -185,6 +186,7 @@ async function pinFileToNFTStorage(fileBuffer: Buffer, fileName: string): Promis
  * Pins a file to Web3.storage.
  */
 async function pinFileToWeb3Storage(fileBuffer: Buffer, fileName: string): Promise<string> {
+  const config = loadConfig();
   const url = "https://api.web3.storage/upload";
 
   if (!config.secondaryIpfsApiKey) {
@@ -221,6 +223,7 @@ async function pinFileToWeb3Storage(fileBuffer: Buffer, fileName: string): Promi
  * Pins a JSON object to Pinata.
  */
 async function pinJSONToPinata(metadata: any): Promise<string> {
+  const config = loadConfig();
   const url = "https://api.pinata.cloud/pinning/pinJSONToIPFS";
 
   if (!config.pinataApiKey || !config.pinataSecretApiKey) {
@@ -280,6 +283,7 @@ export async function pinFileToMultipleProviders(
   fileBuffer: Buffer,
   fileName: string
 ): Promise<MultiProviderPinResult> {
+  const config = loadConfig();
   const providers: ProviderPinResult[] = [];
   let primaryCid: string | null = null;
   let successCount = 0;
@@ -332,20 +336,23 @@ export async function pinFileToMultipleProviders(
     }
   }
 
-  // Require at least 2 successful pins for true redundancy, or at least primary pin if no secondary configured
-  const requiresRedundancy = config.secondaryIpfsProvider !== null;
-  if (requiresRedundancy && successCount < 2) {
-    throw new Error(
-      `Failed to achieve redundancy: only ${successCount} provider(s) succeeded. Require minimum 2.`
-    );
-  }
+  // Determine effective CID - prefer primary, fallback to secondary if primary failed
+  const effectiveCid = primaryCid || providers.find((p) => p.success)?.cid || null;
 
-  if (!primaryCid) {
+  if (!effectiveCid) {
     throw new Error("Failed to pin to primary provider (Pinata)");
   }
 
+  // Warn if redundancy not achieved but don't hard-fail when at least one provider succeeded
+  // This keeps content retrievable via secondary during primary outage (acceptance criteria #2)
+  if (config.secondaryIpfsProvider && successCount < 2) {
+    console.warn(
+      `[IPFSService] Redundancy warning: only ${successCount} provider(s) succeeded. Require minimum 2 for full redundancy.`
+    );
+  }
+
   return {
-    cid: primaryCid,
+    cid: effectiveCid,
     fileName,
     providers,
     successCount,
@@ -419,34 +426,12 @@ export interface UnpinResult {
  * @returns Pinata API response status and CID.
  */
 export async function unpinFileFromIPFS(cid: string): Promise<UnpinResult> {
+  const config = loadConfig();
   const url = `https://api.pinata.cloud/pinning/unpin/${encodeURIComponent(cid)}`;
 
   if (!config.pinataApiKey || !config.pinataSecretApiKey) {
     throw new Error("Pinata credentials are not configured in environment variables.");
   }
-
-  try {
-    const response = await executePinataRequest(() =>
-      axios.delete(url, {
-        headers: {
-          pinata_api_key: config.pinataApiKey,
-          pinata_secret_api_key: config.pinataSecretApiKey,
-        },
-      })
-    );
-
-    return { status: response.status, cid };
-  } catch (error) {
-    console.error(
-      "[IPFSService] Error unpinning file from IPFS:",
-      typeof error === "object" && error !== null && "response" in error
-        ? (error as { response?: { data?: unknown } }).response?.data
-        : extractPinataErrorDetail(error)
-    );
-    throw new Error(`Failed to unpin file from IPFS: ${extractPinataErrorDetail(error)}`);
-  }
-}
-
 
   try {
     const response = await executePinataRequest(() =>

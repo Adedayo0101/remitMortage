@@ -279,8 +279,8 @@ describe("Multi-Provider IPFS Pinning Redundancy (#551)", () => {
     it("maintains audit trail for all reconciliation check results", async () => {
       const reconciliationCheckRun = {
         timestamp: new Date(),
-        sampleSize: 10,
-        checksPerformed: 10,
+        sampleSize: 2,
+        checksPerformed: 2,
         results: [
           {
             cid: "QmAudit1",
@@ -344,7 +344,7 @@ describe("Multi-Provider IPFS Pinning Redundancy (#551)", () => {
         reconciliationSchedule.lastRunTime.getTime() +
           reconciliationSchedule.intervalHours * 60 * 60 * 1000
       );
-      expect(nextRun).toBeLessThan(now);
+      expect(nextRun.getTime()).toBeLessThan(now.getTime());
     });
   });
 
