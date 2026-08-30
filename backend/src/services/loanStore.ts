@@ -14,6 +14,9 @@ export type LoanStatus =
   | "Repaying"
   | "Completed";
 
+/** Authorization state of an attached guarantor — mirrors the Prisma enum. */
+export type GuarantorStatus = "Accepted" | "Rejected";
+
 export interface LoanApplication {
   id: string;
   borrowerAddress: string;
@@ -22,18 +25,43 @@ export interface LoanApplication {
   reason?: string;
   createdAt: string;
   updatedAt: string;
+  /** Present only when a guarantor was attached to this loan. */
+  guarantorAddress?: string;
+  /** Present only when a guarantor was attached to this loan. */
+  guarantorStatus?: GuarantorStatus;
+}
+
+/** Options for attaching a guarantor at application creation time. */
+export interface GuarantorOptions {
+  /** Guarantor's Stellar G-address. */
+  address: string;
+  /**
+   * Hex-encoded Ed25519 signature produced by the guarantor over the
+   * canonical commitment string (see services/guarantor.ts).
+   */
+  signature: string;
+  /** Pre-verified status — caller is responsible for running verification. */
+  status: GuarantorStatus;
 }
 
 function mapLoanApplication(record: any): LoanApplication {
-  return {
+  const app: LoanApplication = {
     id: record.id,
     borrowerAddress: record.applicant.stellarAddress,
-    amount: record.principal,
+    amount: String(record.principal),
     status: record.status,
     reason: record.reason ?? undefined,
     createdAt: record.createdAt.toISOString(),
-    updatedAt: record.updatedAt.toISOString(),
+    // updatedAt is not on the schema model; fall back to createdAt
+    updatedAt: (record.updatedAt ?? record.createdAt).toISOString(),
   };
+
+  if (record.guarantorAddress) {
+    app.guarantorAddress = record.guarantorAddress;
+    app.guarantorStatus = record.guarantorStatus ?? undefined;
+  }
+
+  return app;
 }
 
 async function findOrCreateApplicant(stellarAddress: string) {
@@ -44,7 +72,22 @@ async function findOrCreateApplicant(stellarAddress: string) {
   });
 }
 
-export async function createApplication(borrowerAddress: string, amount: string) {
+/**
+ * Creates a new loan application.
+ *
+ * When `guarantor` is supplied the guarantor address and the pre-verified
+ * status are stored.  The caller (route handler) is responsible for running
+ * `verifyStellarGuarantorSignature` before calling this function and passing
+ * the result as `guarantor.status`.
+ *
+ * No guarantor is attached when `guarantor` is omitted — existing
+ * borrower-only behaviour is fully preserved.
+ */
+export async function createApplication(
+  borrowerAddress: string,
+  amount: string,
+  guarantor?: GuarantorOptions
+) {
   StrKey.decodeEd25519PublicKey(borrowerAddress);
 
   const applicant = await findOrCreateApplicant(borrowerAddress);
@@ -54,8 +97,15 @@ export async function createApplication(borrowerAddress: string, amount: string)
     data: {
       id,
       applicantId: applicant.id,
-      principal: amount,
+      principal: Number(amount),
       status: "Pending",
+      ...(guarantor
+        ? {
+            guarantorAddress: guarantor.address,
+            guarantorSignature: guarantor.signature,
+            guarantorStatus: guarantor.status,
+          }
+        : {}),
     },
     include: { applicant: true },
   });
@@ -111,12 +161,12 @@ export async function updateApplication(id: string, patch: Partial<LoanApplicati
   }
 
   const updateData: {
-    principal?: string;
+    principal?: number;
     status?: LoanStatus;
     reason?: string | null;
   } = {};
 
-  if (patch.amount !== undefined) updateData.principal = patch.amount;
+  if (patch.amount !== undefined) updateData.principal = Number(patch.amount);
   if (patch.status !== undefined) updateData.status = patch.status;
   if (patch.reason !== undefined) updateData.reason = patch.reason ?? null;
 

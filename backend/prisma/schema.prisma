@@ -21,6 +21,19 @@ enum LoanStatus {
   Completed
 }
 
+/// Authorization state of an attached co-signer/guarantor.
+///
+/// A loan submitted with a guarantor address starts in Pending until the
+/// guarantor's cryptographic signature over the loan commitment is verified.
+/// Only Accepted loans are eligible for admin approval; Rejected or absent
+/// authorization blocks the approval path.
+enum GuarantorStatus {
+  /// Signature provided and cryptographically verified.
+  Accepted
+  /// Signature missing, invalid, or explicitly rejected.
+  Rejected
+}
+
 model Notification {
   id          String             @id @default(uuid())
   recipient   String
@@ -132,20 +145,54 @@ model VerificationResult {
 }
 
 model LoanApplication {
-  id                 String     @id @default(uuid())
+  id                 String           @id @default(uuid())
   applicantId        String
-  applicant          Applicant  @relation(fields: [applicantId], references: [id])
+  applicant          Applicant        @relation(fields: [applicantId], references: [id])
   escrowContractId   String?
   loanId             String?
   principal          Float
-  status             LoanStatus @default(Pending)
-  createdAt          DateTime   @default(now())
+  status             LoanStatus       @default(Pending)
+  createdAt          DateTime         @default(now())
 
-  // New fields for repayment tracking
+  // Repayment tracking
   dueDate            DateTime?
-  missedPayments     Int        @default(0)
-  lateFeeBalance     Float      @default(0)
+  missedPayments     Int              @default(0)
+  lateFeeBalance     Float            @default(0)
   gracePeriodEndsAt  DateTime?
+
+  // Co-signer / guarantor
+  //
+  // All three fields are optional so existing borrower-only loans are unaffected.
+  //
+  // guarantorAddress   — the guarantor's Stellar G-address, supplied by the
+  //                      borrower at application time.
+  //
+  // guarantorSignature — Ed25519 signature produced by the guarantor over the
+  //                      canonical commitment string:
+  //                        "guarantee:<borrowerAddress>:<principal>:<loanId>"
+  //                      This is the backend-verifiable proof of explicit
+  //                      authorization, mirroring the pattern used in
+  //                      verifyDidProof (services/did.ts) and
+  //                      verifyStellarGuarantorSignature (services/guarantor.ts).
+  //
+  // guarantorStatus    — set to Accepted when the signature verifies at
+  //                      application time, Rejected otherwise.
+  //                      Loans that carry a guarantorAddress but whose
+  //                      guarantorStatus is not Accepted cannot be approved.
+  //
+  // On-chain limitation (see implementation report):
+  //   The Soroban lending-pool contract's request_loan / mark_default
+  //   functions do not accept a guarantor argument.  Guarantor liability is
+  //   therefore enforced off-chain via notification and documented here for
+  //   the future request_loan_with_guarantor upgrade path.
+  guarantorAddress   String?
+  guarantorSignature String?
+  guarantorStatus    GuarantorStatus?
+
+  @@index([applicantId, createdAt])
+  @@index([status])
+  @@index([applicantId, status])
+  @@index([guarantorAddress])
 }
 
 model AuditLog {
