@@ -2,10 +2,15 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { useWallet, WalletProvider } from "../../context/WalletContext";
+import { useWallet, OptionalWalletProvider } from "../../context/WalletContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 import ROIProjectionWidget from "../../components/ROIProjectionWidget";
+import { useGovernanceProposals, type GovernanceProposal } from "../../hooks/useGovernanceProposals";
+import { GovernanceVotingModal } from "../../components/governance/GovernanceVotingModal";
+import { SubmitProposalModal } from "../../components/governance/SubmitProposalModal";
+import { QuorumProgressBar } from "../../components/governance/QuorumProgressBar";
+import { track } from "../../lib/analytics";
 
 type Tranche = "Senior" | "Junior";
 
@@ -89,14 +94,18 @@ function UtilizationGauge({ rate }: { rate: number }) {
 
 export default function InvestPage() {
   return (
-    <WalletProvider>
+    <OptionalWalletProvider>
       <InvestPageInner />
-    </WalletProvider>
+    </OptionalWalletProvider>
   );
 }
 
 function InvestPageInner() {
   const { publicKey, isConnected, connect } = useWallet();
+
+  useEffect(() => {
+    if (isConnected) track("portfolio_viewed");
+  }, [isConnected]);
 
   const [metrics, setMetrics] = useState<PoolMetrics | null>(null);
   const [position, setPosition] = useState<InvestorPosition | null>(null);
@@ -114,6 +123,10 @@ function InvestPageInner() {
 
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
+
+  const { proposals, loading: loadingProposals, error: proposalsError, submitVote, createProposal } = useGovernanceProposals();
+  const [selectedProposal, setSelectedProposal] = useState<GovernanceProposal | null>(null);
+  const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
 
   const loadMetrics = useCallback(async () => {
     setLoadingMetrics(true);
@@ -179,6 +192,7 @@ function InvestPageInner() {
     );
     if (!confirmed) return;
 
+    track("investment_started", { tranche: selectedTranche });
     setDepositing(true);
     try {
       await new Promise((r) => setTimeout(r, 1000));
@@ -192,6 +206,7 @@ function InvestPageInner() {
 
       setDepositAmount("");
       setDepositSuccess(true);
+      track("investment_completed", { tranche: selectedTranche });
       setTimeout(() => setDepositSuccess(false), 5000);
     } catch (err: any) {
       setDepositError(err?.message || "Deposit transaction failed.");
@@ -228,6 +243,7 @@ function InvestPageInner() {
     try {
       await new Promise((r) => setTimeout(r, 800));
       setPosition({ deposited: "0", tranche: null, accruedYield: "0", startLedger: 0 });
+      track("investment_withdrawal_completed");
     } catch (err: any) {
       setWithdrawError(err?.message || "Withdrawal failed.");
     } finally {
@@ -242,7 +258,7 @@ function InvestPageInner() {
     (metrics ? Math.max(0, Math.round(metrics.estimatedApyBps * 2 - seniorApyBps)) : 0);
 
   return (
-    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
+    <div className="rm-app-page rm-invest-page min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
       <main className="max-w-6xl mx-auto px-6 pt-32">
@@ -506,6 +522,78 @@ function InvestPageInner() {
             </div>
           </section>
         </div>
+
+        {/* Governance Section */}
+        <section className="mb-10 mt-10">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-white">Active Protocol Proposals</h2>
+            <button 
+              onClick={() => setIsSubmitModalOpen(true)}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition-colors"
+            >
+              + New Proposal
+            </button>
+          </div>
+          
+          {loadingProposals ? (
+            <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400 animate-pulse">
+              Loading active proposals...
+            </div>
+          ) : proposalsError ? (
+            <div className="p-4 bg-red-500/10 text-red-300 border border-red-500/20 rounded-2xl text-sm">
+              Failed to load proposals.
+            </div>
+          ) : proposals.length === 0 ? (
+             <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400 text-center">
+               No active proposals at this time.
+             </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {proposals.map((p) => (
+                <div key={p.id} className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 hover:border-slate-700 transition-colors flex flex-col justify-between">
+                  <div>
+                    <div className="flex justify-between items-start mb-2">
+                      <h3 className="font-bold text-white line-clamp-1 pr-4">{p.title}</h3>
+                      <span className={`shrink-0 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
+                        p.status === "approved"
+                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                          : "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
+                      }`}>
+                        {p.status}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-400 mb-4 line-clamp-2">{p.description}</p>
+                    <QuorumProgressBar 
+                      currentVotes={p.currentVotes}
+                      requiredVotes={p.requiredVotes}
+                      quorumThresholdPercent={p.quorumPercent}
+                    />
+                  </div>
+                  <button 
+                    onClick={() => setSelectedProposal(p)}
+                    className="mt-4 w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-bold rounded-xl border border-slate-700 transition-colors"
+                  >
+                    View & Vote
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Modals */}
+        <GovernanceVotingModal
+          isOpen={!!selectedProposal}
+          onClose={() => setSelectedProposal(null)}
+          proposal={selectedProposal}
+          onVote={submitVote}
+        />
+        <SubmitProposalModal
+          isOpen={isSubmitModalOpen}
+          onClose={() => setIsSubmitModalOpen(false)}
+          onSubmit={createProposal}
+        />
+
 
         {isConnected && publicKey && position && parseFloat(position.deposited) > 0 && (
           <ROIProjectionWidget

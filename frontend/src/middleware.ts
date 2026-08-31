@@ -19,6 +19,7 @@ function isProtectedRoute(pathname: string): boolean {
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
   if (!isProtectedRoute(pathname)) return NextResponse.next();
 
   const sessionToken = request.cookies.get("session")?.value;

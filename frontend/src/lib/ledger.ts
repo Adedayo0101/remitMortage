@@ -101,21 +101,47 @@ export async function openLedgerConnection(): Promise<LedgerConnection> {
   let transport: LedgerTransport;
 
   if (supportsWebHID()) {
-    // Dynamic import keeps the bundle lean.
-    const { default: TransportWebHID } = await import(
-      "@ledgerhq/hw-transport-webhid"
-    );
-    // create() opens the device selector dialog in the browser.
-    transport = await (TransportWebHID as { create(): Promise<LedgerTransport> }).create();
+    // Dynamic import keeps the bundle lean and avoids build-time resolution
+    // failures when Ledger support is not installed in the environment.
+    let TransportWebHID: { create(): Promise<LedgerTransport> } | null = null;
+    try {
+      ({ default: TransportWebHID } = await import(/* webpackIgnore: true */ "@ledgerhq/hw-transport-webhid"));
+    } catch {
+      TransportWebHID = null;
+    }
+
+    if (!TransportWebHID) {
+      throw new Error("Ledger WebHID transport is not available in this environment.");
+    }
+
+    transport = await TransportWebHID.create();
   } else {
-    const { default: TransportWebUSB } = await import(
-      "@ledgerhq/hw-transport-webusb"
-    );
-    transport = await (TransportWebUSB as { create(): Promise<LedgerTransport> }).create();
+    let TransportWebUSB: { create(): Promise<LedgerTransport> } | null = null;
+    try {
+      ({ default: TransportWebUSB } = await import(/* webpackIgnore: true */ "@ledgerhq/hw-transport-webusb"));
+    } catch {
+      TransportWebUSB = null;
+    }
+
+    if (!TransportWebUSB) {
+      throw new Error("Ledger WebUSB transport is not available in this environment.");
+    }
+
+    transport = await TransportWebUSB.create();
   }
 
-  const { default: Str } = await import("@ledgerhq/hw-app-str");
-  const stellar = new (Str as new (t: LedgerTransport) => LedgerStr)(transport);
+  let Str: (new (t: LedgerTransport) => LedgerStr) | null = null;
+  try {
+    ({ default: Str } = await import(/* webpackIgnore: true */ "@ledgerhq/hw-app-str"));
+  } catch {
+    Str = null;
+  }
+
+  if (!Str) {
+    throw new Error("Ledger app support is not available in this environment.");
+  }
+
+  const stellar = new (Str as unknown as new (t: LedgerTransport) => LedgerStr)(transport);
 
   return {
     transport,

@@ -8,6 +8,7 @@ export interface MilestoneProposal {
   id: string;
   milestoneId: string;
   evidenceCid: string;
+  arweaveTxId?: string;
   status: MilestoneProposalStatus;
   reason?: string;
   createdAt: string;
@@ -16,13 +17,14 @@ export interface MilestoneProposal {
 
 const store: Map<string, MilestoneProposal> = new Map();
 
-export function createProposal(milestoneId: string, evidenceCid: string): MilestoneProposal {
+export function createProposal(milestoneId: string, evidenceCid: string, arweaveTxId?: string): MilestoneProposal {
   const id = makeId();
   const now = new Date().toISOString();
   const proposal: MilestoneProposal = {
     id,
     milestoneId,
     evidenceCid,
+    arweaveTxId,
     status: "Open",
     createdAt: now,
     updatedAt: now,

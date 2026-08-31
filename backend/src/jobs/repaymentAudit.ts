@@ -15,7 +15,8 @@ export async function runRepaymentAudit() {
   try {
     const activeLoans = await prisma.loanApplication.findMany({
       where: {
-        status: "ACTIVE",
+        status: { in: ["Approved", "Disbursing", "Repaying"] },
+        deletedAt: null,
       },
     });
 
@@ -114,16 +115,11 @@ async function handleMissedPayment(
   const newMissedPayments = currentMissedPayments + 1;
   const newLateFee = currentLateFee + DEFAULT_LATE_FEE;
 
-  if (newMissedPayments >= 3) {
-    // Transition to default — guarantor liability is invoked here
+    if (newMissedPayments >= 3) {
+    // Transition to default
     await prisma.loanApplication.update({
       where: { id: loanId },
-      data: {
-        missedPayments: newMissedPayments,
-        lateFeeBalance: newLateFee,
-        gracePeriodEndsAt: null,
-        status: "DEFAULTED",
-      },
+      data: { missedPayments: newMissedPayments, lateFeeBalance: newLateFee, gracePeriodEndsAt: null, status: "DEFAULTED" },
     });
 
     const applicant = await prisma.applicant.findUnique({ where: { id: applicantId } });
@@ -173,19 +169,9 @@ async function handleMissedPayment(
   }
 }
 
-async function handleDefault(
-  loanId: string,
-  applicantId: string,
-  guarantorAddress: string | null
-) {
-  await prisma.loanApplication.update({
-    where: { id: loanId },
-    data: {
-      status: "DEFAULTED",
-      gracePeriodEndsAt: null,
-    },
-  });
-
+async function handleDefault(loanId: string, applicantId: string) {
+  await prisma.loanApplication.update({ where: { id: loanId }, data: { status: "DEFAULTED", gracePeriodEndsAt: null } });
+  
   const applicant = await prisma.applicant.findUnique({ where: { id: applicantId } });
   if (applicant) {
     await queueNotification(

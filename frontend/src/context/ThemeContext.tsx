@@ -6,61 +6,30 @@ type Theme = "light" | "dark";
 
 type ThemeContextType = {
   theme: Theme;
-  setTheme: (theme: Theme) => void;
-  toggleTheme: () => void;
 };
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-const STORAGE_KEY = "remitmortgage-theme";
-
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("dark");
-
-  useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    if (stored === "light" || stored === "dark") {
-      applyTheme(stored);
-      setThemeState(stored);
-      return;
-    }
-    // Fall back to system preference
-    const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const resolved: Theme = systemDark ? "dark" : "light";
-    applyTheme(resolved);
-    setThemeState(resolved);
-  }, []);
+  const [theme, setTheme] = useState<Theme>("light");
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => {
-      // Only follow system changes when the user has no stored preference
-      if (!localStorage.getItem(STORAGE_KEY)) {
-        const resolved: Theme = e.matches ? "dark" : "light";
-        applyTheme(resolved);
-        setThemeState(resolved);
-      }
+    const syncSystemTheme = (matches: boolean) => {
+      const resolved: Theme = matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", resolved);
+      document.documentElement.style.colorScheme = resolved;
+      setTheme(resolved);
     };
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
+
+    syncSystemTheme(mq.matches);
+    const handleChange = (event: MediaQueryListEvent) => syncSystemTheme(event.matches);
+    mq.addEventListener("change", handleChange);
+    return () => mq.removeEventListener("change", handleChange);
   }, []);
 
-  function applyTheme(t: Theme) {
-    document.documentElement.setAttribute("data-theme", t);
-  }
-
-  function setTheme(t: Theme) {
-    localStorage.setItem(STORAGE_KEY, t);
-    applyTheme(t);
-    setThemeState(t);
-  }
-
-  function toggleTheme() {
-    setTheme(theme === "dark" ? "light" : "dark");
-  }
-
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, toggleTheme }}>
+    <ThemeContext.Provider value={{ theme }}>
       {children}
     </ThemeContext.Provider>
   );

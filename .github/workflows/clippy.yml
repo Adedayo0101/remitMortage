@@ -1,0 +1,60 @@
+name: Clippy Lint Checks
+
+# Dedicated workflow for automated cargo clippy static analysis on every
+# pull-request touching smart-contract code.  Fails the pipeline on any
+# clippy warning or code smell so that lint regressions never merge.
+#
+# A separate clippy.toml at contracts/clippy.toml documents the
+# Soroban-SDK boilerplate exceptions (no_std, contract macros, many-arg
+# entry-points, etc.) that are intentionally permitted.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/clippy.yml'
+      - 'contracts/clippy.toml'
+  pull_request:
+    branches: [ main, development ]
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/clippy.yml'
+      - 'contracts/clippy.toml'
+  workflow_dispatch:
+
+concurrency:
+  group: clippy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clippy:
+    name: Clippy (deny warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts -> target
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+        working-directory: contracts
+
+      - name: Lint with Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: contracts
+
+      - name: Print Clippy Config
+        run: echo "Using clippy.toml:" && cat clippy.toml
+        working-directory: contracts

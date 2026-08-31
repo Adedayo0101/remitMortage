@@ -6,7 +6,7 @@ import {
   SIMULATION_CACHE_TTL_MS,
   writeCachedSimulation,
 } from "../simulation-cache";
-import type { SimulationEstimate } from "../soroban";
+import type { SimulationEstimate } from "../soroban-client";
 
 const ESTIMATE: SimulationEstimate = {
   minResourceFeeStroops: "51234",

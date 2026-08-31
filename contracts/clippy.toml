@@ -1,0 +1,4 @@
+# Clippy configuration for the Soroban smart-contract workspace.
+
+too-many-arguments-threshold = 10
+type-complexity-threshold = 500

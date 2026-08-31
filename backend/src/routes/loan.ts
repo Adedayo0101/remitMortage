@@ -1,16 +1,16 @@
 import { Router } from "express";
 import { StrKey } from "@stellar/stellar-sdk";
 import logger from "../utils/logger.js";
-import {
-  validatePositiveNumber,
-  validateOptionalGuarantorAddress,
-} from "../middleware/validate.js";
+import { validatePositiveNumber } from "../middleware/validate.js";
+import { idempotencyMiddleware } from "../middleware/idempotency.js";
 import {
   createApplication,
   getApplication,
   getApplicationsByBorrower,
   getPendingApplications,
   updateApplication,
+  resumeDraftApplication,
+  discardDraftApplication,
   escrowTargetMetForAmount,
 } from "../services/loanStore.js";
 import {
@@ -18,41 +18,22 @@ import {
   buildGuarantorCommitment,
 } from "../services/guarantor.js";
 import { queueNotification } from "../services/notification.js";
+import { hasExpiredKycDocuments } from "../jobs/kycExpiryReminder.js";
+import { prisma } from "../services/db.js";
+import { reconstructLoanApplicationAt } from "../services/loanHistory.js";
 
 export const loanRouter = Router();
 
-// ---------------------------------------------------------------------------
+import {
+  checkDuplicateApplicants,
+  logReviewerDecision,
+  ApplicantFields,
+} from "../utils/fuzzyMatch.js";
+
 // POST /api/loan/apply
-//
-// Optional guarantor support
-// ──────────────────────────
-// The borrower may attach a co-signer/guarantor by supplying two additional
-// body fields:
-//
-//   guarantorAddress   — Stellar G-address of the guarantor
-//   guarantorSignature — hex-encoded Ed25519 signature produced by the
-//                        guarantor over:
-//                          "guarantee:<borrowerAddress>:<amount>:<applicationId>"
-//
-// Authorization is verified by verifyStellarGuarantorSignature (same nacl
-// Ed25519 mechanism used in the DID verification flow).  If the address is
-// present but the signature is missing or invalid, the request is rejected
-// with 400 — the guarantor cannot be attached without explicit authorization.
-//
-// When no guarantorAddress is supplied the loan is created exactly as before.
-// ---------------------------------------------------------------------------
-loanRouter.post(
-  "/apply",
-  validatePositiveNumber("amount"),
-  validateOptionalGuarantorAddress,
-  async (req, res) => {
-    try {
-      const {
-        borrowerAddress,
-        amount,
-        guarantorAddress,
-        guarantorSignature,
-      } = req.body ?? {};
+loanRouter.post("/apply", idempotencyMiddleware, validatePositiveNumber("amount"), async (req, res) => {
+  try {
+    const { borrowerAddress, amount, fullName, address, idDocumentNumber, taxId } = req.body ?? {};
 
       if (!borrowerAddress) {
         return res.status(400).json({
@@ -72,100 +53,59 @@ loanRouter.post(
         });
       }
 
-      const escrowOk = escrowTargetMetForAmount(amount);
-      if (!escrowOk) {
-        return res.status(400).json({
-          error: "escrow_target_not_met",
-          message: "Escrow target not reached for borrower",
-        });
-      }
-
-      // ── Guarantor authorization ──────────────────────────────────────────
-      // A guarantor can only be accepted with a cryptographically valid
-      // signature.  We generate the application ID first so it can be
-      // embedded in the commitment string, then verify before persisting.
-
-      let guarantorOpts:
-        | { address: string; signature: string; status: "Accepted" | "Rejected" }
-        | undefined;
-
-      if (guarantorAddress) {
-        // guarantorSignature is mandatory when an address is supplied
-        if (!guarantorSignature || typeof guarantorSignature !== "string") {
-          return res.status(400).json({
-            error: "missing_field",
-            field: "guarantorSignature",
-            message:
-              "guarantorSignature is required when guarantorAddress is provided",
-          });
-        }
-
-        // The guarantor must not be the same person as the borrower
-        if (guarantorAddress === borrowerAddress) {
-          return res.status(400).json({
-            error: "invalid_guarantor",
-            message: "guarantorAddress must differ from borrowerAddress",
-          });
-        }
-
-        // Generate the application ID upfront so we can include it in the
-        // commitment string the guarantor signed.  This ties the signature to
-        // exactly this loan application and prevents replay attacks.
-        //
-        // We pass this id explicitly into createApplication below so the same
-        // id is persisted.  loanStore.createApplication uses makeId() by
-        // default; we bypass that by passing an override id.
-        const { id: precomputedId } = generateApplicationId();
-
-        const commitment = buildGuarantorCommitment(
-          borrowerAddress,
-          String(amount),
-          precomputedId
-        );
-
-        const valid = verifyStellarGuarantorSignature(
-          guarantorAddress,
-          borrowerAddress,
-          String(amount),
-          precomputedId,
-          guarantorSignature
-        );
-
-        if (!valid) {
-          return res.status(400).json({
-            error: "invalid_guarantor_signature",
-            message:
-              "Guarantor signature is invalid or does not match the loan commitment. " +
-              `The guarantor must sign: "${commitment}"`,
-          });
-        }
-
-        guarantorOpts = {
-          address: guarantorAddress,
-          signature: guarantorSignature,
-          status: "Accepted",
-        };
-
-        // Pass the precomputed id through to createApplication
-        const app = await createApplicationWithId(
-          precomputedId,
-          borrowerAddress,
-          String(amount),
-          guarantorOpts
-        );
-        return res.status(201).json(app);
-      }
-
-      // ── No guarantor — existing behaviour ────────────────────────────────
-      const app = await createApplication(
-        borrowerAddress,
-        String(amount)
-      );
-      return res.status(201).json(app);
-    } catch (error) {
-      logger.error("Loan apply error", { error });
-      return res.status(500).json({ error: "failed_to_create_application" });
+    // Block loan submissions when any KYC document is expired
+    const applicant = await prisma.applicant.findFirst({ where: { stellarAddress: borrowerAddress, deletedAt: null } });
+    if (applicant && await hasExpiredKycDocuments(applicant.id)) {
+      return res.status(403).json({
+        error: "kyc_documents_expired",
+        message: "One or more of your KYC documents have expired. Please renew them before submitting a loan application.",
+      });
     }
+
+    const escrowOk = escrowTargetMetForAmount(amount);
+    if (!escrowOk) {
+      return res.status(400).json({ error: "escrow_target_not_met", message: "Escrow target not reached for borrower" });
+    }
+
+    // Issue #496: Duplicate Applicant Detection via Fuzzy Matching
+    const currentFields: ApplicantFields = {
+      fullName: fullName || applicant?.taxId || undefined,
+      address: address || undefined,
+      idDocumentNumber: idDocumentNumber || undefined,
+      taxId: taxId || applicant?.taxId || undefined,
+    };
+
+    let dupStatus: "Pending" | "MANUAL_REVIEW" = "Pending";
+    let dupDetails: any = null;
+
+    if (currentFields.fullName || currentFields.address || currentFields.idDocumentNumber || currentFields.taxId) {
+      const allApplicants = await prisma.applicant.findMany({ where: { deletedAt: null } });
+      const candidates: ApplicantFields[] = allApplicants.map((a: any) => ({
+        id: a.id,
+        fullName: a.taxId || undefined,
+        taxId: a.taxId || undefined,
+      }));
+
+      const dupCheck = checkDuplicateApplicants(currentFields, candidates);
+      if (dupCheck.isDuplicate) {
+        dupStatus = "MANUAL_REVIEW";
+        dupDetails = dupCheck;
+        logger.warn(
+          `Application for borrower ${borrowerAddress} flagged for MANUAL_REVIEW due to high similarity duplicate (score: ${dupCheck.highestScore})`
+        );
+      }
+    }
+
+    const app = await createApplication(borrowerAddress, String(amount));
+    if (dupStatus === "MANUAL_REVIEW") {
+      await updateApplication(app.id, { status: "MANUAL_REVIEW" });
+      app.status = "MANUAL_REVIEW";
+    }
+
+    return res.status(201).json({ ...app, duplicateCheck: dupDetails });
+  } catch (error) {
+    logger.error("Loan apply error", { error });
+    return res.status(500).json({ error: "failed_to_create_application" });
   }
 );
 
@@ -195,12 +135,7 @@ loanRouter.get("/pending", async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/loan/:id/approve
-//
-// When the loan carries a guarantor that was NOT accepted (guarantorStatus ≠
-// "Accepted"), the approval is blocked.  This prevents an admin from
-// approving a guaranteed loan whose guarantor never authorized.
-// ---------------------------------------------------------------------------
-loanRouter.post("/:id/approve", async (req, res) => {
+loanRouter.post("/:id/approve", idempotencyMiddleware, async (req, res) => {
   const { id } = req.params;
   const app = await getApplication(id);
   if (!app) return res.status(404).json({ error: "not_found" });
@@ -288,11 +223,60 @@ loanRouter.post("/:id/reject", async (req, res) => {
   return res.json(updated);
 });
 
-// ---------------------------------------------------------------------------
+// POST /api/loan/:id/resume
+// Resumes a Draft application flagged as stale, resetting its inactivity clock.
+loanRouter.post("/:id/resume", async (req, res) => {
+  const { id } = req.params;
+  const resumed = await resumeDraftApplication(id);
+  if (!resumed) return res.status(404).json({ error: "not_found_or_not_draft" });
+  return res.json(resumed);
+});
+
+// POST /api/loan/:id/discard
+// Lets an applicant explicitly discard a Draft application before it would otherwise expire.
+loanRouter.post("/:id/discard", async (req, res) => {
+  const { id } = req.params;
+  const discarded = await discardDraftApplication(id);
+  if (!discarded) return res.status(404).json({ error: "not_found_or_not_draft" });
+  return res.json(discarded);
+});
+
 // GET /api/loan/:id
-// ---------------------------------------------------------------------------
+// Optional `?asOf=<ISO timestamp>` reconstructs the loan's historical state
+// from the audit trail as it stood at that instant. Without `asOf`, the
+// current record is returned unchanged.
 loanRouter.get("/:id", async (req, res) => {
   const { id } = req.params;
+  const asOfRaw = req.query.asOf;
+
+  if (asOfRaw !== undefined) {
+    if (typeof asOfRaw !== "string") {
+      return res.status(400).json({ error: "invalid_asof", field: "asOf", message: "asOf must be a single ISO timestamp" });
+    }
+    const asOf = new Date(asOfRaw);
+    if (Number.isNaN(asOf.getTime())) {
+      return res.status(400).json({ error: "invalid_asof", field: "asOf", message: "asOf must be a valid ISO timestamp" });
+    }
+
+    const current = await getApplication(id);
+    if (!current) return res.status(404).json({ error: "not_found" });
+
+    const historical = await reconstructLoanApplicationAt(id, asOf, {
+      // Loans created before the audit trail carried a creation snapshot fall
+      // back to their current identity fields as the replay seed.
+      fallbackSeed: {
+        borrowerAddress: current.borrowerAddress,
+        amount: current.amount,
+        status: current.status,
+        reason: current.reason,
+      },
+    });
+    if (!historical) {
+      return res.status(404).json({ error: "not_found_asof", message: "Loan did not exist at the requested timestamp" });
+    }
+    return res.json({ ...historical, asOf: asOf.toISOString() });
+  }
+
   const app = await getApplication(id);
   if (!app) return res.status(404).json({ error: "not_found" });
   return res.json(app);
@@ -353,67 +337,199 @@ loanRouter.post("/:id/trigger-payment-due", async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+// POST /api/loan/check-duplicate
+// Checks incoming KYC/applicant fields against existing applicants for potential duplicates.
+loanRouter.post("/check-duplicate", async (req, res) => {
+  try {
+    const { fullName, address, idDocumentNumber, taxId, applicantId } = req.body ?? {};
+    const source: ApplicantFields = { id: applicantId, fullName, address, idDocumentNumber, taxId };
 
-import { prisma } from "../services/db.js";
+    const allApplicants = await prisma.applicant.findMany({ where: { deletedAt: null } });
+    const candidates: ApplicantFields[] = allApplicants.map((a: any) => ({
+      id: a.id,
+      fullName: a.taxId || undefined,
+      taxId: a.taxId || undefined,
+    }));
 
-/** Generates a time-based application ID matching makeId() in loanStore. */
-function generateApplicationId(): { id: string } {
-  const id = `${Date.now().toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 9)}`;
-  return { id };
+    const result = checkDuplicateApplicants(source, candidates);
+    return res.json(result);
+  } catch (error: any) {
+    logger.error("Check duplicate error", { error });
+    return res.status(500).json({ error: "failed_to_check_duplicates", message: error.message });
+  }
+});
+
+// POST /api/loan/:id/review
+// Logs manual reviewer decision (APPROVED or REJECTED) and updates loan application status.
+loanRouter.post("/:id/review", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reviewerId, decision, reason } = req.body ?? {};
+
+    if (!reviewerId || !decision || (decision !== "APPROVED" && decision !== "REJECTED")) {
+      return res.status(400).json({
+        error: "invalid_request",
+        message: "reviewerId and decision ('APPROVED' or 'REJECTED') are required.",
+      });
+    }
+
+    const app = await getApplication(id);
+    if (!app) return res.status(404).json({ error: "not_found" });
+
+    const auditLog = logReviewerDecision(id, reviewerId, decision, reason);
+
+    const newStatus = decision === "APPROVED" ? "Pending" : "Rejected";
+    const updated = await updateApplication(id, {
+      status: newStatus,
+      reason: reason || (decision === "APPROVED" ? "Manual review approved" : "Manual review rejected duplicate"),
+    });
+
+    return res.json({
+      message: `Application reviewed successfully: set status to ${newStatus}`,
+      application: updated,
+      auditLog,
+    });
+  } catch (error: any) {
+    logger.error("Manual review decision error", { error });
+    return res.status(500).json({ error: "failed_to_process_review", message: error.message });
+  }
+});
+
+// ── Collaborative Commenting ───────────────────────────────────────────────
+
+function extractMentions(content: string): string[] {
+  const mentionRegex = /@([A-Za-z0-9_.-]+)/g;
+  const mentions: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = mentionRegex.exec(content)) !== null) {
+    mentions.push(match[1]);
+  }
+  return [...new Set(mentions)];
 }
 
 /**
- * Creates a loan application with a pre-determined ID (needed when the ID
- * must be embedded in the guarantor commitment string before persistence).
+ * GET /api/loan/:id/comments
+ * Returns threaded comments scoped to a loan application, ordered by createdAt.
+ * Also serves as the poll endpoint for real-time display.
  */
-async function createApplicationWithId(
-  id: string,
-  borrowerAddress: string,
-  amount: string,
-  guarantor?: { address: string; signature: string; status: "Accepted" | "Rejected" }
-) {
-  StrKey.decodeEd25519PublicKey(borrowerAddress);
+loanRouter.get("/:id/comments", async (req, res) => {
+  const { id } = req.params;
+  const app = await getApplication(id);
+  if (!app) return res.status(404).json({ error: "not_found" });
 
-  const applicant = await prisma.applicant.upsert({
-    where: { stellarAddress: borrowerAddress },
-    update: {},
-    create: { stellarAddress: borrowerAddress },
+  const comments = await prisma.loanComment.findMany({
+    where: { loanApplicationId: id },
+    orderBy: { createdAt: "asc" },
   });
 
-  const record = await prisma.loanApplication.create({
-    data: {
-      id,
-      applicantId: applicant.id,
-      principal: Number(amount),
-      status: "Pending",
-      ...(guarantor
-        ? {
-            guarantorAddress: guarantor.address,
-            guarantorSignature: guarantor.signature,
-            guarantorStatus: guarantor.status,
-          }
-        : {}),
-    },
-    include: { applicant: true },
-  });
+  // Build threaded tree: parentId -> replies
+  const map = new Map<string, any>();
+  const roots: any[] = [];
+  for (const c of comments) {
+    map.set(c.id, { ...c, replies: [] });
+  }
+  for (const c of comments) {
+    const node = map.get(c.id);
+    if (c.parentId && map.has(c.parentId)) {
+      map.get(c.parentId).replies.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
 
-  return {
-    id: record.id,
-    borrowerAddress: record.applicant.stellarAddress,
-    amount: String(record.principal),
-    status: record.status,
-    createdAt: record.createdAt.toISOString(),
-    updatedAt: (record.updatedAt ?? record.createdAt).toISOString(),
-    ...(record.guarantorAddress
-      ? {
-          guarantorAddress: record.guarantorAddress,
-          guarantorStatus: record.guarantorStatus,
-        }
-      : {}),
-  };
-}
+  return res.json({ loanApplicationId: id, comments: roots, total: comments.length });
+});
+
+/**
+ * POST /api/loan/:id/comments
+ * Adds a threaded comment, supports @-mentions triggering notifications,
+ * and persists to audit trail.
+ */
+loanRouter.post("/:id/comments", async (req, res) => {
+  const { id } = req.params;
+  const { authorAddress, author, content, parentId } = req.body ?? {};
+  const authorAddr = authorAddress || author;
+
+  if (!authorAddr || typeof authorAddr !== "string") {
+    return res.status(400).json({ error: "invalid_request", message: "authorAddress is required" });
+  }
+  if (!content || typeof content !== "string" || content.trim().length === 0) {
+    return res.status(400).json({ error: "invalid_request", message: "content is required" });
+  }
+  if (content.length > 5000) {
+    return res.status(400).json({ error: "invalid_request", message: "content too long (max 5000)" });
+  }
+
+  const app = await getApplication(id);
+  if (!app) return res.status(404).json({ error: "not_found" });
+
+  if (parentId) {
+    const parent = await prisma.loanComment.findUnique({ where: { id: parentId } });
+    if (!parent || parent.loanApplicationId !== id) {
+      return res.status(400).json({ error: "invalid_request", message: "parent comment not found for this application" });
+    }
+  }
+
+  const mentions = extractMentions(content);
+
+  try {
+    const comment = await prisma.loanComment.create({
+      data: {
+        loanApplicationId: id,
+        authorAddress: authorAddr,
+        content: content.trim(),
+        parentId: parentId || null,
+        mentions,
+      },
+    });
+
+    // Persist as part of audit trail
+    try {
+      await prisma.auditLog.create({
+        data: {
+          action: "loan_comment",
+          actorAddress: authorAddr,
+          metadata: {
+            loanApplicationId: id,
+            commentId: comment.id,
+            parentId: parentId || null,
+            mentions,
+            contentPreview: content.slice(0, 200),
+          },
+        },
+      });
+    } catch (auditErr) {
+      logger.warn("Failed to write loan_comment audit log", { err: auditErr });
+    }
+
+    // Notify mentioned reviewers - creates InAppNotification linking directly to thread
+    for (const mentioned of mentions) {
+      try {
+        // mentions may be wallet address or username; store as walletAddress if matches G... else treat as identifier
+        await prisma.inAppNotification.create({
+          data: {
+            walletAddress: mentioned,
+            title: `You were mentioned in loan ${id}`,
+            message: `${authorAddr} mentioned you: "${content.slice(0, 120)}"`,
+            variant: "info",
+            metadata: {
+              loanApplicationId: id,
+              commentId: comment.id,
+              parentId: parentId || null,
+              anchor: `comment-${comment.id}`,
+              href: `/admin?loan=${id}#comment-${comment.id}`,
+            },
+          },
+        });
+      } catch (notifErr) {
+        logger.warn("Failed to create mention notification", { mentioned, err: notifErr });
+      }
+    }
+
+    return res.status(201).json(comment);
+  } catch (err: any) {
+    logger.error("Create comment error", { err });
+    return res.status(500).json({ error: "failed_to_create_comment" });
+  }
+});
+

@@ -26,4 +26,6 @@ pub enum RegistryError {
     InvalidRiskTransition = 10,
     /// Rate cap/floor values are invalid (floor > cap or cap > 10000).
     InvalidRateLimits = 11,
+    /// Decay parameters are invalid (zero period, or scores out of range).
+    InvalidDecayConfig = 12,
 }

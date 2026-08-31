@@ -823,6 +823,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 
 [[package]]
+name = "insurance-pool"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "integration-tests"
 version = "0.1.0"
 dependencies = [
@@ -883,6 +890,7 @@ dependencies = [
 name = "lending-pool"
 version = "0.1.0"
 dependencies = [
+ "insurance-pool",
  "multisig-validator",
  "proptest",
  "soroban-sdk",
@@ -983,6 +991,13 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "oracle-price"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
 
 [[package]]
 name = "p256"
@@ -1621,6 +1636,13 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "staking-pool"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

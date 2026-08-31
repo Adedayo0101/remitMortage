@@ -24,6 +24,10 @@ pub struct VerificationRecord {
     pub report_hash: BytesN<32>,
     /// Ledger sequence at which the verification was registered.
     pub verified_ledger: u32,
+    /// Ledger sequence of the most recent (re-)verification. This is the
+    /// anchor the score decay is measured from, so re-verifying resets the
+    /// decay timer without disturbing the original `verified_ledger`.
+    pub last_verified_ledger: u32,
     /// Ledger sequence after which the verification is considered expired.
     pub expiration_ledger: u32,
     /// Anchored credit score (0–100) from the off-chain verification report.
@@ -45,6 +49,25 @@ pub struct RateConfig {
     pub rate_fair_bps: u32,
     /// Fallback rate when verification is missing/expired, in basis points.
     pub rate_fallback_bps: u32,
+}
+
+/// Parameters controlling how an inactive borrower's score decays.
+///
+/// A borrower keeps their full score for `threshold_ledgers` after their last
+/// verification. Past that, the score falls linearly — `points_per_period`
+/// points for every `period_ledgers` of continued inactivity — but never
+/// below `min_score`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecayConfig {
+    /// Inactivity allowed before any decay applies (the grace window).
+    pub threshold_ledgers: u32,
+    /// Score points shed per decay period once past the threshold.
+    pub points_per_period: u32,
+    /// Length of one decay period, in ledgers.
+    pub period_ledgers: u32,
+    /// Lower bound decay can never push a score below.
+    pub min_score: u32,
 }
 
 /// Dynamic borrower risk profile derived from repayment callbacks.
@@ -83,4 +106,7 @@ pub enum DataKey {
     RateCap,
     /// Minimum allowable interest rate in basis points (floor).
     RateFloor,
+    /// Score decay parameters. Absent until `set_decay_config` is called, in
+    /// which case the protocol defaults apply.
+    DecayConfig,
 }

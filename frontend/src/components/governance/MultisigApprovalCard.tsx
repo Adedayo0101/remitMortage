@@ -1,8 +1,18 @@
 "use client";
 
 import React from "react";
-import { CheckCircle2, Clock, ExternalLink, Vote } from "lucide-react";
+import {
+  CheckCircle2,
+  Clock,
+  ExternalLink,
+  Fingerprint,
+  ShieldCheck,
+  Upload,
+  Vote,
+} from "lucide-react";
 import { QuorumProgressBar } from "./QuorumProgressBar";
+import { useSignatureQueueStore } from "@/lib/signatureQueueStore";
+import { useWallet } from "@/context/WalletContext";
 
 export type SignerStatus = "approved" | "pending";
 
@@ -15,22 +25,21 @@ export interface GovernanceSigner {
 
 export interface MultisigApprovalCardProps {
   id: string;
+  proposalId?: string;
   milestoneTitle: string;
   contractor: string;
   amount: string;
   ipfsCid: string;
-  /** Sum of weights of signers who have already approved. */
   currentWeight: number;
-  /** Minimum total weight required to reach quorum. */
   requiredWeight: number;
-  /** Total weight of all registered signers (used to display quorum %). */
   totalSignerWeight: number;
   signers: GovernanceSigner[];
   status: "pending" | "approved" | "expired";
   expiration?: string;
-  /** Called when the user clicks "Cast Vote". */
   onVote?: (id: string) => void | Promise<void>;
   isVoting?: boolean;
+  /** Whether the full signing flow (queue, prompts, auto-submit) is enabled. */
+  enableSigningQueue?: boolean;
 }
 
 function shortAddress(address: string): string {
@@ -56,8 +65,88 @@ const STATUS_BADGE: Record<
   },
 };
 
+function QueueSignerList({
+  signers,
+  proposalId,
+  currentWeight,
+  requiredWeight,
+}: {
+  signers: GovernanceSigner[];
+  proposalId: string;
+  currentWeight: number;
+  requiredWeight: number;
+}) {
+  const { publicKey } = useWallet();
+  const getNextPendingSigner = useSignatureQueueStore((s) => s.getNextPendingSigner);
+  const recordSignature = useSignatureQueueStore((s) => s.recordSignature);
+
+  const nextPending = getNextPendingSigner(proposalId);
+  const isPassed = currentWeight >= requiredWeight;
+
+  return (
+    <ul className="space-y-1.5">
+      {signers.map((signer) => {
+        const isApproved = signer.status === "approved";
+        const isNext = nextPending?.address === signer.address;
+        const isConnectedSigner = publicKey === signer.address;
+
+        return (
+          <li
+            key={signer.address}
+            className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2 transition-all ${
+              isNext && !isPassed
+                ? "bg-amber-500/10 ring-1 ring-amber-500/30"
+                : isApproved
+                  ? "bg-emerald-500/5"
+                  : "bg-zinc-800/60"
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              {isApproved ? (
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+              ) : (
+                <div className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span className="absolute h-full w-full animate-ping rounded-full bg-amber-400/40" />
+                  <Clock className="relative h-4 w-4 text-amber-500" />
+                </div>
+              )}
+              <span
+                className={`font-mono text-xs truncate ${
+                  isApproved ? "text-emerald-300" : "text-zinc-400"
+                }`}
+              >
+                {signer.label ?? shortAddress(signer.address)}
+              </span>
+              {isConnectedSigner && (
+                <span className="rounded-full bg-cyan-500/15 px-1.5 py-0.5 text-[10px] font-bold text-cyan-400">
+                  YOU
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0 text-xs">
+              <span className="text-zinc-500">w{signer.weight}</span>
+              <span
+                className={`rounded-full px-2 py-0.5 ${
+                  isApproved
+                    ? "bg-emerald-500/15 text-emerald-400"
+                    : isNext && !isPassed
+                      ? "bg-amber-500/20 text-amber-400"
+                      : "bg-zinc-700 text-zinc-400"
+                }`}
+              >
+                {isApproved ? "Signed" : isNext ? "Needs sig" : "Pending"}
+              </span>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function MultisigApprovalCard({
   id,
+  proposalId,
   milestoneTitle,
   contractor,
   amount,
@@ -70,17 +159,22 @@ export function MultisigApprovalCard({
   expiration,
   onVote,
   isVoting = false,
+  enableSigningQueue = false,
 }: MultisigApprovalCardProps) {
   const badge = STATUS_BADGE[status];
   const quorumPercent = Math.round((requiredWeight / totalSignerWeight) * 100);
   const isQuorumMet = currentWeight >= requiredWeight;
   const canVote = status === "pending" && !isQuorumMet;
 
+  const { publicKey } = useWallet();
+  const getNextPendingSigner = useSignatureQueueStore((s) => s.getNextPendingSigner);
+  const nextPending = proposalId ? getNextPendingSigner(proposalId) : null;
+  const connectedIsNext = nextPending && publicKey && nextPending.address === publicKey;
+
   const ipfsGatewayUrl = `https://ipfs.io/ipfs/${ipfsCid}`;
 
   return (
     <article className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5 space-y-5 shadow-lg">
-      {/* Header row */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-bold text-zinc-100 leading-tight">{milestoneTitle}</h3>
@@ -93,7 +187,6 @@ export function MultisigApprovalCard({
         </span>
       </div>
 
-      {/* Amount + evidence link */}
       <div className="flex flex-wrap items-center gap-4 text-sm">
         <div className="flex flex-col">
           <span className="text-zinc-500 text-xs uppercase tracking-wider">Disbursement</span>
@@ -118,7 +211,6 @@ export function MultisigApprovalCard({
         )}
       </div>
 
-      {/* Quorum progress */}
       <div className="space-y-1.5">
         <QuorumProgressBar
           currentVotes={currentWeight}
@@ -131,50 +223,81 @@ export function MultisigApprovalCard({
         </p>
       </div>
 
-      {/* Signer list */}
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
           Signers ({signers.length})
         </p>
-        <ul className="space-y-1.5">
-          {signers.map((signer) => (
-            <li
-              key={signer.address}
-              className="flex items-center justify-between gap-3 rounded-lg bg-zinc-800/60 px-3 py-2"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                {signer.status === "approved" ? (
-                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-                ) : (
-                  <Clock className="h-4 w-4 shrink-0 text-zinc-500" />
-                )}
-                <span
-                  className={`font-mono text-xs truncate ${
-                    signer.status === "approved" ? "text-emerald-300" : "text-zinc-400"
-                  }`}
-                >
-                  {signer.label ?? shortAddress(signer.address)}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 shrink-0 text-xs">
-                <span className="text-zinc-500">weight {signer.weight}</span>
-                <span
-                  className={`rounded-full px-2 py-0.5 ${
-                    signer.status === "approved"
-                      ? "bg-emerald-500/15 text-emerald-400"
-                      : "bg-zinc-700 text-zinc-400"
-                  }`}
-                >
-                  {signer.status === "approved" ? "Approved" : "Pending"}
-                </span>
-              </div>
-            </li>
-          ))}
-        </ul>
+        {proposalId && enableSigningQueue ? (
+          <QueueSignerList
+            signers={signers}
+            proposalId={proposalId}
+            currentWeight={currentWeight}
+            requiredWeight={requiredWeight}
+          />
+        ) : (
+          <ul className="space-y-1.5">
+            {signers.map((signer) => (
+              <li
+                key={signer.address}
+                className="flex items-center justify-between gap-3 rounded-lg bg-zinc-800/60 px-3 py-2"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {signer.status === "approved" ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                  ) : (
+                    <Clock className="h-4 w-4 shrink-0 text-zinc-500" />
+                  )}
+                  <span
+                    className={`font-mono text-xs truncate ${
+                      signer.status === "approved" ? "text-emerald-300" : "text-zinc-400"
+                    }`}
+                  >
+                    {signer.label ?? shortAddress(signer.address)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 text-xs">
+                  <span className="text-zinc-500">weight {signer.weight}</span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 ${
+                      signer.status === "approved"
+                        ? "bg-emerald-500/15 text-emerald-400"
+                        : "bg-zinc-700 text-zinc-400"
+                    }`}
+                  >
+                    {signer.status === "approved" ? "Approved" : "Pending"}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
-      {/* Vote button */}
-      {canVote && onVote && (
+      {enableSigningQueue && proposalId && !isQuorumMet && nextPending && (
+        <div
+          data-testid="card-action-prompt"
+          className={`rounded-lg p-3 text-sm ${
+            connectedIsNext
+              ? "border border-cyan-500/30 bg-cyan-500/10"
+              : "border border-zinc-800 bg-zinc-800/60"
+          }`}
+        >
+          {connectedIsNext ? (
+            <p className="flex items-center gap-2 font-semibold text-cyan-400">
+              <Fingerprint className="h-4 w-4" />
+              Your signature is required
+            </p>
+          ) : (
+            <p className="flex items-center gap-2 text-zinc-400">
+              <Clock className="h-4 w-4 shrink-0" />
+              Waiting for{" "}
+              <span className="font-semibold text-zinc-200">{nextPending.label}</span>
+            </p>
+          )}
+        </div>
+      )}
+
+      {!enableSigningQueue && canVote && onVote && (
         <button
           type="button"
           onClick={() => void onVote(id)}

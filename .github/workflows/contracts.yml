@@ -17,10 +17,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── Formatting ──────────────────────────────────────────────────────────
-  # A formatting violation fails CI before any expensive compilation runs.
-  format:
-    name: Format Check (rustfmt)
+  # ── Linting ─────────────────────────────────────────────────────────────
+  # Runs rustfmt and cargo clippy (deny-warnings).  The separate clippy.toml at
+  # contracts/clippy.toml documents Soroban-SDK exceptions that are
+  # intentionally permitted.
+  lint:
+    name: Lint (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -29,7 +31,7 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: clippy, rustfmt
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
@@ -39,6 +41,10 @@ jobs:
 
       - name: Check Formatting
         run: cargo fmt --all -- --check
+        working-directory: contracts
+
+      - name: Lint with Clippy
+        run: cargo clippy --all-targets -- -D warnings
         working-directory: contracts
 
   # ── Compilation ─────────────────────────────────────────────────────────

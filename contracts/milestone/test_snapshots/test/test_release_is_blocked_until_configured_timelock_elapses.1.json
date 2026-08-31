@@ -619,6 +619,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Reentrant"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
+                        }
                       }
                     ]
                   }

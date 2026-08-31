@@ -5,13 +5,15 @@ export const dynamic = "force-dynamic";
 import React, { useEffect, useState, useRef } from "react";
 import loadDynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Horizon } from "@stellar/stellar-sdk";
-import { WalletProvider, useWallet } from "../../context/WalletContext";
+import { OptionalWalletProvider, useWallet } from "../../context/WalletContext";
 import {
   consumeTxSuccessFeedback,
   shortenAddress,
   STELLARCHAIN_TX_BASE,
 } from "../../lib/transaction-status";
+import { track } from "../../lib/analytics";
 
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -363,6 +365,7 @@ function RepayInner() {
 
       setPayAmount("");
       setPaySuccess(true);
+      track("loan_repayment_completed");
       setTimeout(() => setPaySuccess(false), 5000);
     } catch (err: any) {
       setPayError(err?.message || "Repayment transaction failed.");
@@ -374,7 +377,7 @@ function RepayInner() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
+    <div className="rm-app-page rm-repay-page min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
       {isRepaid && <Confetti />}
@@ -803,9 +806,9 @@ function RepayInner() {
               You do not have an active loan to repay. Complete the onboarding process and apply for
               a loan through the dashboard.
             </p>
-            <a href="/dashboard" className="btn-primary inline-flex mt-6 !py-2.5 !px-5">
+            <Link href="/dashboard" className="btn-primary inline-flex mt-6 !py-2.5 !px-5">
               Go to Dashboard
-            </a>
+            </Link>
           </div>
         )}
       </main>
@@ -817,8 +820,8 @@ function RepayInner() {
 
 export default function RepayPage() {
   return (
-    <WalletProvider>
+    <OptionalWalletProvider>
       <RepayInner />
-    </WalletProvider>
+    </OptionalWalletProvider>
   );
 }
