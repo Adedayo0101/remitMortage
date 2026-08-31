@@ -22,6 +22,19 @@ enum LoanStatus {
   Completed
 }
 
+/// Authorization state of an attached co-signer/guarantor.
+///
+/// A loan submitted with a guarantor address starts in Pending until the
+/// guarantor's cryptographic signature over the loan commitment is verified.
+/// Only Accepted loans are eligible for admin approval; Rejected or absent
+/// authorization blocks the approval path.
+enum GuarantorStatus {
+  /// Signature provided and cryptographically verified.
+  Accepted
+  /// Signature missing, invalid, or explicitly rejected.
+  Rejected
+}
+
 model Notification {
   id          String             @id @default(uuid())
   recipient   String
@@ -234,9 +247,9 @@ model KycOcrResult {
 }
 
 model LoanApplication {
-  id                 String     @id @default(uuid())
+  id                 String           @id @default(uuid())
   applicantId        String
-  applicant          Applicant  @relation(fields: [applicantId], references: [id])
+  applicant          Applicant        @relation(fields: [applicantId], references: [id])
   escrowContractId   String?
   loanId             String?
   principal          Float // DB CHECK: principal > 0 (enforced via migration LoanApplication_principal_check)
@@ -244,10 +257,10 @@ model LoanApplication {
   status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 
-  // New fields for repayment tracking
+  // Repayment tracking
   dueDate            DateTime?
-  missedPayments     Int        @default(0)
-  lateFeeBalance     Float      @default(0)
+  missedPayments     Int              @default(0)
+  lateFeeBalance     Float            @default(0)
   gracePeriodEndsAt  DateTime?
 
   // SLA and reviewer tracking fields
