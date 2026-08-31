@@ -14,6 +14,7 @@ import WithdrawModal from "../../components/WithdrawModal";
 import MilestoneTimeline, { type MilestoneNode } from "../../components/MilestoneTimeline";
 import YieldEstimatorCalculator from "../../components/YieldEstimatorCalculator";
 import VerificationBadge from "../../components/VerificationBadge";
+import LoanPrintSummary from "../../components/LoanPrintSummary";
 import { CreditRecoveryTimeline } from "../../components/CreditRecoveryTimeline";
 import { generateRecoveryPlan, getBorrowerAlert } from "@/lib/creditRecovery";
 import {
@@ -28,26 +29,6 @@ import {
 } from "@/lib/statementExport";
 
 import MaturityAlertOverlay from "../../components/MaturityAlertOverlay";
-<<<<<<< HEAD
-import ProductTour from "../../components/ProductTour";
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { useWidgetStore, type WidgetId } from "../stores/useWidgetStore";
-import { SortableWidget } from "../../components/dashboard/SortableWidget";
-=======
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { useWidgetStore, WidgetId } from '../stores/useWidgetStore';
@@ -55,7 +36,6 @@ import { SortableWidget } from '../../components/dashboard/SortableWidget';
 import { WidgetSettingsModal } from '../../components/dashboard/WidgetSettingsModal';
 import { track } from "../../lib/analytics";
 
->>>>>>> 6d09916 (feat(dashboard): implement widget visibility toggles and reset layout modal)
 
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -443,6 +423,13 @@ export default function DashboardPage() {
             >
               {t("downloadStatement")}
             </button>
+            <button
+              onClick={() => window.print()}
+              disabled={!status}
+              className="btn-outline-blue disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Print Summary
+            </button>
             <button onClick={() => setShowDeposit(true)} className="btn-cta shadow-cyan-500/20">
               <svg
                 width="18"
@@ -515,6 +502,12 @@ export default function DashboardPage() {
         {/* Loaded Content */}
         {!loading && !error && status && (
           <div className="space-y-8">
+            {/* Print-only loan summary */}
+            <LoanPrintSummary
+              loan={status.loan}
+              escrow={status.escrow}
+              borrowerAddress={publicKey ?? undefined}
+            />
             {/* Dynamic Escrow Maturity & Milestone Alerts Overlay */}
             <MaturityAlertOverlay
               escrow={status.escrow}
@@ -527,7 +520,119 @@ export default function DashboardPage() {
 
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={order} strategy={verticalListSortingStrategy}>
-                <div className="space-y-8">{order.map((id) => renderWidget(id))}</div>
+                <div className="space-y-8">
+                  {order.map((id) => renderWidget(id))}
+                </div>
+              </div>
+              <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-2xl">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  Escrow Progress
+                </span>
+                <div className="text-2xl font-extrabold text-emerald-400 mt-1 font-mono">
+                  {status.escrow.progress}%
+                </div>
+              </div>
+              <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-2xl">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  Loan Principal
+                </span>
+                <div className="text-2xl font-extrabold text-indigo-400 mt-1 font-mono">
+                  ${Number(status.loan.principal).toLocaleString()} USDC
+                </div>
+              </div>
+            </div>
+
+            {/* Yield & APY Estimator */}
+            <YieldEstimatorCalculator
+              initialAmount={Number(status.escrow.deposited) || undefined}
+            />
+
+            {/* Credit Score Recovery Timeline */}
+            {recoveryPlan && (
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl overflow-hidden shadow-xl backdrop-blur-xl">
+                <button
+                  type="button"
+                  onClick={() => setShowRecoveryTimeline(!showRecoveryTimeline)}
+                  className="w-full flex items-center justify-between p-6 hover:bg-slate-900/60 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-gradient-to-br from-cyan-500/20 to-emerald-500/20 border border-cyan-500/20">
+                      <svg className="w-5 h-5 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                      </svg>
+                    </div>
+                    <div className="text-left">
+                      <h2 className="text-lg font-bold text-white">
+                        Credit Score Recovery Plan
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {recoveryPlan.currentScore} pts · {recoveryPlan.currentTier} tier · {recoveryPlan.monthsToTarget} months to next tier
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-semibold text-cyan-400">
+                    {showRecoveryTimeline ? "Hide" : "Show timeline"}
+                  </span>
+                </button>
+
+                {showRecoveryTimeline && (
+                  <div className="px-6 pb-6 border-t border-slate-800 pt-4">
+                    <CreditRecoveryTimeline plan={recoveryPlan} />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Savings & Loan Cards Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div id="tour-savings" className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl">
+                <SavingsProgressCard
+                  deposited={status.escrow.deposited}
+                  target={status.escrow.target}
+                  progress={status.escrow.progress}
+                  shareId={publicKey ?? undefined}
+                />
+              </div>
+              <div id="tour-loan-status" className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl flex flex-col justify-between">
+                <LoanStatusCard loan={status.loan} />
+                <div className="mt-6 pt-6 border-t border-slate-800 flex gap-3">
+                  <button
+                    onClick={() => setShowDeposit(true)}
+                    className="btn-cta flex-1 justify-center"
+                  >
+                    Deposit Savings
+                  </button>
+                  <button
+                    onClick={() => router.push("/repay")}
+                    className="btn-outline-blue flex-1 justify-center"
+                  >
+                    Repay Installments &rarr;
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Milestone Timeline */}
+            {milestones.length > 0 && (
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 md:p-8 shadow-xl backdrop-blur-xl">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="text-xl font-bold text-white">Loan Milestone Timeline</h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Real-time status of construction disbursements gated by IPFS proof and
+                      multisig approval.
+                    </p>
+                  </div>
+                  <a
+                    href="/contractor"
+                    className="text-xs font-semibold text-cyan-400 hover:underline"
+                  >
+                    Contractor Portal &rarr;
+                  </a>
+                </div>
+                <MilestoneTimeline milestones={milestones} title="" />
+              </div>
+            )}
               </SortableContext>
             </DndContext>
           </div>

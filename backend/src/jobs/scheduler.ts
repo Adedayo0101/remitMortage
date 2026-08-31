@@ -5,17 +5,19 @@ import { runRepaymentAudit } from "./repaymentAudit.js";
 import { runKycExpiryReminderJob } from "./kycExpiryReminder.js";
 import { runEscrowReconciliation } from "./escrowReconciliation.js";
 import { runApplicationSlaMonitorJob } from "./applicationSlaMonitor.js";
-import { runSessionTokenPurgeJob } from "./sessionTokenPurge.js";
 import { runAdminPortfolioDigestJob } from "./adminPortfolioDigest.js";
+import { runSessionTokenPurgeJob } from "./sessionTokenPurge.js";
 import { runOrphanedRecordCleanupJob } from "./orphanedRecordCleanup.js";
+import { startAnalyticsRefreshScheduler, stopAnalyticsRefreshScheduler } from "./analyticsRefresh.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
 let escrowReconciliationTask: ReturnType<typeof cron.schedule> | null = null;
 let applicationSlaTask: ReturnType<typeof cron.schedule> | null = null;
-let sessionTokenPurgeTask: ReturnType<typeof cron.schedule> | null = null;
 let adminDigestTask: ReturnType<typeof cron.schedule> | null = null;
+let sessionTokenPurgeTask: ReturnType<typeof cron.schedule> | null = null;
 let orphanedRecordCleanupTask: ReturnType<typeof cron.schedule> | null = null;
+let staleDraftCleanupTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -75,8 +77,11 @@ export function startScheduler() {
     await runAdminPortfolioDigestJob();
   }, { timezone: "UTC" });
 
+  // Start the materialized view refresh scheduler (every 5 minutes by default)
+  startAnalyticsRefreshScheduler();
+
   console.log(
-    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, and admin portfolio digest jobs scheduled."
+    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, and analytics refresh jobs scheduled."
   );
 }
 
@@ -109,5 +114,6 @@ export function stopScheduler() {
     adminDigestTask.stop();
     adminDigestTask = null;
   }
+  stopAnalyticsRefreshScheduler();
   console.log("[Scheduler] Stopped.");
 }

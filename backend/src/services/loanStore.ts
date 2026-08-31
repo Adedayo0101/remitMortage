@@ -1,5 +1,11 @@
 import { StrKey } from "@stellar/stellar-sdk";
 import { prisma } from "./db.js";
+import {
+  diffLoanSnapshot,
+  recordLoanChange,
+  recordLoanCreation,
+  type LoanSnapshot,
+} from "./loanHistory.js";
 
 // lightweight id generator to avoid adding dependencies
 function makeId() {
@@ -7,12 +13,14 @@ function makeId() {
 }
 
 export type LoanStatus =
+  | "Draft"
   | "Pending"
   | "Approved"
   | "Rejected"
   | "Disbursing"
   | "Repaying"
-  | "Completed";
+  | "Completed"
+  | "MANUAL_REVIEW";
 
 export interface LoanApplication {
   id: string;
@@ -60,7 +68,23 @@ export async function createApplication(borrowerAddress: string, amount: string)
     include: { applicant: true },
   });
 
-  return mapLoanApplication(record);
+  const application = mapLoanApplication(record);
+
+  // Seed the audit trail with the creation snapshot so later point-in-time
+  // reconstructions have a base state to replay changes onto.
+  await recordLoanCreation(application.id, snapshotOf(application));
+
+  return application;
+}
+
+/** The mutable slice of a loan application tracked by the audit trail. */
+function snapshotOf(app: LoanApplication): LoanSnapshot {
+  return {
+    borrowerAddress: app.borrowerAddress,
+    amount: app.amount,
+    status: app.status,
+    reason: app.reason,
+  };
 }
 
 export async function getApplication(id: string) {
@@ -101,8 +125,16 @@ export async function listApplications() {
 export async function updateApplication(id: string, patch: Partial<LoanApplication>) {
   const existing = await prisma.loanApplication.findFirst({
     where: { id, deletedAt: null },
+    include: { applicant: true },
   });
   if (!existing) return null;
+
+  const before: LoanSnapshot = {
+    borrowerAddress: existing.applicant.stellarAddress,
+    amount: existing.principal,
+    status: existing.status,
+    reason: existing.reason ?? undefined,
+  };
 
   if (patch.borrowerAddress) {
     await prisma.applicant.update({
@@ -115,11 +147,22 @@ export async function updateApplication(id: string, patch: Partial<LoanApplicati
     principal?: string;
     status?: LoanStatus;
     reason?: string | null;
+    lastActivityAt?: Date;
+    draftStaleNotifiedAt?: null;
   } = {};
 
   if (patch.amount !== undefined) updateData.principal = patch.amount;
   if (patch.status !== undefined) updateData.status = patch.status;
   if (patch.reason !== undefined) updateData.reason = patch.reason ?? null;
+
+  // Any edit to a still-Draft application counts as activity: reset the
+  // inactivity clock and clear a pending stale notice, taking it out of
+  // scope for the stale draft cleanup job.
+  const resultingStatus = patch.status ?? existing.status;
+  if (Object.keys(updateData).length && resultingStatus === "Draft") {
+    updateData.lastActivityAt = new Date();
+    updateData.draftStaleNotifiedAt = null;
+  }
 
   const record = Object.keys(updateData).length
     ? await prisma.loanApplication.update({
@@ -132,7 +175,131 @@ export async function updateApplication(id: string, patch: Partial<LoanApplicati
         include: { applicant: true },
       });
 
-  return record ? mapLoanApplication(record) : null;
+  if (!record) return null;
+
+  const application = mapLoanApplication(record);
+
+  // Append the field-level diff to the audit trail so this state transition
+  // can be replayed during point-in-time reconstruction. No-op when nothing
+  // tracked actually changed.
+  await recordLoanChange(id, diffLoanSnapshot(before, snapshotOf(application)));
+
+  return application;
+}
+
+/** Explicitly resumes a Draft flagged as stale, resetting its inactivity clock. */
+export async function resumeDraftApplication(id: string) {
+  const existing = await prisma.loanApplication.findFirst({
+    where: { id, deletedAt: null, status: "Draft" },
+  });
+  if (!existing) return null;
+
+  const record = await prisma.loanApplication.update({
+    where: { id },
+    data: { lastActivityAt: new Date(), draftStaleNotifiedAt: null },
+    include: { applicant: true },
+  });
+
+  return mapLoanApplication(record);
+}
+
+/** Explicitly discards a Draft application (soft delete) before it would otherwise expire. */
+export async function discardDraftApplication(id: string) {
+  const existing = await prisma.loanApplication.findFirst({
+    where: { id, deletedAt: null, status: "Draft" },
+  });
+  if (!existing) return null;
+
+  const record = await prisma.loanApplication.update({
+    where: { id },
+    data: { deletedAt: new Date() },
+    include: { applicant: true },
+  });
+
+  return mapLoanApplication(record);
+}
+
+export type BulkReviewDecision = "approve" | "reject";
+
+export interface BulkReviewItem {
+  applicationId: string;
+  decision: BulkReviewDecision;
+  reason?: string;
+}
+
+export interface BulkReviewResult {
+  applicationId: string;
+  decision: BulkReviewDecision;
+  status: LoanStatus;
+}
+
+/**
+ * Review applications independently while keeping each state change and its
+ * compliance audit event in one database transaction. A rejected item does
+ * not roll back successful decisions for other applications in the batch.
+ */
+export async function bulkReviewApplications(
+  items: BulkReviewItem[],
+  reviewerAddress: string,
+  ipAddress?: string,
+) {
+  const results: BulkReviewResult[] = [];
+  const failures: Array<{ applicationId: string; error: string }> = [];
+
+  for (const item of items) {
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const application = await tx.loanApplication.findFirst({
+          where: { id: item.applicationId, deletedAt: null },
+          include: { applicant: true },
+        });
+
+        if (!application) throw new Error("not_found");
+        if (application.status !== "Pending") throw new Error("invalid_state");
+        if (application.principal <= 0 || application.applicant.deletedAt !== null) {
+          throw new Error("ineligible");
+        }
+        if (application.applicant.verificationStatus === "INELIGIBLE") {
+          throw new Error("ineligible");
+        }
+
+        const status = item.decision === "approve" ? "Approved" : "Rejected";
+        const updated = await tx.loanApplication.update({
+          where: { id: item.applicationId },
+          data: { status, statusUpdatedAt: new Date() },
+          include: { applicant: true },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            action: `loan_application.bulk_${item.decision}d`,
+            actorAddress: reviewerAddress,
+            ipAddress,
+            metadata: {
+              applicationId: item.applicationId,
+              previousStatus: application.status,
+              newStatus: status,
+              decision: item.decision,
+              reason: item.reason ?? null,
+              reviewedAt: new Date().toISOString(),
+              // Field-level change set, so point-in-time reconstruction can
+              // replay this transition the same way it replays updates from
+              // `updateApplication`.
+              changes: { status: { from: application.status, to: status } },
+            },
+          },
+        });
+
+        return { applicationId: updated.id, decision: item.decision, status };
+      });
+      results.push(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "review_failed";
+      failures.push({ applicationId: item.applicationId, error: message });
+    }
+  }
+
+  return { results, failures };
 }
 
 export type BulkReviewDecision = "approve" | "reject";

@@ -39,21 +39,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Resolve stale preview age
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.max-age-days }}" ]]; then
-            age="${{ inputs.max-age-days }}"
-          else
-            age="${{ env.STALE_ENV_MAX_AGE_DAYS }}"
-          fi
-          echo "STALE_ENV_MAX_AGE_DAYS=${age}" >> "$GITHUB_ENV"
-          echo "Resolved stale preview age: ${age} days"
-
       - name: Remove Stale Preview Environments
         id: sweep
         env:
           AWS_REGION: ${{ env.AWS_REGION }}
+          STALE_ENV_MAX_AGE_DAYS: >-
+            ${{
+              inputs.max-age-days != null && inputs.max-age-days != ''
+              ? inputs.max-age-days
+              : env.STALE_ENV_MAX_AGE_DAYS
+            }}
         run: |
           chmod +x scripts/teardown-preview-env.sh
           scripts/teardown-preview-env.sh sweep "${STALE_ENV_MAX_AGE_DAYS}" \
