@@ -65,12 +65,11 @@ adminRouter.post("/loans/bulk-review", requireAdmin, async (req: AuthenticatedRe
 
 // Trigger manual retry of a DLQ job
 adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const rawId = req.params.id;
+  const id = Array.isArray(rawId) ? rawId[0] : rawId;
 
   try {
-    const dlqRecord = await prisma.webhookDLQ.findUnique({
-      where: { id },
-    });
+      const dlqRecord = await prisma.webhookDLQ.findUnique({ where: { id } });
 
     if (!dlqRecord) {
       res.status(404).json({ error: "DLQ record not found" });
@@ -85,20 +84,11 @@ adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) 
 
     if (webhookResult.success) {
       // If success, remove from DLQ
-      await prisma.webhookDLQ.delete({
-        where: { id },
-      });
+      await prisma.webhookDLQ.delete({ where: { id } });
       res.json({ success: true, message: "Webhook retry succeeded and removed from DLQ" });
     } else {
       // If still fails, update DLQ record with new error/status
-      await prisma.webhookDLQ.update({
-        where: { id },
-        data: {
-          statusCode: webhookResult.status,
-          responsePayload: webhookResult.responsePayload,
-          error: webhookResult.error,
-        },
-      });
+      await prisma.webhookDLQ.update({ where: { id }, data: { statusCode: webhookResult.status, responsePayload: webhookResult.responsePayload, error: webhookResult.error } });
       res.status(500).json({ 
         success: false, 
         error: "Webhook retry failed", 

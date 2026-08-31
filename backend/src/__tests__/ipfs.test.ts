@@ -1,6 +1,14 @@
 import axios from "axios";
 
 jest.mock("axios");
+const axiosMockImpl: any = {
+  create: jest.fn(() => axiosMockImpl),
+  post: jest.fn(),
+  delete: jest.fn(),
+  interceptors: { request: { use: jest.fn() }, response: { use: jest.fn() } },
+};
+;(axios as unknown as jest.Mock).mockImplementation(() => axiosMockImpl);
+Object.assign(axios, axiosMockImpl);
 jest.mock("../config.js", () => ({
   loadConfig: () => ({
     port: 4000,

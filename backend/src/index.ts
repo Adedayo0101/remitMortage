@@ -31,6 +31,7 @@ import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
 import { adminAuthRouter } from "./routes/adminAuth.js";
 import { workspaceRouter } from "./routes/workspace.js";
+import { userRouter } from "./routes/user.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
