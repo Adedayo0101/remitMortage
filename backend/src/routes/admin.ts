@@ -5,11 +5,7 @@ import { runEscrowReconciliation } from "../jobs/escrowReconciliation.js";
 import logger from "../utils/logger.js";
 import { requireAdmin, type AuthenticatedRequest } from "../middleware/auth.js";
 import { bulkReviewApplications, type BulkReviewDecision } from "../services/loanStore.js";
-import {
-  createAutoRejectionRule,
-  listAutoRejectionRules,
-  updateAutoRejectionRule,
-} from "../services/autoRejectionRuleStore.js";
+import { promoteWaitlistBatch } from "../services/inviteCode.js";
 
 export const adminRouter = Router();
 
@@ -123,12 +119,11 @@ adminRouter.patch("/auto-rejection-rules/:id", requireAdmin, async (req: Authent
 
 // Trigger manual retry of a DLQ job
 adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const rawId = req.params.id;
+  const id = Array.isArray(rawId) ? rawId[0] : rawId;
 
   try {
-    const dlqRecord = await prisma.webhookDLQ.findUnique({
-      where: { id },
-    });
+      const dlqRecord = await prisma.webhookDLQ.findUnique({ where: { id } });
 
     if (!dlqRecord) {
       res.status(404).json({ error: "DLQ record not found" });
@@ -143,20 +138,11 @@ adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) 
 
     if (webhookResult.success) {
       // If success, remove from DLQ
-      await prisma.webhookDLQ.delete({
-        where: { id },
-      });
+      await prisma.webhookDLQ.delete({ where: { id } });
       res.json({ success: true, message: "Webhook retry succeeded and removed from DLQ" });
     } else {
       // If still fails, update DLQ record with new error/status
-      await prisma.webhookDLQ.update({
-        where: { id },
-        data: {
-          statusCode: webhookResult.status,
-          responsePayload: webhookResult.responsePayload,
-          error: webhookResult.error,
-        },
-      });
+      await prisma.webhookDLQ.update({ where: { id }, data: { statusCode: webhookResult.status, responsePayload: webhookResult.responsePayload, error: webhookResult.error } });
       res.status(500).json({ 
         success: false, 
         error: "Webhook retry failed", 
@@ -207,5 +193,53 @@ adminRouter.post("/escrow/reconcile", async (req: Request, res: Response) => {
   } catch (err: any) {
     logger.error("[AdminRouter] Escrow reconciliation failed", { err });
     res.status(500).json({ error: "Reconciliation job failed", message: err.message });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/waitlist/promote:
+ *   post:
+ *     summary: Generate and email invite codes to waitlisted users in batches
+ *     description: >-
+ *       Admin-only. Picks oldest pending waitlist entries, generates a unique
+ *       invite code per user, updates entry to invited, and emails the code.
+ *       Codes are single-use and validated at registration when gating is enabled.
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               count:
+ *                 type: integer
+ *                 description: Number of waitlisted users to promote (1-100, default 10)
+ *               limit:
+ *                 type: integer
+ *                 description: Alias for count
+ *     responses:
+ *       200:
+ *         description: Batch promotion complete
+ *       400:
+ *         description: Invalid count
+ */
+adminRouter.post("/waitlist/promote", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  const rawCount = body.count ?? body.limit ?? body.batchSize ?? 10;
+  const count = typeof rawCount === "string" ? parseInt(rawCount, 10) : Number(rawCount);
+  if (!Number.isFinite(count) || count < 1 || count > 100) {
+    return res.status(400).json({ error: "invalid_request", message: "count must be between 1 and 100" });
+  }
+  try {
+    const results = await promoteWaitlistBatch(count);
+    return res.json({ promoted: results.length, results });
+  } catch (err) {
+    logger.error("[AdminRouter] waitlist promote failed", { err });
+    return res.status(500).json({ error: "waitlist_promote_failed" });
   }
 });
