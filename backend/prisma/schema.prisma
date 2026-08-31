@@ -213,6 +213,7 @@ model LoanApplication {
   // Set when the stale-draft cleanup job first flags/notifies this draft.
   // Cleared on resume, so it also marks whether a notice is outstanding.
   draftStaleNotifiedAt   DateTime?
+  comments           LoanComment[]
 
   // Index backing getApplicationsByBorrower(): filter by applicant then sort by createdAt
   @@index([applicantId, createdAt])
@@ -225,6 +226,24 @@ model LoanApplication {
   @@index([deletedAt])
   // Composite index backing the stale draft cleanup scan: WHERE status = 'Draft' AND lastActivityAt < cutoff
   @@index([status, lastActivityAt])
+}
+
+model LoanComment {
+  id                String   @id @default(uuid())
+  loanApplicationId String
+  loanApplication   LoanApplication @relation(fields: [loanApplicationId], references: [id], onDelete: Cascade)
+  authorAddress     String
+  content           String
+  parentId          String?
+  parent            LoanComment? @relation("ThreadedComments", fields: [parentId], references: [id], onDelete: Cascade)
+  replies           LoanComment[] @relation("ThreadedComments")
+  mentions          String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([loanApplicationId, createdAt])
+  @@index([parentId])
+  @@index([authorAddress])
 }
 
 model AuditLog {
@@ -519,5 +538,34 @@ model SessionToken {
 
   @@index([walletAddress])
   @@index([expiresAt])
+  @@index([createdAt])
+}
+
+model InviteCode {
+  id        String    @id @default(uuid())
+  code      String    @unique
+  email     String?
+  used      Boolean   @default(false)
+  usedBy    String?
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  @@index([code])
+  @@index([used])
+}
+
+model WaitlistEntry {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  walletAddress String?
+  status        String    @default("pending")
+  inviteCode    String?
+  position      Int?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([email])
+  @@index([status])
   @@index([createdAt])
 }

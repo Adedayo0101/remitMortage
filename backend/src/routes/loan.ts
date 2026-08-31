@@ -348,3 +348,141 @@ loanRouter.post("/:id/review", async (req, res) => {
   }
 });
 
+// ── Collaborative Commenting ───────────────────────────────────────────────
+
+function extractMentions(content: string): string[] {
+  const mentionRegex = /@([A-Za-z0-9_.-]+)/g;
+  const mentions: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = mentionRegex.exec(content)) !== null) {
+    mentions.push(match[1]);
+  }
+  return [...new Set(mentions)];
+}
+
+/**
+ * GET /api/loan/:id/comments
+ * Returns threaded comments scoped to a loan application, ordered by createdAt.
+ * Also serves as the poll endpoint for real-time display.
+ */
+loanRouter.get("/:id/comments", async (req, res) => {
+  const { id } = req.params;
+  const app = await getApplication(id);
+  if (!app) return res.status(404).json({ error: "not_found" });
+
+  const comments = await prisma.loanComment.findMany({
+    where: { loanApplicationId: id },
+    orderBy: { createdAt: "asc" },
+  });
+
+  // Build threaded tree: parentId -> replies
+  const map = new Map<string, any>();
+  const roots: any[] = [];
+  for (const c of comments) {
+    map.set(c.id, { ...c, replies: [] });
+  }
+  for (const c of comments) {
+    const node = map.get(c.id);
+    if (c.parentId && map.has(c.parentId)) {
+      map.get(c.parentId).replies.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  return res.json({ loanApplicationId: id, comments: roots, total: comments.length });
+});
+
+/**
+ * POST /api/loan/:id/comments
+ * Adds a threaded comment, supports @-mentions triggering notifications,
+ * and persists to audit trail.
+ */
+loanRouter.post("/:id/comments", async (req, res) => {
+  const { id } = req.params;
+  const { authorAddress, author, content, parentId } = req.body ?? {};
+  const authorAddr = authorAddress || author;
+
+  if (!authorAddr || typeof authorAddr !== "string") {
+    return res.status(400).json({ error: "invalid_request", message: "authorAddress is required" });
+  }
+  if (!content || typeof content !== "string" || content.trim().length === 0) {
+    return res.status(400).json({ error: "invalid_request", message: "content is required" });
+  }
+  if (content.length > 5000) {
+    return res.status(400).json({ error: "invalid_request", message: "content too long (max 5000)" });
+  }
+
+  const app = await getApplication(id);
+  if (!app) return res.status(404).json({ error: "not_found" });
+
+  if (parentId) {
+    const parent = await prisma.loanComment.findUnique({ where: { id: parentId } });
+    if (!parent || parent.loanApplicationId !== id) {
+      return res.status(400).json({ error: "invalid_request", message: "parent comment not found for this application" });
+    }
+  }
+
+  const mentions = extractMentions(content);
+
+  try {
+    const comment = await prisma.loanComment.create({
+      data: {
+        loanApplicationId: id,
+        authorAddress: authorAddr,
+        content: content.trim(),
+        parentId: parentId || null,
+        mentions,
+      },
+    });
+
+    // Persist as part of audit trail
+    try {
+      await prisma.auditLog.create({
+        data: {
+          action: "loan_comment",
+          actorAddress: authorAddr,
+          metadata: {
+            loanApplicationId: id,
+            commentId: comment.id,
+            parentId: parentId || null,
+            mentions,
+            contentPreview: content.slice(0, 200),
+          },
+        },
+      });
+    } catch (auditErr) {
+      logger.warn("Failed to write loan_comment audit log", { err: auditErr });
+    }
+
+    // Notify mentioned reviewers - creates InAppNotification linking directly to thread
+    for (const mentioned of mentions) {
+      try {
+        // mentions may be wallet address or username; store as walletAddress if matches G... else treat as identifier
+        await prisma.inAppNotification.create({
+          data: {
+            walletAddress: mentioned,
+            title: `You were mentioned in loan ${id}`,
+            message: `${authorAddr} mentioned you: "${content.slice(0, 120)}"`,
+            variant: "info",
+            metadata: {
+              loanApplicationId: id,
+              commentId: comment.id,
+              parentId: parentId || null,
+              anchor: `comment-${comment.id}`,
+              href: `/admin?loan=${id}#comment-${comment.id}`,
+            },
+          },
+        });
+      } catch (notifErr) {
+        logger.warn("Failed to create mention notification", { mentioned, err: notifErr });
+      }
+    }
+
+    return res.status(201).json(comment);
+  } catch (err: any) {
+    logger.error("Create comment error", { err });
+    return res.status(500).json({ error: "failed_to_create_comment" });
+  }
+});
+

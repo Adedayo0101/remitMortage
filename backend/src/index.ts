@@ -36,6 +36,8 @@ import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { incidentWebhookRouter } from "./routes/incidentWebhooks.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
+import { waitlistRouter } from "./routes/waitlist.js";
+import { authRouter } from "./routes/auth.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { logMasker } from "./middleware/logMasker.js";
@@ -202,6 +204,8 @@ app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/webhooks/pagerduty", incidentWebhookRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
 app.use("/api/user", userRouter);
+app.use("/api/waitlist", waitlistRouter);
+app.use("/api/auth", authRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
