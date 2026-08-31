@@ -1,13 +1,30 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { getProductTourStore } from "@/hooks/useProductTourState";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
+// Push relies on browser-only APIs (ServiceWorker, PushManager, Notification),
+// so it must never be evaluated during SSR.
+const PushNotificationPanel = dynamic(
+  () => import("../../components/PushNotificationPanel"),
+  { ssr: false }
+);
+const ReferralInvitePanel = dynamic(() => import("../../components/ReferralInvitePanel"), {
+  ssr: false,
+});
 
-type SettingsTab = "profile" | "wallets" | "notifications" | "contractor";
+type SettingsTab = "profile" | "wallets" | "notifications" | "referrals" | "contractor";
 
-type NotificationKey = "paymentDue" | "milestoneUpdates" | "loanApproval";
+type NotificationKey =
+  | "emailAlerts"
+  | "smsAlerts"
+  | "escrowApproaching"
+  | "escrowReached"
+  | "paymentMissed"
+  | "loanMilestones"
+  | "loanApproval";
 
 type FreighterModule = {
   isConnected?: () => boolean | Promise<boolean>;
@@ -18,14 +35,50 @@ type FreighterModule = {
 const tabs: { id: SettingsTab; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "wallets", label: "Wallets" },
-  { id: "notifications", label: "Notifications" },
+  { id: "notifications", label: "Notifications & Alerts" },
+  { id: "referrals", label: "Referrals" },
   { id: "contractor", label: "Developer/Contractor" },
 ];
 
-const notificationLabels: Record<NotificationKey, string> = {
-  paymentDue: "Payment due",
-  milestoneUpdates: "Milestone updates",
-  loanApproval: "Loan approval",
+const notificationDetails: Record<
+  NotificationKey,
+  { label: string; description: string; category: "channel" | "escrow" | "loan" }
+> = {
+  emailAlerts: {
+    label: "Email Notifications",
+    description: "Receive account and protocol updates via email",
+    category: "channel",
+  },
+  smsAlerts: {
+    label: "SMS Text Alerts",
+    description: "Receive instant mobile SMS alerts for time-critical milestones",
+    category: "channel",
+  },
+  escrowApproaching: {
+    label: "Down-Payment Target Approaching (80%+)",
+    description: "Alert when escrow savings reach 80% of the target down payment",
+    category: "escrow",
+  },
+  escrowReached: {
+    label: "Down-Payment Target Reached (100%)",
+    description: "Alert when 30% down payment is fully accumulated and loan unlock is ready",
+    category: "escrow",
+  },
+  paymentMissed: {
+    label: "Missed Payment Warning",
+    description: "Immediate alert if an escrow contribution or loan repayment installment is missed",
+    category: "escrow",
+  },
+  loanMilestones: {
+    label: "Construction Milestone Updates",
+    description: "Notification when contractor IPFS proof is uploaded and multisig approves tranche disbursement",
+    category: "loan",
+  },
+  loanApproval: {
+    label: "Loan Status & Approval Alerts",
+    description: "Alerts when your 70% lending pool loan application is approved or updated",
+    category: "loan",
+  },
 };
 
 const verifiedWallets = [
@@ -57,7 +110,6 @@ function isValidEmail(email: string) {
 
 function isValidWebhookUrl(webhookUrl: string) {
   if (!webhookUrl.trim()) return true;
-
   try {
     const url = new URL(webhookUrl);
     return url.protocol === "https:" || url.protocol === "http:";
@@ -88,11 +140,16 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("profile");
   const [displayName, setDisplayName] = useState("Ada Remit");
   const [email, setEmail] = useState("ada@example.com");
+  const [phone, setPhone] = useState("+1 (555) 234-5678");
   const [stellarAddress, setStellarAddress] = useState("");
   const [notifications, setNotifications] = useState<Record<NotificationKey, boolean>>({
-    paymentDue: true,
-    milestoneUpdates: true,
-    loanApproval: false,
+    emailAlerts: true,
+    smsAlerts: false,
+    escrowApproaching: true,
+    escrowReached: true,
+    paymentMissed: true,
+    loanMilestones: true,
+    loanApproval: true,
   });
   const [webhookUrl, setWebhookUrl] = useState("https://partner.example.com/remitmortgage/webhook");
   const [businessName, setBusinessName] = useState("Keystone Build Partners");
@@ -114,6 +171,43 @@ export default function SettingsPage() {
     () => Object.values(notifications).filter(Boolean).length,
     [notifications]
   );
+
+  useEffect(() => {
+    async function loadSettings() {
+      try {
+        const targetId = stellarAddress || email || "default_user";
+        const res = await fetch(`/api/user/settings?userId=${encodeURIComponent(targetId)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.settings) {
+            if (data.settings.profile) {
+              if (data.settings.profile.displayName) setDisplayName(data.settings.profile.displayName);
+              if (data.settings.profile.email) setEmail(data.settings.profile.email);
+              if (data.settings.profile.phone) setPhone(data.settings.profile.phone);
+            }
+            if (data.settings.notifications) {
+              setNotifications((prev) => ({
+                ...prev,
+                ...data.settings.notifications,
+              }));
+              if (data.settings.notifications.webhookUrl !== undefined) {
+                setWebhookUrl(data.settings.notifications.webhookUrl);
+              }
+            }
+            if (data.settings.contractor) {
+              if (data.settings.contractor.businessName) setBusinessName(data.settings.contractor.businessName);
+              if (data.settings.contractor.registrationNumber)
+                setRegistrationNumber(data.settings.contractor.registrationNumber);
+              if (data.settings.contractor.serviceRegion) setServiceRegion(data.settings.contractor.serviceRegion);
+            }
+          }
+        }
+      } catch {
+        // Fall back to default state
+      }
+    }
+    loadSettings();
+  }, [stellarAddress]);
 
   async function connectStellarWallet() {
     setWalletMessage("Connecting to Freighter...");
@@ -142,9 +236,7 @@ export default function SettingsPage() {
 
     try {
       await fetch(webhookUrl, { method: "HEAD", mode: "no-cors" });
-      setWebhookStatus(
-        "Webhook URL format is valid and the endpoint accepted a reachability check."
-      );
+      setWebhookStatus("Webhook URL format is valid and endpoint accepted reachability check.");
     } catch {
       setWebhookStatus(
         "Webhook URL format is valid, but the endpoint could not be reached from this browser."
@@ -164,23 +256,45 @@ export default function SettingsPage() {
     setIsSaving(true);
 
     try {
+      const userId = stellarAddress || email;
+
+      // Save user profile & notification settings
       const response = await fetch("/api/user/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: stellarAddress || email,
-          profile: { displayName, email },
+          userId,
+          profile: { displayName, email, phone },
           notifications: { ...notifications, webhookUrl },
           contractor: { businessName, registrationNumber, serviceRegion },
         }),
       });
+
+      // Also persist to backend notification preferences API
+      await fetch("/api/notifications/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          address: userId,
+          email,
+          phone,
+          emailAlerts: notifications.emailAlerts,
+          smsAlerts: notifications.smsAlerts,
+          escrowApproaching: notifications.escrowApproaching,
+          escrowReached: notifications.escrowReached,
+          paymentMissed: notifications.paymentMissed,
+          loanMilestones: notifications.loanMilestones,
+          webhookUrl,
+        }),
+      }).catch(() => null);
+
       const result = await response.json();
 
       if (!response.ok) {
         throw new Error(result.error || "Settings could not be saved.");
       }
 
-      setSaveStatus("Settings saved successfully.");
+      setSaveStatus("Notification settings and profile saved successfully.");
     } catch (error) {
       setSaveStatus(error instanceof Error ? error.message : "Settings could not be saved.");
     } finally {
@@ -193,29 +307,22 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[var(--bg-primary)]">
+    <main className="rm-app-page min-h-screen bg-[#060913] text-slate-100">
       <Navbar />
 
-      <section className="pt-24 pb-16 px-6">
+      <section className="pt-28 pb-16 px-6">
         <div className="max-w-6xl mx-auto">
           <div className="mb-8">
-            <p className="text-sm font-semibold uppercase text-[var(--accent-secondary)]">
-              Account control center
-            </p>
-            <h1 className="text-3xl md:text-4xl font-bold mt-2">User Settings</h1>
-            <p className="text-[var(--text-secondary)] mt-3 max-w-2xl">
-              Manage profile details, verified sending wallets, notification endpoints, and
-              contractor registration data.
+            <p className="text-xs font-bold uppercase tracking-wider text-cyan-400">Account control center</p>
+            <h1 className="text-3xl md:text-5xl font-extrabold text-white mt-1">User Settings</h1>
+            <p className="text-slate-400 mt-2 max-w-2xl text-sm">
+              Manage profile details, SMS/Email notification preferences for escrow maturity, and contractor status.
             </p>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
-            <aside className="glass-card p-3 h-fit">
-              <div
-                className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-1 gap-2"
-                role="tablist"
-                aria-label="Settings tabs"
-              >
+            <aside className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 h-fit backdrop-blur-xl">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-1 gap-2" role="tablist" aria-label="Settings tabs">
                 {tabs.map((tab) => (
                   <button
                     key={tab.id}
@@ -223,10 +330,10 @@ export default function SettingsPage() {
                     role="tab"
                     aria-selected={activeTab === tab.id}
                     onClick={() => setActiveTab(tab.id)}
-                    className={`text-left px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${
+                    className={`text-left px-4 py-3 rounded-xl text-sm font-semibold transition-all ${
                       activeTab === tab.id
-                        ? "bg-[var(--accent-primary)] text-white"
-                        : "text-[var(--text-secondary)] hover:bg-[var(--bg-card-hover)] hover:text-[var(--text-primary)]"
+                        ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/20"
+                        : "text-slate-400 hover:bg-slate-800 hover:text-white"
                     }`}
                   >
                     {tab.label}
@@ -235,36 +342,64 @@ export default function SettingsPage() {
               </div>
             </aside>
 
-            <form onSubmit={saveSettings} className="glass-card p-6 md:p-8">
+            <form onSubmit={saveSettings} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 md:p-8 backdrop-blur-xl shadow-2xl">
               {activeTab === "profile" && (
                 <section role="tabpanel" aria-label="Profile settings" className="space-y-6">
                   <div>
-                    <h2 className="text-2xl font-semibold">Profile</h2>
-                    <p className="text-[var(--text-secondary)] mt-2">
-                      Keep the borrower profile and linked email current.
-                    </p>
+                    <h2 className="text-2xl font-bold text-white">Borrower Profile</h2>
+                    <p className="text-slate-400 text-sm mt-1">Keep your contact channels updated for SMS and email alerts.</p>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                     <label className="space-y-2">
-                      <span className="text-sm text-[var(--text-muted)]">Display name</span>
+                      <span className="text-xs font-semibold text-slate-300">Display Name</span>
                       <input
                         value={displayName}
                         onChange={(event) => setDisplayName(event.target.value)}
-                        className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)]"
+                        className="w-full p-3.5 rounded-xl border border-slate-700 bg-slate-950/70 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
                       />
                     </label>
 
                     <label className="space-y-2">
-                      <span className="text-sm text-[var(--text-muted)]">Linked email address</span>
+                      <span className="text-xs font-semibold text-slate-300">Linked Email Address (Email Alerts)</span>
                       <input
                         type="email"
                         value={email}
                         onChange={(event) => setEmail(event.target.value)}
-                        className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)]"
+                        className="w-full p-3.5 rounded-xl border border-slate-700 bg-slate-950/70 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
                       />
-                      {emailError && <span className="text-sm text-red-300">{emailError}</span>}
+                      {emailError && <span className="text-xs text-red-400">{emailError}</span>}
                     </label>
+
+                    <label className="space-y-2 md:col-span-2">
+                      <span className="text-xs font-semibold text-slate-300">Mobile Phone Number (SMS Alerts)</span>
+                      <input
+                        type="tel"
+                        value={phone}
+                        onChange={(event) => setPhone(event.target.value)}
+                        placeholder="+1 (555) 000-0000"
+                        className="w-full p-3.5 rounded-xl border border-slate-700 bg-slate-950/70 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono text-sm"
+                      />
+                      <span className="text-xs text-slate-400 block">
+                        Used for urgent SMS notifications (e.g. escrow target reached, missed payment warnings).
+                      </span>
+                    </label>
+                  </div>
+                  <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/60 p-5">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                      <div>
+                        <h3 className="text-sm font-semibold text-white">Guided Product Tour</h3>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Re-run the first-time walkthrough of the dashboard features.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => getProductTourStore().getState().reset()}
+                        className="btn-outline-blue whitespace-nowrap"
+                      >
+                        Replay Tour
+                      </button>
+                    </div>
                   </div>
                 </section>
               )}
@@ -272,48 +407,37 @@ export default function SettingsPage() {
               {activeTab === "wallets" && (
                 <section role="tabpanel" aria-label="Wallet settings" className="space-y-6">
                   <div>
-                    <h2 className="text-2xl font-semibold">Wallets</h2>
-                    <p className="text-[var(--text-secondary)] mt-2">
-                      View the active Stellar wallet and verified remittance sending wallets.
+                    <h2 className="text-2xl font-bold text-white">Stellar & Remittance Wallets</h2>
+                    <p className="text-slate-400 text-sm mt-1">
+                      View your connected Freighter address and verified remittance sending wallets.
                     </p>
                   </div>
 
-                  <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-5">
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-5">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                       <div>
-                        <p className="text-sm text-[var(--text-muted)]">
-                          Connected Stellar address
-                        </p>
-                        <p className="font-mono break-all mt-1">
+                        <p className="text-xs text-slate-400 font-semibold uppercase">Connected Stellar Address</p>
+                        <p className="font-mono text-sm break-all mt-1 text-cyan-300">
                           {stellarAddress || "No Stellar wallet connected"}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={connectStellarWallet}
-                        className="btn-primary !py-3 !px-5"
-                      >
+                      <button type="button" onClick={connectStellarWallet} className="btn-primary !py-2.5 !px-5 text-xs">
                         Connect Freighter
                       </button>
                     </div>
-                    {walletMessage && (
-                      <p className="text-sm text-[var(--text-secondary)] mt-4">{walletMessage}</p>
-                    )}
+                    {walletMessage && <p className="text-xs text-slate-400 mt-3">{walletMessage}</p>}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {verifiedWallets.map((wallet) => (
-                      <article
-                        key={`${wallet.chain}-${wallet.address}`}
-                        className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-5"
-                      >
-                        <span className="inline-flex rounded-full bg-cyan-500/10 px-3 py-1 text-xs font-bold text-cyan-200">
+                      <article key={`${wallet.chain}-${wallet.address}`} className="rounded-xl border border-slate-800 bg-slate-950/60 p-5">
+                        <span className="inline-flex rounded-full bg-cyan-500/10 px-3 py-1 text-xs font-bold text-cyan-400 border border-cyan-500/20">
                           {wallet.chain}
                         </span>
-                        <p className="font-mono text-sm break-all mt-4" title={wallet.address}>
+                        <p className="font-mono text-xs break-all mt-3 text-slate-200" title={wallet.address}>
                           {shortenAddress(wallet.address)}
                         </p>
-                        <p className="text-sm text-[var(--success)] mt-3">{wallet.verifiedAt}</p>
+                        <p className="text-xs text-emerald-400 mt-2 font-medium">✓ {wallet.verifiedAt}</p>
                       </article>
                     ))}
                   </div>
@@ -321,41 +445,127 @@ export default function SettingsPage() {
               )}
 
               {activeTab === "notifications" && (
-                <section role="tabpanel" aria-label="Notification settings" className="space-y-6">
+                <section role="tabpanel" aria-label="Notification settings" className="space-y-8">
                   <div>
-                    <h2 className="text-2xl font-semibold">Notifications</h2>
-                    <p className="text-[var(--text-secondary)] mt-2">
-                      Choose email notifications and configure a partner webhook endpoint.
+                    <h2 className="text-2xl font-bold text-white">Dynamic Notification Preferences</h2>
+                    <p className="text-slate-400 text-sm mt-1">
+                      Configure SMS and email alerts for escrow maturity goals, missed payments, and milestone disbursements.
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {(Object.keys(notificationLabels) as NotificationKey[]).map((key) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => toggleNotification(key)}
-                        aria-pressed={notifications[key]}
-                        className={`rounded-lg border p-5 text-left transition-colors ${
-                          notifications[key]
-                            ? "border-[var(--accent-primary)] bg-indigo-500/10"
-                            : "border-[var(--border-color)] bg-[var(--bg-card)]"
-                        }`}
-                      >
-                        <span className="block text-sm text-[var(--text-muted)]">Email toggle</span>
-                        <span className="block text-lg font-semibold mt-1">
-                          {notificationLabels[key]}
-                        </span>
-                        <span className="block text-sm mt-3 text-[var(--text-secondary)]">
-                          {notifications[key] ? "Enabled" : "Disabled"}
-                        </span>
-                      </button>
-                    ))}
+                  {/* Channel Preferences */}
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">1. Delivery Channels</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {(["emailAlerts", "smsAlerts"] as NotificationKey[]).map((key) => {
+                        const item = notificationDetails[key];
+                        const enabled = notifications[key];
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleNotification(key)}
+                            aria-pressed={enabled}
+                            className={`rounded-xl border p-5 text-left transition-all ${
+                              enabled
+                                ? "border-cyan-500 bg-cyan-500/10 text-white shadow-lg shadow-cyan-500/10"
+                                : "border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-bold text-white">{item.label}</span>
+                              <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${enabled ? "bg-cyan-500 text-slate-950" : "bg-slate-800 text-slate-400"}`}>
+                                {enabled ? "ACTIVE" : "OFF"}
+                              </span>
+                            </div>
+                            <p className="text-xs mt-2 text-slate-400 leading-relaxed">{item.description}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
 
-                  <label className="block space-y-2">
-                    <span className="text-sm text-[var(--text-muted)]">Partner webhook URL</span>
-                    <div className="flex flex-col md:flex-row gap-3">
+                  {/* Escrow Maturity Milestones */}
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">2. Escrow & Down-Payment Milestone Alerts</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {(["escrowApproaching", "escrowReached", "paymentMissed"] as NotificationKey[]).map((key) => {
+                        const item = notificationDetails[key];
+                        const enabled = notifications[key];
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleNotification(key)}
+                            aria-pressed={enabled}
+                            className={`rounded-xl border p-5 text-left transition-all flex flex-col justify-between ${
+                              enabled
+                                ? "border-emerald-500/50 bg-emerald-500/10 text-white"
+                                : "border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700"
+                            }`}
+                          >
+                            <div>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-semibold text-slate-400">Escrow Alert</span>
+                                <span className={`w-3 h-3 rounded-full ${enabled ? "bg-emerald-400 shadow-sm shadow-emerald-400" : "bg-slate-700"}`} />
+                              </div>
+                              <span className="text-sm font-bold text-white leading-tight block">{item.label}</span>
+                              <p className="text-xs text-slate-400 mt-2 leading-relaxed">{item.description}</p>
+                            </div>
+                            <span className="text-[11px] font-semibold mt-4 text-emerald-300">
+                              {enabled ? "✓ Alert Enabled" : "Disabled"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Loan & Construction Milestones */}
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">3. Construction & Loan Disbursement Alerts</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {(["loanMilestones", "loanApproval"] as NotificationKey[]).map((key) => {
+                        const item = notificationDetails[key];
+                        const enabled = notifications[key];
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleNotification(key)}
+                            aria-pressed={enabled}
+                            className={`rounded-xl border p-5 text-left transition-all ${
+                              enabled
+                                ? "border-indigo-500/50 bg-indigo-500/10 text-white"
+                                : "border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-sm font-bold text-white">{item.label}</span>
+                              <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${enabled ? "bg-indigo-500 text-white" : "bg-slate-800 text-slate-400"}`}>
+                                {enabled ? "ENABLED" : "DISABLED"}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-400 mt-2 leading-relaxed">{item.description}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Browser Push */}
+                  <div className="space-y-3 pt-2 border-t border-slate-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">
+                      4. Browser Push Notifications
+                    </h3>
+                    <PushNotificationPanel address={stellarAddress || email || "default_user"} />
+                  </div>
+
+                  {/* Partner Webhook Endpoint */}
+                  <label className="block space-y-2 pt-2 border-t border-slate-800">
+                    <span className="text-xs font-bold uppercase tracking-wider text-cyan-400">5. Partner Webhook Integration</span>
+                    <p className="text-xs text-slate-400">Receive automated JSON webhooks when escrow maturity milestones occur.</p>
+                    <div className="flex flex-col sm:flex-row gap-3 pt-2">
                       <input
                         value={webhookUrl}
                         onChange={(event) => {
@@ -363,27 +573,26 @@ export default function SettingsPage() {
                           setWebhookStatus("");
                         }}
                         placeholder="https://partner.example.com/webhook"
-                        className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)]"
+                        className="w-full p-3.5 rounded-xl border border-slate-700 bg-slate-950/70 text-white placeholder-slate-500 font-mono text-xs focus:outline-none focus:border-cyan-500"
                       />
-                      <button
-                        type="button"
-                        onClick={checkWebhookAccessibility}
-                        className="btn-outline !py-3 !px-5"
-                      >
-                        Check URL
+                      <button type="button" onClick={checkWebhookAccessibility} className="btn-outline-blue text-xs !py-3 !px-5 whitespace-nowrap">
+                        Test Webhook
                       </button>
                     </div>
-                    {webhookError && <span className="text-sm text-red-300">{webhookError}</span>}
-                    {webhookStatus && (
-                      <span className="block text-sm text-[var(--text-secondary)]">
-                        {webhookStatus}
-                      </span>
-                    )}
+                    {webhookError && <span className="text-xs text-red-400 block">{webhookError}</span>}
+                    {webhookStatus && <span className="text-xs text-cyan-300 block">{webhookStatus}</span>}
                   </label>
 
-                  <p className="text-sm text-[var(--text-muted)]">
-                    {enabledNotificationCount} of 3 email notification types are enabled.
-                  </p>
+                  <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between text-xs text-slate-400">
+                    <span>Active Notification Rules:</span>
+                    <span className="font-bold text-white">{enabledNotificationCount} of 7 enabled</span>
+                  </div>
+                </section>
+              )}
+
+              {activeTab === "referrals" && (
+                <section role="tabpanel" aria-label="Referral settings" className="space-y-6">
+                  <ReferralInvitePanel ownerAddress={stellarAddress} />
                 </section>
               )}
 
@@ -394,58 +603,52 @@ export default function SettingsPage() {
                   className="space-y-6"
                 >
                   <div>
-                    <h2 className="text-2xl font-semibold">Developer/Contractor</h2>
-                    <p className="text-[var(--text-secondary)] mt-2">
-                      Review whitelist status and registration details for supplier disbursements.
+                    <h2 className="text-2xl font-bold text-white">Developer / Contractor Credentials</h2>
+                    <p className="text-slate-400 text-sm mt-1">
+                      Review whitelist status and registered credentials for construction disbursements.
                     </p>
                   </div>
 
-                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-5">
-                    <p className="text-sm text-emerald-200">Whitelist status</p>
-                    <p className="text-xl font-semibold mt-1">Approved contractor</p>
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-5">
+                    <p className="text-xs font-semibold text-emerald-300 uppercase">Multisig Whitelist Status</p>
+                    <p className="text-lg font-bold text-white mt-1">✓ Whitelisted Approved Contractor</p>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                     <label className="space-y-2">
-                      <span className="text-sm text-[var(--text-muted)]">
-                        Registered business name
-                      </span>
+                      <span className="text-xs font-semibold text-slate-300">Registered Business Name</span>
                       <input
                         value={businessName}
                         onChange={(event) => setBusinessName(event.target.value)}
-                        className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)]"
+                        className="w-full p-3.5 rounded-xl border border-slate-700 bg-slate-950/70 text-white focus:outline-none focus:border-cyan-500"
                       />
                     </label>
                     <label className="space-y-2">
-                      <span className="text-sm text-[var(--text-muted)]">Registration number</span>
+                      <span className="text-xs font-semibold text-slate-300">Registration Number</span>
                       <input
                         value={registrationNumber}
                         onChange={(event) => setRegistrationNumber(event.target.value)}
-                        className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)]"
+                        className="w-full p-3.5 rounded-xl border border-slate-700 bg-slate-950/70 text-white focus:outline-none focus:border-cyan-500"
                       />
                     </label>
                     <label className="space-y-2">
-                      <span className="text-sm text-[var(--text-muted)]">Service region</span>
+                      <span className="text-xs font-semibold text-slate-300">Service Region</span>
                       <input
                         value={serviceRegion}
                         onChange={(event) => setServiceRegion(event.target.value)}
-                        className="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)]"
+                        className="w-full p-3.5 rounded-xl border border-slate-700 bg-slate-950/70 text-white focus:outline-none focus:border-cyan-500"
                       />
                     </label>
                   </div>
                 </section>
               )}
 
-              <div className="mt-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-t border-[var(--border-color)] pt-6">
-                <p className="text-sm text-[var(--text-secondary)]">
-                  {saveStatus || "Changes save to POST /api/user/settings."}
+              <div className="mt-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-t border-slate-800 pt-6">
+                <p className="text-xs font-medium text-slate-400">
+                  {saveStatus || "Preferences persist in backend PostgreSQL database configurations."}
                 </p>
-                <button
-                  type="submit"
-                  disabled={!canSave || isSaving}
-                  className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {isSaving ? "Saving..." : "Save Settings"}
+                <button type="submit" disabled={!canSave || isSaving} className="btn-cta disabled:opacity-60 disabled:cursor-not-allowed">
+                  {isSaving ? "Saving Settings..." : "Save Preferences"}
                 </button>
               </div>
             </form>

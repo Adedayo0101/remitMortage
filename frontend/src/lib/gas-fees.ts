@@ -1,5 +1,5 @@
 import { BASE_FEE } from "@stellar/stellar-sdk";
-import type { SimulationEstimate } from "./soroban";
+import type { SimulationEstimate } from "./soroban-client";
 
 /**
  * Fee presets derived from a Soroban simulation.

@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, BytesN};
+use soroban_sdk::{contracttype, Address, BytesN, Symbol};
 
 /// Pending upgrade proposal (used when upgrade_delay_ledgers > 0).
 #[contracttype]
@@ -40,6 +40,47 @@ pub struct PoolConfig {
     pub senior_rate_bps: u32,
     /// Protocol treasury address where withdrawal fees are routed.
     pub treasury_address: Address,
+    /// Protocol fee switch, in basis points, taken from loan interest before
+    /// it reaches investors. `0` — the deployment default — leaves the switch
+    /// off so every unit of interest flows to the tranches. Mutable only via
+    /// `set_fee_switch_bps`, which is gated behind the governance multisig.
+    pub fee_switch_bps: u32,
+    /// Loan origination fee, in basis points, deducted from each disbursement
+    /// and routed to `treasury_address`. Loan accounting remains gross.
+    pub origination_fee_bps: u32,
+    /// Minimum number of ledgers an LP's deposit must remain in the pool
+    /// before a withdrawal is allowed. 0 means no lockup.
+    pub lockup_duration_ledgers: u32,
+    /// Smallest deposit the pool will accept from an investor, in token
+    /// stroops. Guards against storage-bloat griefing: without a floor an
+    /// attacker can flood `deposit` with negligible amounts, each one writing
+    /// or touching an `InvestorRecord` and the tranche aggregates.
+    ///
+    /// `0` — the deployment default — disables the floor entirely, so existing
+    /// behaviour is unchanged until an admin opts in via
+    /// `set_min_deposit_amount`.
+    pub min_deposit_amount: i128,
+    /// Maximum number of simultaneously active loans (in `Requested` or
+    /// `Approved` state) a single borrower address may hold. Caps protocol
+    /// risk concentration on any one borrower.
+    ///
+    /// `0` — the deployment default — disables the cap entirely, so existing
+    /// behaviour is unchanged until an admin opts in via
+    /// `set_borrower_active_loan_cap`.
+    pub max_active_loans_per_borrower: u32,
+    /// Minimum number of ledgers between consecutive refinancing requests on
+    /// the same loan. Prevents borrowers from repeatedly refinancing in short
+    /// succession to game interest rate timing. `0` disables the cooldown.
+    pub refinance_cooldown_ledgers: u32,
+    /// Maximum amount withdrawable by an investor in a single `withdraw`
+    /// call, in token stroops. Caps the blast radius of a compromised key
+    /// or contract bug: a larger position must be withdrawn across multiple
+    /// transactions rather than drained in one call.
+    ///
+    /// `0` — the deployment default — disables the cap entirely, so existing
+    /// behaviour is unchanged until an admin opts in via
+    /// `set_max_single_withdrawal`.
+    pub max_single_withdrawal: i128,
 }
 
 /// Tracks an individual investor's capital contribution.
@@ -187,6 +228,15 @@ pub struct RestructureProposal {
     pub proposed_at_ledger: u32,
 }
 
+/// An individual item in a batch disbursement request.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchDisburseItem {
+    pub loan_id: BytesN<32>,
+    pub recipient: Address,
+    pub amount: i128,
+}
+
 /// Storage keys for the lending pool contract.
 #[contracttype]
 #[derive(Clone)]
@@ -233,6 +283,9 @@ pub enum DataKey {
     PendingAdmin,
     /// Total withdrawal fees collected and routed to treasury.
     TotalWithdrawalFees,
+    /// Lifetime protocol fees skimmed from interest by the fee switch and
+    /// routed to the treasury.
+    TotalProtocolFees,
     /// Address of the VerificationRegistry contract used to resolve borrower
     /// interest rates during loan requests. Absent until `set_verification_registry`
     /// is called by the admin.
@@ -275,6 +328,41 @@ pub enum DataKey {
     HalvingEpoch,
     /// Lifetime interest paid by a borrower, keyed by borrower address.
     BorrowerLifetimeInterest(Address),
+    /// Count of currently-active loans (in `Requested` or `Approved` state)
+    /// held by a borrower, keyed by borrower address. Used to enforce
+    /// `max_active_loans_per_borrower`.
+    BorrowerActiveLoans(Address),
     /// Tracks whether a loan's maturity rebate has been claimed.
     LoanRebateClaimed(BytesN<32>),
+    /// Collateral tracking for a loan (partial releases).
+    LoanCollateral(BytesN<32>),
+    /// Maps a loan Symbol to its canonical BytesN<32> loan ID.
+    LoanSymbolMap(Symbol),
+    /// Pending loan assumption request, keyed by loan ID.
+    LoanAssumption(BytesN<32>),
+}
+
+/// A pending loan assumption request where an existing borrower proposes to transfer
+/// their loan obligations to a new borrower.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanAssumptionRequest {
+    /// Address of the current borrower requesting assumption.
+    pub current_borrower: Address,
+    /// Address of the proposed new borrower assuming the loan.
+    pub proposed_borrower: Address,
+    /// Ledger sequence when the assumption request was initiated.
+    pub requested_at_ledger: u32,
+}
+
+/// Tracks collateral amounts, releases, and minimum collateralization ratio for a loan.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanCollateralRecord {
+    /// Initial locked collateral amount.
+    pub initial_collateral: i128,
+    /// Total collateral amount released to borrower so far.
+    pub released_collateral: i128,
+    /// Minimum required collateralization ratio in basis points (e.g. 3000 = 30%).
+    pub min_collateral_ratio_bps: u32,
 }

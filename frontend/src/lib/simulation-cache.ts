@@ -1,4 +1,4 @@
-import type { SimulationEstimate } from "./soroban";
+import type { SimulationEstimate } from "./soroban-client";
 
 /**
  * Session-scoped cache of Soroban simulation results.

@@ -1,19 +1,8 @@
 import { Router } from "express";
-import logger from "../utils/logger.js";
 import { validateBorrowerParams } from "../middleware/validate.js";
-import { loadConfig } from "../config.js";
-import {
-  getBorrowerBalance,
-  getEscrowConfig,
-  getLoanInfo,
-  getPoolLiquidity,
-  DEFAULT_GOAL_ID,
-} from "../services/soroban.js";
-import { getApplicant } from "../services/db.js";
+import { getApplicant, getBorrowerStatus } from "../services/db.js";
 
 export const borrowerRouter = Router();
-
-const config = loadConfig();
 
 /**
  * @openapi
@@ -70,53 +59,21 @@ const config = loadConfig();
 borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) => {
   const address = Array.isArray(req.params.address)
     ? req.params.address[0]
-    : String(req.params.address);
-  const goalId = typeof req.query.goal === "string" ? req.query.goal : DEFAULT_GOAL_ID;
-  const loanId = typeof req.query.loanId === "string" ? req.query.loanId : undefined;
+    : req.params.address;
 
   try {
-
-    // Run the independent on-chain reads concurrently. Each is best-effort so a
-    // single missing record (e.g. no loan yet) does not blank the whole status.
-    const [borrowerResult, configResult, liquidityResult, loanResult] =
-      await Promise.allSettled([
-        getBorrowerBalance(config.escrowContractId, address, goalId),
-        getEscrowConfig(config.escrowContractId),
-        getPoolLiquidity(config.lendingPoolContractId),
-        loanId ? getLoanInfo(config.lendingPoolContractId, loanId) : Promise.resolve(null),
-      ]);
-
-    // If every query failed, the chain/RPC is effectively unreachable.
-    const allFailed = [borrowerResult, configResult, liquidityResult].every(
-      (r) => r.status === "rejected"
-    );
-    if (allFailed) {
-      console.error(
-        "Borrower status on-chain queries failed:",
-        borrowerResult.status === "rejected" ? borrowerResult.reason : undefined
-      );
-      return res.status(502).json({
-        error: "on_chain_unavailable",
-        message: "Unable to query Soroban contracts. Please retry shortly.",
-      });
-    }
-
-    const borrower = borrowerResult.status === "fulfilled" ? borrowerResult.value : null;
-    const escrowConfig = configResult.status === "fulfilled" ? configResult.value : null;
-    const liquidity = liquidityResult.status === "fulfilled" ? liquidityResult.value : null;
-    const loan = loanResult.status === "fulfilled" ? loanResult.value : null;
-
-    const deposited = borrower?.deposited ?? "0";
-    const target = borrower?.target_amount ?? escrowConfig?.savings_target ?? "0";
-    const progress = computeProgress(deposited, target);
-
+    const borrower = await getBorrowerStatus(address);
     const applicant = await getApplicant(address).catch((err) => {
       console.error("DB read error (non-fatal):", err);
       return null;
     });
 
+    const deposited = borrower?.escrowBalance ?? "0";
+    const target = "0";
+    const progress = computeProgress(deposited, target);
     const latestVerification = applicant?.verificationResults[0] ?? null;
     const latestLoan = applicant?.loanApplications[0] ?? null;
+    const principal = latestLoan ? String(latestLoan.principal) : "0";
 
     return res.json({
       address,
@@ -124,26 +81,12 @@ borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) 
         deposited,
         target,
         progress,
-        startLedger: borrower?.start_ledger ?? null,
-        released: borrower?.released ?? false,
-        withdrawn: borrower?.withdrawn ?? false,
+        startLedger: null,
+        released: false,
+        withdrawn: false,
       },
-      loanSummary: loan
-        ? {
-            status: loan.status,
-            principal: loan.principal,
-            disbursed: loan.disbursed,
-            repaid: loan.repaid,
-            outstandingDebt: loan.outstanding_debt,
-          }
-        : {
-            status: "none",
-            principal: "0",
-            disbursed: "0",
-            repaid: "0",
-          },
       pool: {
-        availableLiquidity: liquidity ?? "0",
+        availableLiquidity: "0",
       },
       verificationStatus: applicant?.verificationStatus ?? "PENDING",
       creditScore: applicant?.creditScore ?? null,
@@ -157,23 +100,17 @@ borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) 
             analyzedAt: latestVerification.analyzedAt,
           }
         : null,
-      onChainLoan: loan
-        ? {
-            status: loan.status,
-            principal: loan.principal,
-            disbursed: loan.disbursed,
-            repaid: loan.repaid,
-            outstandingDebt: loan.outstanding_debt,
-          }
-        : null,
       loan: latestLoan
         ? {
             status: latestLoan.status,
-            principal: String(latestLoan.principal),
+            principal,
+            disbursed: borrower?.totalDisbursed ?? "0",
+            repaid: borrower?.totalRepaid ?? "0",
+            outstanding: borrower?.loanOutstanding ?? principal,
             escrowContractId: latestLoan.escrowContractId ?? null,
             loanId: latestLoan.loanId ?? null,
           }
-        : { status: "none", principal: "0" },
+        : { status: "none", principal: "0", disbursed: "0", repaid: "0", outstanding: "0" },
     });
   } catch (error) {
     console.error("Borrower status error:", error);

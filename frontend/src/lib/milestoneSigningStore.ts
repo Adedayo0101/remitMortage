@@ -28,7 +28,7 @@ export interface MilestoneSigningStatus {
   updatedAt: string;
 }
 
-const GOVERNANCE_SIGNERS: Array<Omit<MilestoneSigner, "status">> = [
+export const GOVERNANCE_SIGNERS: Array<Omit<MilestoneSigner, "status">> = [
   {
     address: "GCOMMITTEELEAD00000000000000000000000000000000000000A",
     label: "Committee Lead",
@@ -45,8 +45,8 @@ const GOVERNANCE_SIGNERS: Array<Omit<MilestoneSigner, "status">> = [
     weight: 1,
   },
 ];
-const REQUIRED_WEIGHT = 3;
-const TOTAL_WEIGHT = GOVERNANCE_SIGNERS.reduce((sum, s) => sum + s.weight, 0);
+export const REQUIRED_WEIGHT = 3;
+export const TOTAL_WEIGHT = GOVERNANCE_SIGNERS.reduce((sum, s) => sum + s.weight, 0);
 
 const store = new Map<string, MilestoneSigningStatus>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -55,31 +55,29 @@ function makeId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-/** Simulates the async, real-world pace of governance signers reviewing evidence. */
-function scheduleNextSignerVote(proposalId: string): void {
-  const delayMs = 4000 + Math.random() * 4000;
-  const timer = setTimeout(() => castNextPendingVote(proposalId), delayMs);
-  timers.set(proposalId, timer);
-}
-
-function castNextPendingVote(proposalId: string): void {
+/** Manually cast a vote for a specific signer address. Returns updated status or null if invalid. */
+export function castVote(
+  proposalId: string,
+  signerAddress: string
+): MilestoneSigningStatus | null {
   const proposal = store.get(proposalId);
-  if (!proposal || proposal.status !== "Open") return;
+  if (!proposal || proposal.status !== "Open") return null;
 
-  const nextSigner = proposal.signers.find((s) => s.status === "pending");
-  if (!nextSigner) return;
+  const signer = proposal.signers.find(
+    (s) => s.address === signerAddress && s.status === "pending"
+  );
+  if (!signer) return null;
 
-  nextSigner.status = "approved";
-  proposal.currentWeight += nextSigner.weight;
+  signer.status = "approved";
+  proposal.currentWeight += signer.weight;
   proposal.updatedAt = new Date().toISOString();
 
   if (proposal.currentWeight >= proposal.requiredWeight) {
     proposal.status = "Passed";
     timers.delete(proposalId);
-    return;
   }
 
-  scheduleNextSignerVote(proposalId);
+  return proposal;
 }
 
 export function createMockProposal(
@@ -101,7 +99,6 @@ export function createMockProposal(
     updatedAt: now,
   };
   store.set(id, proposal);
-  scheduleNextSignerVote(id);
   return proposal;
 }
 

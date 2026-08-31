@@ -84,4 +84,12 @@ export function useToast() {
   return ctx;
 }
 
+export function OptionalToastProvider({ children }: { children: React.ReactNode }) {
+  const ctx = useContext(ToastContext);
+  if (ctx) {
+    return <>{children}</>;
+  }
+  return <ToastProvider>{children}</ToastProvider>;
+}
+
 export default ToastContext;

@@ -5,6 +5,7 @@ describe("Next.js content security policy headers", () => {
     const { default: nextConfig } = await import("../next.config");
 
     expect(typeof nextConfig.headers).toBe("function");
+    if (!nextConfig.headers) throw new Error("headers not defined");
 
     const headers = await nextConfig.headers();
     expect(Array.isArray(headers)).toBe(true);

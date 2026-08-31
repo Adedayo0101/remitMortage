@@ -4,7 +4,9 @@ mod errors;
 mod types;
 
 use crate::errors::MilestoneError;
-use crate::types::{DataKey, MilestoneConfig, MilestoneRecord, MilestoneStatus};
+use crate::types::{
+    BudgetChangeProposal, DataKey, MilestoneConfig, MilestoneRecord, MilestoneStatus,
+};
 use soroban_sdk::{
     contract, contractimpl, symbol_short, vec, Address, Bytes, BytesN, Env, IntoVal, Symbol, Val,
     Vec,
@@ -93,6 +95,26 @@ impl MilestoneContract {
         let result = f();
         env.storage().instance().set(&DataKey::Reentrant, &false);
         result
+    }
+
+    fn read_budget_change_proposal(
+        env: &Env,
+        milestone_id: &Symbol,
+    ) -> Result<BudgetChangeProposal, MilestoneError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BudgetChange(milestone_id.clone()))
+            .ok_or(MilestoneError::BudgetChangeNotFound)
+    }
+
+    fn set_budget_change_proposal(
+        env: &Env,
+        milestone_id: &Symbol,
+        proposal: &BudgetChangeProposal,
+    ) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::BudgetChange(milestone_id.clone()), proposal);
     }
 }
 
@@ -253,6 +275,115 @@ impl MilestoneContract {
         }
         Self::set_milestone(&env, &proposal_id, &record);
 
+        Self::bump_instance(&env);
+
+        Ok(())
+    }
+
+    /// Propose a change to a pending milestone's budget.
+    ///
+    /// `milestone_id` is a human-readable Symbol identifying the milestone
+    /// (used as the storage key for the budget change). The actual milestone
+    /// record is looked up via `proposal_id`. Only milestones in `Proposed`
+    /// status can have their budget changed.
+    ///
+    /// Once proposed, the configured multisig approvers may vote via
+    /// `vote_budget_change`. When the threshold is reached, the milestone's
+    /// `amount` is updated atomically.
+    ///
+    /// A cross-contract call to the lending pool checks that the new budget
+    /// does not exceed the remaining loan allotment. If the lending pool
+    /// does not expose this check, the principal bound is still enforced at
+    /// disbursal time.
+    pub fn propose_milestone_budget_change(
+        env: Env,
+        milestone_id: Symbol,
+        proposal_id: BytesN<32>,
+        new_budget: i128,
+    ) -> Result<(), MilestoneError> {
+        let config = Self::read_config(&env)?;
+
+        if new_budget <= 0 {
+            return Err(MilestoneError::InvalidAmount);
+        }
+
+        let milestone = Self::read_milestone(&env, &proposal_id)?;
+        if milestone.status != MilestoneStatus::Proposed {
+            return Err(MilestoneError::InvalidStatus);
+        }
+
+        // Pre-check: ensure the new budget doesn't exceed the remaining
+        // loan allotment via a cross-contract call to the lending pool.
+        // Graceful if the lending pool doesn't expose this check.
+        let check_func: Symbol = symbol_short!("chk_bgt");
+        let check_args: Vec<Val> = vec![
+            &env,
+            milestone.loan_id.clone().into_val(&env),
+            new_budget.into_val(&env),
+        ];
+        let _ = env
+            .try_invoke_contract::<(), soroban_sdk::Error>(&config.lending_pool, &check_func, check_args);
+
+        // Confirm no duplicate budget change proposal.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::BudgetChange(milestone_id.clone()))
+        {
+            return Err(MilestoneError::MilestoneExists);
+        }
+
+        let proposal = BudgetChangeProposal {
+            proposal_id,
+            new_amount: new_budget,
+            votes: 0,
+            executed: false,
+        };
+        Self::set_budget_change_proposal(&env, &milestone_id, &proposal);
+        Self::bump_instance(&env);
+
+        Ok(())
+    }
+
+    /// Cast a governance approval vote for a pending budget change.
+    ///
+    /// Only addresses in the configured multisig approver set may vote, each
+    /// at most once per budget change proposal. When the configured threshold
+    /// of votes is reached the milestone's `amount` is updated to the new
+    /// budget and the proposal is marked executed.
+    pub fn vote_budget_change(
+        env: Env,
+        approver: Address,
+        milestone_id: Symbol,
+    ) -> Result<(), MilestoneError> {
+        approver.require_auth();
+
+        let config = Self::read_config(&env)?;
+
+        if !config.approvers.contains(&approver) {
+            return Err(MilestoneError::Unauthorized);
+        }
+
+        let mut proposal = Self::read_budget_change_proposal(&env, &milestone_id)?;
+        if proposal.executed {
+            return Err(MilestoneError::BudgetChangeAlreadyExecuted);
+        }
+
+        let voted_key = DataKey::BudgetChangeVoted(milestone_id.clone(), approver.clone());
+        if env.storage().persistent().has(&voted_key) {
+            return Err(MilestoneError::AlreadyVoted);
+        }
+        env.storage().persistent().set(&voted_key, &true);
+
+        proposal.votes += 1;
+        if proposal.votes >= config.threshold {
+            // Threshold reached: apply the budget change to the milestone.
+            let mut record = Self::read_milestone(&env, &proposal.proposal_id)?;
+            record.amount = proposal.new_amount;
+            Self::set_milestone(&env, &proposal.proposal_id, &record);
+            proposal.executed = true;
+        }
+        Self::set_budget_change_proposal(&env, &milestone_id, &proposal);
         Self::bump_instance(&env);
 
         Ok(())

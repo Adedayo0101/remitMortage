@@ -6,13 +6,24 @@ mod types;
 #[cfg(test)]
 mod fuzz;
 
+#[cfg(test)]
+mod upgrade_migration_tests;
+
+#[cfg(test)]
+mod test_loan_assumption;
+
 pub use crate::errors::PoolError;
-pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo};
-use soroban_sdk::{contract, contractimpl, symbol_short, IntoVal, Symbol, token, Address, BytesN, Env, Vec};
-use multisig_validator::MultisigValidatorClient;
-pub use crate::types::{DataKey, HalvingInfo, InvestorRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, Tranche, TrancheInfo};
-use soroban_sdk::{contract, contractimpl, symbol_short, Symbol, token, Address, BytesN, Env};
+pub use crate::types::{
+    BatchDisburseItem, DataKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
+    LoanCollateralRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth,
+    RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo,
+};
 use insurance_pool::{premium_for, InsurancePoolContractClient};
+use multisig_validator::MultisigValidatorClient;
+use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, token, Address, BytesN, Env, IntoVal, Symbol, Vec,
+};
 use verification_registry::VerificationRegistryContractClient;
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
@@ -35,6 +46,8 @@ const DEFAULT_OVERDUE_LEDGERS: u32 = 3 * LEDGERS_PER_MONTH; // ~90 days past due
 // ── Dynamic Fee Structure Constants ──────────────────────────────────
 /// Basis points scale (10000 = 100%).
 const BPS_SCALE: u32 = 10_000;
+/// Origination fees may not exceed 100% of a disbursement.
+const MAX_ORIGINATION_FEE_BPS: u32 = BPS_SCALE;
 /// Utilization threshold for low-fee tier (50%).
 const UTILIZATION_LOW_THRESHOLD_BPS: u32 = 5_000; // 50%
 /// Utilization threshold for medium-fee tier (80%).
@@ -45,6 +58,14 @@ const FEE_LOW_BPS: u32 = 10;
 const FEE_MEDIUM_BPS: u32 = 50;
 /// Withdrawal fee at high utilization (> 80%): 2% = 200 bps.
 const FEE_HIGH_BPS: u32 = 200;
+
+// ── Protocol Fee Switch Constants ────────────────────────────────────
+/// Hard ceiling on the protocol fee switch: 50% of interest (5 000 bps).
+///
+/// Governance cannot exceed this even with a valid multisig, so a mistaken or
+/// coerced proposal can never route the entire yield stream away from the
+/// investors who funded the loans.
+const MAX_FEE_SWITCH_BPS: u32 = 5_000;
 
 // ── Dynamic Interest Rate Constants ────────────────────────────────────
 /// Excellent tier (score 80–100): 4% APR.
@@ -115,14 +136,11 @@ impl LendingPoolContract {
             Tranche::Senior => DataKey::SeniorTranche,
             Tranche::Junior => DataKey::JuniorTranche,
         };
-        env.storage()
-            .instance()
-            .get(&key)
-            .unwrap_or(TrancheInfo {
-                total_deposited: 0,
-                total_yield_distributed: 0,
-                total_loss_absorbed: 0,
-            })
+        env.storage().instance().get(&key).unwrap_or(TrancheInfo {
+            total_deposited: 0,
+            total_yield_distributed: 0,
+            total_loss_absorbed: 0,
+        })
     }
 
     fn set_tranche_info(env: &Env, tranche: &Tranche, info: &TrancheInfo) {
@@ -147,9 +165,10 @@ impl LendingPoolContract {
     }
 
     fn set_debt_balance(env: &Env, owner: &Address, tranche: &Tranche, amount: i128) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::DebtBalance(owner.clone(), tranche.clone()), &amount);
+        env.storage().persistent().set(
+            &DataKey::DebtBalance(owner.clone(), tranche.clone()),
+            &amount,
+        );
     }
 
     fn read_debt_total_supply(env: &Env, tranche: &Tranche) -> i128 {
@@ -227,6 +246,42 @@ impl LendingPoolContract {
             .unwrap_or(0i128)
     }
 
+    fn read_total_protocol_fees(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalProtocolFees)
+            .unwrap_or(0i128)
+    }
+
+    /// Splits `interest` into the protocol's cut and the investors' remainder.
+    ///
+    /// Returns `(protocol_fee, distributable)`, which always sum back to
+    /// `interest` — the remainder is computed by subtraction rather than a
+    /// second division, so rounding can never strand a stroop between them.
+    fn split_protocol_fee(config: &PoolConfig, interest: i128) -> (i128, i128) {
+        if interest <= 0 || config.fee_switch_bps == 0 {
+            return (0, interest.max(0));
+        }
+        let fee = (interest * config.fee_switch_bps as i128) / BPS_SCALE as i128;
+        (fee, interest - fee)
+    }
+
+    /// Return the fee and net transfer for a gross disbursement. The gross
+    /// amount remains the amount recorded against the loan.
+    fn calculate_origination_fee(
+        config: &PoolConfig,
+        principal: i128,
+    ) -> Result<(i128, i128), PoolError> {
+        if config.origination_fee_bps > MAX_ORIGINATION_FEE_BPS {
+            return Err(PoolError::OriginationFeeTooHigh);
+        }
+        let fee = principal
+            .checked_mul(config.origination_fee_bps as i128)
+            .ok_or(PoolError::InvalidAmount)?
+            / BPS_SCALE as i128;
+        Ok((fee, principal - fee))
+    }
+
     fn read_loan(env: &Env, loan_id: &BytesN<32>) -> Result<LoanRecord, PoolError> {
         env.storage()
             .persistent()
@@ -280,6 +335,34 @@ impl LendingPoolContract {
             .set(&DataKey::BorrowerLifetimeInterest(borrower.clone()), &total);
     }
 
+    // ── Per-Borrower Active-Loan Cap Helpers ─────────────────────────────
+
+    /// Number of loans currently in `Requested` or `Approved` state for this
+    /// borrower. A missing entry means zero.
+    fn read_borrower_active_loans(env: &Env, borrower: &Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BorrowerActiveLoans(borrower.clone()))
+            .unwrap_or(0)
+    }
+
+    fn set_borrower_active_loans(env: &Env, borrower: &Address, count: u32) {
+        let key = DataKey::BorrowerActiveLoans(borrower.clone());
+        if count == 0 {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &count);
+        }
+    }
+
+    /// Decrement the borrower's active-loan counter when a loan leaves an
+    /// active state (repaid, cancelled or defaulted), freeing a slot.
+    /// Saturates at zero so an accounting mismatch can never underflow.
+    fn release_borrower_loan_slot(env: &Env, borrower: &Address) {
+        let current = Self::read_borrower_active_loans(env, borrower);
+        Self::set_borrower_active_loans(env, borrower, current.saturating_sub(1));
+    }
+
     fn is_rebate_claimed(env: &Env, loan_id: &BytesN<32>) -> bool {
         env.storage()
             .persistent()
@@ -291,9 +374,14 @@ impl LendingPoolContract {
         env.storage()
             .persistent()
             .set(&DataKey::LoanRebateClaimed(loan_id.clone()), &true);
+    }
+
     // ── Restructure Proposal Helpers ──────────────────────────────────────
 
-    fn read_restructure_proposal(env: &Env, loan_id: &BytesN<32>) -> Result<RestructureProposal, PoolError> {
+    fn read_restructure_proposal(
+        env: &Env,
+        loan_id: &BytesN<32>,
+    ) -> Result<RestructureProposal, PoolError> {
         env.storage()
             .persistent()
             .get(&DataKey::RestructureProposal(loan_id.clone()))
@@ -457,7 +545,11 @@ impl LendingPoolContract {
             let multiplier = Self::epoch_to_multiplier_bps(epoch_fired);
             env.events().publish(
                 (symbol_short!("halving"),),
-                (epoch_fired, multiplier, new_last_halving - (epochs_elapsed - i - 1) * interval),
+                (
+                    epoch_fired,
+                    multiplier,
+                    new_last_halving - (epochs_elapsed - i - 1) * interval,
+                ),
             );
         }
 
@@ -524,8 +616,8 @@ impl LendingPoolContract {
             return;
         }
         // per-period factor = SCALE + rate_bps * SCALE / 10_000
-        let factor = Self::INTEREST_SCALE
-            + (loan.interest_rate_bps as i128 * Self::INTEREST_SCALE) / 10_000;
+        let factor =
+            Self::INTEREST_SCALE + (loan.interest_rate_bps as i128 * Self::INTEREST_SCALE) / 10_000;
         let compound = Self::compound_pow(factor, periods);
         loan.outstanding_debt =
             loan.outstanding_debt.saturating_mul(compound) / Self::INTEREST_SCALE;
@@ -576,9 +668,8 @@ impl LendingPoolContract {
         }
         let total_liquidity = Self::read_total_liquidity(env);
         let active_commitments = Self::read_active_commitments(env);
-        let utilized = active_commitments.saturating_add(
-            total_deposited.saturating_sub(total_liquidity).max(0),
-        );
+        let utilized = active_commitments
+            .saturating_add(total_deposited.saturating_sub(total_liquidity).max(0));
         let utilization = (utilized * BPS_SCALE as i128) / total_deposited;
         utilization.min(BPS_SCALE as i128) as u32
     }
@@ -670,6 +761,7 @@ impl LendingPoolContract {
         senior_rate_bps: u32,
         treasury_address: Address,
         halving_interval: u32,
+        lockup_duration_ledgers: u32,
     ) -> Result<(), PoolError> {
         if env.storage().instance().has(&DataKey::Config) {
             return Err(PoolError::AlreadyInitialized);
@@ -684,6 +776,24 @@ impl LendingPoolContract {
             interest_rate_bps,
             senior_rate_bps,
             treasury_address,
+            // Off at deployment. Turning the switch on is a deliberate
+            // governance act, never a deployment-time default.
+            fee_switch_bps: 0,
+            // Disabled by default for backwards-compatible deployments.
+            origination_fee_bps: 0,
+            lockup_duration_ledgers,
+            // No deposit floor at deployment, so existing integrations are
+            // unaffected until an admin sets one via `set_min_deposit_amount`.
+            min_deposit_amount: 0,
+            // No per-borrower active-loan cap at deployment; an admin opts in
+            // via `set_borrower_active_loan_cap`.
+            max_active_loans_per_borrower: 0,
+            // No refinancing cooldown by default.
+            refinance_cooldown_ledgers: 0,
+            // No per-transaction withdrawal cap at deployment, so existing
+            // integrations are unaffected until an admin opts in via
+            // `set_max_single_withdrawal`.
+            max_single_withdrawal: 0,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
@@ -707,10 +817,21 @@ impl LendingPoolContract {
         Self::set_debt_total_supply(&env, &Tranche::Senior, 0);
         Self::set_debt_total_supply(&env, &Tranche::Junior, 0);
 
-        env.storage().instance().set(&DataKey::TotalRepaidInterest, &0i128);
-        env.storage().instance().set(&DataKey::ActiveLoanCommitments, &0i128);
-        env.storage().instance().set(&DataKey::TotalDeposited, &0i128);
-        env.storage().instance().set(&DataKey::TotalWithdrawalFees, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalRepaidInterest, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveLoanCommitments, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposited, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalWithdrawalFees, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalProtocolFees, &0i128);
         env.storage().instance().set(&DataKey::Version, &1u32);
 
         // ── Reward Halving bootstrap ──────────────────────────────────
@@ -729,9 +850,7 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .set(&DataKey::LastHalvingLedger, &genesis_ledger);
-        env.storage()
-            .instance()
-            .set(&DataKey::HalvingEpoch, &0u32);
+        env.storage().instance().set(&DataKey::HalvingEpoch, &0u32);
 
         env.storage()
             .instance()
@@ -746,69 +865,80 @@ impl LendingPoolContract {
     /// cannot mix tranches across deposits — their first deposit sets the tranche.
     /// Transfers USDC from the investor to this contract and updates the investor's
     /// record, per-tranche totals, and the pool's total liquidity.
-    pub fn deposit(env: Env, investor: Address, amount: i128, tranche: Tranche) -> Result<(), PoolError> {
+    pub fn deposit(
+        env: Env,
+        investor: Address,
+        amount: i128,
+        tranche: Tranche,
+    ) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
         investor.require_auth();
         Self::non_reentrant(&env, || {
+            if amount <= 0 {
+                return Err(PoolError::InvalidAmount);
+            }
 
-        if amount <= 0 {
-            return Err(PoolError::InvalidAmount);
-        }
+            let config = Self::read_config(&env)?;
 
-        let config = Self::read_config(&env)?;
+            // Dust guard. Checked before the token transfer and before any storage
+            // write, so a rejected deposit leaves the pool exactly as it was.
+            // A configured minimum of 0 disables the floor.
+            if config.min_deposit_amount > 0 && amount < config.min_deposit_amount {
+                return Err(PoolError::DepositBelowMinimum);
+            }
 
-        // Transfer USDC from investor to pool.
-        let token = Self::token_client(&env, &config.token);
-        token.transfer(&investor, &env.current_contract_address(), &amount);
+            // Transfer USDC from investor to pool.
+            let token = Self::token_client(&env, &config.token);
+            token.transfer(&investor, &env.current_contract_address(), &amount);
 
-        // Update investor record.
-        let mut record = Self::read_investor(&env, &investor);
-        if record.deposited == 0 {
-            // First deposit — set tranche and start ledger.
-            record.start_ledger = env.ledger().sequence();
-            record.tranche = tranche.clone();
-        } else if record.tranche != tranche {
-            // Investor already has a position in a different tranche.
-            return Err(PoolError::TrancheMismatch);
-        }
-        record.deposited += amount;
-        Self::set_investor(&env, &investor, &record);
+            // Update investor record.
+            let mut record = Self::read_investor(&env, &investor);
+            if record.deposited == 0 {
+                // First deposit — set tranche and start ledger.
+                record.start_ledger = env.ledger().sequence();
+                record.tranche = tranche.clone();
+            } else if record.tranche != tranche {
+                // Investor already has a position in a different tranche.
+                return Err(PoolError::TrancheMismatch);
+            }
+            record.deposited += amount;
+            Self::set_investor(&env, &investor, &record);
 
-        let debt_balance = Self::read_debt_balance(&env, &investor, &tranche) + amount;
-        Self::set_debt_balance(&env, &investor, &tranche, debt_balance);
-        let debt_supply = Self::read_debt_total_supply(&env, &tranche) + amount;
-        Self::set_debt_total_supply(&env, &tranche, debt_supply);
+            let debt_balance = Self::read_debt_balance(&env, &investor, &tranche) + amount;
+            Self::set_debt_balance(&env, &investor, &tranche, debt_balance);
+            let debt_supply = Self::read_debt_total_supply(&env, &tranche) + amount;
+            Self::set_debt_total_supply(&env, &tranche, debt_supply);
 
-        // Update per-tranche aggregate.
-        let mut tranche_info = Self::read_tranche_info(&env, &tranche);
-        tranche_info.total_deposited += amount;
-        Self::set_tranche_info(&env, &tranche, &tranche_info);
+            // Update per-tranche aggregate.
+            let mut tranche_info = Self::read_tranche_info(&env, &tranche);
+            tranche_info.total_deposited += amount;
+            Self::set_tranche_info(&env, &tranche, &tranche_info);
 
-        // Update total liquidity and total deposited.
-        let total = Self::read_total_liquidity(&env) + amount;
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalLiquidity, &total);
+            // Update total liquidity and total deposited.
+            let total = Self::read_total_liquidity(&env) + amount;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalLiquidity, &total);
 
-        let total_dep = Self::read_total_deposited(&env) + amount;
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalDeposited, &total_dep);
+            let total_dep = Self::read_total_deposited(&env) + amount;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalDeposited, &total_dep);
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            env.storage()
+                .instance()
+                .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("deposit"),),
-            (investor.clone(), amount, total),
-        );
-        env.events().publish(
-            (symbol_short!("debt_mnt"),),
-            (investor.clone(), tranche.clone(), amount),
-        );
+            env.events().publish(
+                (symbol_short!("deposit"),),
+                (investor.clone(), amount, total),
+            );
+            env.events().publish(
+                (symbol_short!("debt_mnt"),),
+                (investor.clone(), tranche.clone(), amount),
+            );
 
-        Ok(())
+            Ok(())
         }) // non_reentrant
     }
 
@@ -908,6 +1038,16 @@ impl LendingPoolContract {
             return Err(PoolError::LoanAlreadyExists);
         }
 
+        // Enforce the per-borrower active-loan cap, when one is configured.
+        // `0` disables the cap. An "active" loan is one in Requested or
+        // Approved state; the counter is released when a loan is repaid,
+        // cancelled or defaulted.
+        let active_loan_cap = Self::read_config(env)?.max_active_loans_per_borrower;
+        let borrower_active_loans = Self::read_borrower_active_loans(env, &borrower);
+        if active_loan_cap != 0 && borrower_active_loans >= active_loan_cap {
+            return Err(PoolError::BorrowerLoanCapExceeded);
+        }
+
         let interest_rate_bps = Self::resolve_borrower_interest_rate(env, &borrower)?;
 
         let loan = LoanRecord {
@@ -927,6 +1067,9 @@ impl LendingPoolContract {
         };
 
         Self::set_loan(env, &loan_id, &loan);
+
+        // Track the new loan against the borrower's active-loan count.
+        Self::set_borrower_active_loans(env, &borrower, borrower_active_loans + 1);
 
         // Increment loan count.
         let count: u32 = env
@@ -997,16 +1140,16 @@ impl LendingPoolContract {
             .set(&DataKey::LoanSchedule(loan_id.clone()), &schedule);
 
         let new_commitments = active_commitments + loan.principal;
-        env.storage().instance().set(&DataKey::ActiveLoanCommitments, &new_commitments);
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveLoanCommitments, &new_commitments);
 
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (Symbol::new(&env, "loan_approved"),),
-            (loan_id.clone(),),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "loan_approved"),), (loan_id.clone(),));
 
         Ok(())
     }
@@ -1030,6 +1173,9 @@ impl LendingPoolContract {
 
         loan.status = LoanStatus::Cancelled;
         Self::set_loan(&env, &loan_id, &loan);
+
+        // Cancelling a still-pending request frees the borrower's slot.
+        Self::release_borrower_loan_slot(&env, &loan.borrower);
 
         let count = Self::read_loan_count(&env);
         env.storage()
@@ -1071,7 +1217,7 @@ impl LendingPoolContract {
     ) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
 
-        let mut loan = Self::read_loan(&env, &loan_id)?;
+        let loan = Self::read_loan(&env, &loan_id)?;
         loan.borrower.require_auth();
 
         if loan.status != LoanStatus::Approved {
@@ -1079,7 +1225,11 @@ impl LendingPoolContract {
         }
 
         // Ensure a schedule exists (loan has been approved with a schedule)
-        if !env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanSchedule(loan_id.clone()))
+        {
             return Err(PoolError::InvalidLoanState);
         }
 
@@ -1168,10 +1318,8 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (Symbol::new(&env, "rst_appr"),),
-            (loan_id.clone(),),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "rst_appr"),), (loan_id.clone(),));
 
         Ok(())
     }
@@ -1180,7 +1328,11 @@ impl LendingPoolContract {
     ///
     /// Either the borrower or the pool admin may cancel by passing their
     /// address as `auth_address`. Has no effect if no proposal exists.
-    pub fn cancel_restructure(env: Env, loan_id: BytesN<32>, auth_address: Address) -> Result<(), PoolError> {
+    pub fn cancel_restructure(
+        env: Env,
+        loan_id: BytesN<32>,
+        auth_address: Address,
+    ) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
 
         auth_address.require_auth();
@@ -1202,10 +1354,8 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (Symbol::new(&env, "rst_cncl"),),
-            (loan_id.clone(),),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "rst_cncl"),), (loan_id.clone(),));
 
         Ok(())
     }
@@ -1238,7 +1388,11 @@ impl LendingPoolContract {
             return Err(PoolError::InterestRateTooLow);
         }
 
-        if !env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanSchedule(loan_id.clone()))
+        {
             return Err(PoolError::RefinanceNotEligible);
         }
 
@@ -1256,6 +1410,17 @@ impl LendingPoolContract {
             return Err(PoolError::RefinanceNotEligible);
         }
 
+        // Enforce cooldown between consecutive refinancing requests.
+        if config.refinance_cooldown_ledgers > 0 {
+            if let Some(last_refi) = loan.refinanced_at_ledger {
+                let current_ledger = env.ledger().sequence();
+                let elapsed = current_ledger.saturating_sub(last_refi);
+                if elapsed < config.refinance_cooldown_ledgers {
+                    return Err(PoolError::RefinanceCooldownActive);
+                }
+            }
+        }
+
         // Accrue any outstanding compound interest before computing what is owed.
         Self::accrue_interest(&env, &mut loan);
 
@@ -1264,7 +1429,11 @@ impl LendingPoolContract {
         let total_owed = remaining_principal + new_interest;
 
         // Note: We use a simple unwrap or default to 1 to prevent division by zero
-        let duration = if new_duration_months > 0 { new_duration_months } else { 1 };
+        let duration = if new_duration_months > 0 {
+            new_duration_months
+        } else {
+            1
+        };
         let monthly_amount = total_owed / (duration as i128);
 
         schedule.monthly_amount = monthly_amount;
@@ -1308,124 +1477,332 @@ impl LendingPoolContract {
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
         Self::non_reentrant(&env, || {
+            let mut loan = Self::read_loan(&env, &loan_id)?;
 
-        let mut loan = Self::read_loan(&env, &loan_id)?;
+            if loan.status != LoanStatus::Approved {
+                return Err(PoolError::InvalidLoanState);
+            }
 
-        if loan.status != LoanStatus::Approved {
-            return Err(PoolError::InvalidLoanState);
-        }
+            // Cannot disburse more than the remaining principal.
+            if loan.disbursed + amount > loan.principal {
+                return Err(PoolError::InvalidAmount);
+            }
 
-        // Cannot disburse more than the remaining principal.
-        if loan.disbursed + amount > loan.principal {
-            return Err(PoolError::InvalidAmount);
-        }
+            // Verify pool liquidity.
+            let liquidity = Self::read_total_liquidity(&env);
+            if liquidity < amount {
+                return Err(PoolError::InsufficientLiquidity);
+            }
 
-        // Verify pool liquidity.
-        let liquidity = Self::read_total_liquidity(&env);
-        if liquidity < amount {
-            return Err(PoolError::InsufficientLiquidity);
-        }
-
-        // Enforce daily borrow limit if configured.
-        let limit: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DailyBorrowLimit)
-            .unwrap_or(0);
-        if limit > 0 {
-            let day_id = env.ledger().sequence() / LEDGERS_PER_DAY;
-            let current_day_borrowed: i128 = env
+            // Enforce daily borrow limit if configured.
+            let limit: i128 = env
                 .storage()
                 .instance()
-                .get(&DataKey::DailyBorrowed(day_id))
+                .get(&DataKey::DailyBorrowLimit)
                 .unwrap_or(0);
-            if current_day_borrowed.saturating_add(amount) > limit {
-                return Err(PoolError::DailyBorrowLimitExceeded);
+            if limit > 0 {
+                let day_id = env.ledger().sequence() / LEDGERS_PER_DAY;
+                let current_day_borrowed: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::DailyBorrowed(day_id))
+                    .unwrap_or(0);
+                if current_day_borrowed.saturating_add(amount) > limit {
+                    return Err(PoolError::DailyBorrowLimitExceeded);
+                }
+                env.storage().instance().set(
+                    &DataKey::DailyBorrowed(day_id),
+                    &(current_day_borrowed + amount),
+                );
             }
+
+            // Only vetted, whitelisted contractors may receive disbursements.
+            if !Self::is_contractor_whitelisted(&env, &recipient) {
+                return Err(PoolError::UnauthorizedContractor);
+            }
+
+            // Calculate the configurable origination fee from the gross amount.
+            // Loan accounting remains gross; only token transfers use the net.
+            let (origination_fee, net_disbursement) =
+                Self::calculate_origination_fee(&config, amount)?;
+
+            // Skim the 5 bps protocol insurance premium off the top. The borrower
+            // still owes the full `amount` — the premium is an origination cost
+            // that buys the tranches a secondary loss backstop.
+            let token = Self::token_client(&env, &config.token);
+            // Only charge a premium once the fund is wired up; otherwise the
+            // contractor receives the full amount as before.
+            let insurance_pool =
+                Self::read_insurance_pool(&env).filter(|_| premium_for(amount) > 0);
+            let premium = if insurance_pool.is_some() {
+                premium_for(amount)
+            } else {
+                0
+            };
+            if net_disbursement < premium {
+                return Err(PoolError::InvalidAmount);
+            }
+
+            if origination_fee > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &config.treasury_address,
+                    &origination_fee,
+                );
+            }
+
+            // Transfer the remaining amount to the recipient.
+            let recipient_amount = net_disbursement - premium;
+            if recipient_amount > 0 {
+                token.transfer(&env.current_contract_address(), &recipient, &recipient_amount);
+            }
+
+            if let Some(insurance_addr) = insurance_pool {
+                token.transfer(&env.current_contract_address(), &insurance_addr, &premium);
+
+                // Book the premium in the fund. The direct cross-contract call
+                // authorizes this pool's own address for `record_premium`.
+                InsurancePoolContractClient::new(&env, &insurance_addr)
+                    .record_premium(&env.current_contract_address(), &premium);
+
+                let total_premiums: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::TotalInsurancePremiums)
+                    .unwrap_or(0);
+                env.storage().instance().set(
+                    &DataKey::TotalInsurancePremiums,
+                    &(total_premiums + premium),
+                );
+
+                env.events().publish(
+                    (Symbol::new(&env, "insurance_premium"),),
+                    (loan_id.clone(), insurance_addr, premium),
+                );
+            }
+
+            // Accrue compound interest on existing outstanding debt, then add disbursed amount.
+            Self::accrue_interest(&env, &mut loan);
+            loan.disbursed += amount;
+            loan.outstanding_debt = loan.outstanding_debt.saturating_add(amount);
+            Self::set_loan(&env, &loan_id, &loan);
+
+            // Reduce available liquidity.
+            let new_liquidity = liquidity - amount;
             env.storage()
                 .instance()
-                .set(&DataKey::DailyBorrowed(day_id), &(current_day_borrowed + amount));
-        }
+                .set(&DataKey::TotalLiquidity, &new_liquidity);
 
-        // Only vetted, whitelisted contractors may receive disbursements.
-        if !Self::is_contractor_whitelisted(&env, &recipient) {
-            return Err(PoolError::UnauthorizedContractor);
-        }
+            // Reduce active loan commitments.
+            let active_commitments = Self::read_active_commitments(&env);
+            env.storage().instance().set(
+                &DataKey::ActiveLoanCommitments,
+                &(active_commitments - amount),
+            );
 
-        // Skim the 5 bps protocol insurance premium off the top. The borrower
-        // still owes the full `amount` — the premium is an origination cost
-        // that buys the tranches a secondary loss backstop.
-        let token = Self::token_client(&env, &config.token);
-        // Only charge a premium once the fund is wired up; otherwise the
-        // contractor receives the full amount as before.
-        let insurance_pool = Self::read_insurance_pool(&env)
-            .filter(|_| premium_for(amount) > 0);
-        let premium = if insurance_pool.is_some() {
-            premium_for(amount)
-        } else {
-            0
-        };
+            env.storage()
+                .instance()
+                .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        // Transfer funds to recipient, net of the premium.
-        token.transfer(
-            &env.current_contract_address(),
-            &recipient,
-            &(amount - premium),
-        );
+            env.events().publish(
+                (symbol_short!("disburse"),),
+                (loan_id.clone(), recipient.clone(), amount),
+            );
 
-        if let Some(insurance_addr) = insurance_pool {
-            token.transfer(&env.current_contract_address(), &insurance_addr, &premium);
+            Ok(())
+        }) // non_reentrant
+    }
 
-            // Book the premium in the fund. The direct cross-contract call
-            // authorizes this pool's own address for `record_premium`.
-            InsurancePoolContractClient::new(&env, &insurance_addr)
-                .record_premium(&env.current_contract_address(), &premium);
+    /// Disburse funds across multiple loan records in a single transaction.
+    ///
+    /// Validates each loan independently. If an individual loan fails validation
+    /// (e.g. non-existent, not approved, amount exceeds principal, contractor not whitelisted,
+    /// or insufficient pool liquidity), that loan is skipped with a logged event (`batch_skip`),
+    /// and processing continues for the remaining items in the batch.
+    ///
+    /// Admin-only. Returns the number of successfully disbursed loans.
+    pub fn batch_disburse(env: Env, requests: Vec<BatchDisburseItem>) -> Result<u32, PoolError> {
+        Self::check_not_paused(&env)?;
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
 
-            let total_premiums: i128 = env
+        let mut success_count: u32 = 0;
+        let len = requests.len();
+
+        for i in 0..len {
+            let item = requests.get_unchecked(i);
+
+            if item.amount <= 0 {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("amt_inval"),
+                );
+                continue;
+            }
+
+            let mut loan = match env
+                .storage()
+                .persistent()
+                .get::<DataKey, LoanRecord>(&DataKey::Loan(item.loan_id.clone()))
+            {
+                Some(l) => l,
+                None => {
+                    env.events().publish(
+                        (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                        symbol_short!("not_found"),
+                    );
+                    continue;
+                }
+            };
+
+            if loan.status != LoanStatus::Approved {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("not_appr"),
+                );
+                continue;
+            }
+
+            if loan.disbursed + item.amount > loan.principal {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("exc_prnc"),
+                );
+                continue;
+            }
+
+            let liquidity = Self::read_total_liquidity(&env);
+            if liquidity < item.amount {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("no_liq"),
+                );
+                continue;
+            }
+
+            if !Self::is_contractor_whitelisted(&env, &item.recipient) {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("unauth_c"),
+                );
+                continue;
+            }
+
+            // Daily borrow limit check
+            let limit: i128 = env
                 .storage()
                 .instance()
-                .get(&DataKey::TotalInsurancePremiums)
+                .get(&DataKey::DailyBorrowLimit)
                 .unwrap_or(0);
+            if limit > 0 {
+                let day_id = env.ledger().sequence() / LEDGERS_PER_DAY;
+                let current_day_borrowed: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::DailyBorrowed(day_id))
+                    .unwrap_or(0);
+                if current_day_borrowed.saturating_add(item.amount) > limit {
+                    env.events().publish(
+                        (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                        symbol_short!("lim_exc"),
+                    );
+                    continue;
+                }
+                env.storage().instance().set(
+                    &DataKey::DailyBorrowed(day_id),
+                    &(current_day_borrowed + item.amount),
+                );
+            }
+
+            // Perform disbursement for valid item
+            let token = Self::token_client(&env, &config.token);
+            let (origination_fee, net_disbursement) =
+                match Self::calculate_origination_fee(&config, item.amount) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        env.events().publish(
+                            (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                            symbol_short!("fee_high"),
+                        );
+                        continue;
+                    }
+                };
+            let insurance_pool =
+                Self::read_insurance_pool(&env).filter(|_| premium_for(item.amount) > 0);
+            let premium = if insurance_pool.is_some() {
+                premium_for(item.amount)
+            } else {
+                0
+            };
+            if net_disbursement < premium {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("fee_amt"),
+                );
+                continue;
+            }
+
+            if origination_fee > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &config.treasury_address,
+                    &origination_fee,
+                );
+            }
+            let recipient_amount = net_disbursement - premium;
+            if recipient_amount > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &item.recipient,
+                    &recipient_amount,
+                );
+            }
+
+            if let Some(insurance_addr) = insurance_pool {
+                token.transfer(&env.current_contract_address(), &insurance_addr, &premium);
+                InsurancePoolContractClient::new(&env, &insurance_addr)
+                    .record_premium(&env.current_contract_address(), &premium);
+
+                let total_premiums: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::TotalInsurancePremiums)
+                    .unwrap_or(0);
+                env.storage().instance().set(
+                    &DataKey::TotalInsurancePremiums,
+                    &(total_premiums + premium),
+                );
+            }
+
+            Self::accrue_interest(&env, &mut loan);
+            loan.disbursed += item.amount;
+            loan.outstanding_debt = loan.outstanding_debt.saturating_add(item.amount);
+            Self::set_loan(&env, &item.loan_id, &loan);
+
+            let new_liquidity = liquidity - item.amount;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalLiquidity, &new_liquidity);
+
+            let active_commitments = Self::read_active_commitments(&env);
             env.storage().instance().set(
-                &DataKey::TotalInsurancePremiums,
-                &(total_premiums + premium),
+                &DataKey::ActiveLoanCommitments,
+                &(active_commitments - item.amount),
             );
 
             env.events().publish(
-                (Symbol::new(&env, "insurance_premium"),),
-                (loan_id.clone(), insurance_addr, premium),
+                (symbol_short!("disburse"),),
+                (item.loan_id.clone(), item.recipient.clone(), item.amount),
             );
+
+            success_count += 1;
         }
-
-        // Accrue compound interest on existing outstanding debt, then add disbursed amount.
-        Self::accrue_interest(&env, &mut loan);
-        loan.disbursed += amount;
-        loan.outstanding_debt = loan.outstanding_debt.saturating_add(amount);
-        Self::set_loan(&env, &loan_id, &loan);
-
-        // Reduce available liquidity.
-        let new_liquidity = liquidity - amount;
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalLiquidity, &new_liquidity);
-
-        // Reduce active loan commitments.
-        let active_commitments = Self::read_active_commitments(&env);
-        env.storage()
-            .instance()
-            .set(&DataKey::ActiveLoanCommitments, &(active_commitments - amount));
 
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("disburse"),),
-            (loan_id.clone(), recipient.clone(), amount),
-        );
-
-        Ok(())
-        }) // non_reentrant
+        Ok(success_count)
     }
 
     /// Refund disputed milestone funds back to the pool.
@@ -1441,7 +1818,7 @@ impl LendingPoolContract {
         amount: i128,
     ) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
-        
+
         if amount <= 0 {
             return Err(PoolError::InvalidAmount);
         }
@@ -1483,10 +1860,8 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("refund"),),
-            (loan_id.clone(), amount),
-        );
+        env.events()
+            .publish((symbol_short!("refund"),), (loan_id.clone(), amount));
 
         Ok(())
     }
@@ -1530,8 +1905,16 @@ impl LendingPoolContract {
         }
 
         // If schedule exists, enforce installment logic (due dates, grace, penalties)
-        if env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
-            let mut sched: RepaymentSchedule = env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap();
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanSchedule(loan_id.clone()))
+        {
+            let mut sched: RepaymentSchedule = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LoanSchedule(loan_id.clone()))
+                .unwrap();
             let current_ledger = env.ledger().sequence();
 
             // Configurable grace window after the due date before penalties apply.
@@ -1579,14 +1962,17 @@ impl LendingPoolContract {
                 // Treat this payment as covering the current installment and advance next_due accordingly
                 sched.payments_made += 1u32;
                 // Advance next_due by missed_periods + 1 months (we cover current and skipped installments)
-                sched.next_due_ledger = sched.next_due_ledger + ((missed_periods + 1) * LEDGERS_PER_MONTH);
+                sched.next_due_ledger =
+                    sched.next_due_ledger + ((missed_periods + 1) * LEDGERS_PER_MONTH);
 
                 // If missed threshold reached, it becomes eligible for default marking
                 // which must be executed via `mark_default` to seize collateral.
             }
 
             // Persist schedule changes back to storage
-            env.storage().persistent().set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
         }
 
         // Transfer USDC from borrower to pool.
@@ -1604,6 +1990,12 @@ impl LendingPoolContract {
         // Fraction of loan repaid this payment = amount / total_owed.
         let interest_in_payment = (interest * amount) / total_owed;
 
+        // Protocol fee taken from this payment's interest, if the switch is
+        // on. Hoisted out of the waterfall because the liquidity accounting
+        // at the end of `repay` has to net it off — these tokens leave the
+        // contract before the repayment is booked as available capital.
+        let mut protocol_fee = 0i128;
+
         if interest_in_payment > 0 {
             // ── Reward Halving: check for epoch transition and scale ──
             // apply_halving_if_due advances the epoch counter if the
@@ -1611,7 +2003,42 @@ impl LendingPoolContract {
             // multiplier.  Only *new* interest flowing through the waterfall
             // is reduced; previously booked TotalRepaidInterest is untouched.
             let multiplier_bps = Self::apply_halving_if_due(&env);
-            let effective_interest = Self::scale_interest_by_multiplier(interest_in_payment, multiplier_bps);
+            let effective_interest =
+                Self::scale_interest_by_multiplier(interest_in_payment, multiplier_bps);
+
+            // ── Protocol Fee Switch ───────────────────────────────────
+            // The protocol's cut comes off the top, before the senior/junior
+            // waterfall runs, so investors are only ever credited yield the
+            // treasury has already been paid out of. At the default 0 this is
+            // a no-op and `distributable` is the full effective interest.
+            let (fee, distributable) = Self::split_protocol_fee(&config, effective_interest);
+            protocol_fee = fee;
+
+            if protocol_fee > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &config.treasury_address,
+                    &protocol_fee,
+                );
+
+                let total_protocol_fees = Self::read_total_protocol_fees(&env) + protocol_fee;
+                env.storage()
+                    .instance()
+                    .set(&DataKey::TotalProtocolFees, &total_protocol_fees);
+
+                env.events().publish(
+                    (Symbol::new(&env, "protocol_fee"),),
+                    (
+                        loan_id.clone(),
+                        config.treasury_address.clone(),
+                        protocol_fee,
+                        config.fee_switch_bps,
+                    ),
+                );
+            }
+
+            // Everything below splits only what is left for investors.
+            let effective_interest = distributable;
 
             let senior_info = Self::read_tranche_info(&env, &Tranche::Senior);
             let junior_info = Self::read_tranche_info(&env, &Tranche::Junior);
@@ -1673,20 +2100,26 @@ impl LendingPoolContract {
         if loan.outstanding_debt == 0 {
             loan.status = LoanStatus::Repaid;
 
+            // Full repayment frees the borrower's active-loan slot.
+            Self::release_borrower_loan_slot(&env, &loan.borrower);
+
             // Release any undisbursed locked commitments
             let undisbursed = loan.principal - loan.disbursed;
             if undisbursed > 0 {
                 let active_commitments = Self::read_active_commitments(&env);
-                env.storage()
-                    .instance()
-                    .set(&DataKey::ActiveLoanCommitments, &(active_commitments - undisbursed));
+                env.storage().instance().set(
+                    &DataKey::ActiveLoanCommitments,
+                    &(active_commitments - undisbursed),
+                );
             }
         }
 
         Self::set_loan(&env, &loan_id, &loan);
 
-        // Increase available liquidity with the repayment.
-        let liquidity = Self::read_total_liquidity(&env) + amount;
+        // Increase available liquidity with the repayment, net of any
+        // protocol fee already forwarded to the treasury — those tokens have
+        // left the pool and must not be counted as lendable.
+        let liquidity = Self::read_total_liquidity(&env) + amount - protocol_fee;
         env.storage()
             .instance()
             .set(&DataKey::TotalLiquidity, &liquidity);
@@ -1697,12 +2130,197 @@ impl LendingPoolContract {
 
         env.events().publish(
             (symbol_short!("repay"),),
-            (borrower.clone(), loan_id.clone(), amount, remaining - amount),
+            (
+                borrower.clone(),
+                loan_id.clone(),
+                amount,
+                remaining - amount,
+            ),
         );
 
         Ok(())
     }
 
+    /// Register a human-readable Symbol mapping to a canonical BytesN<32> loan ID.
+    pub fn register_loan_symbol(
+        env: Env,
+        symbol: Symbol,
+        loan_id: BytesN<32>,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanSymbolMap(symbol), &loan_id);
+        Ok(())
+    }
+
+    /// Explicitly configure initial collateral amount and minimum collateralization ratio (bps) for a loan.
+    pub fn set_loan_collateral(
+        env: Env,
+        loan_id: BytesN<32>,
+        initial_collateral: i128,
+        min_ratio_bps: u32,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        if initial_collateral <= 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        let existing = Self::read_loan_collateral(&env, &loan_id);
+        let released = existing.map(|c| c.released_collateral).unwrap_or(0);
+
+        let record = LoanCollateralRecord {
+            initial_collateral,
+            released_collateral: released,
+            min_collateral_ratio_bps: min_ratio_bps,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanCollateral(loan_id), &record);
+        Ok(())
+    }
+
+    /// Read the collateral record for a loan, or derive the default 30% ratio record if unset.
+    pub fn get_loan_collateral(env: Env, loan_id: BytesN<32>) -> Option<LoanCollateralRecord> {
+        Self::read_loan_collateral(&env, &loan_id)
+    }
+
+    fn read_loan_collateral(env: &Env, loan_id: &BytesN<32>) -> Option<LoanCollateralRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LoanCollateral(loan_id.clone()))
+    }
+
+    fn get_or_default_loan_collateral(
+        env: &Env,
+        loan_id: &BytesN<32>,
+        loan: &LoanRecord,
+    ) -> LoanCollateralRecord {
+        if let Some(record) = Self::read_loan_collateral(env, loan_id) {
+            record
+        } else {
+            // RemitMortgage 70/30 standard: collateral is 30/70 of loan principal
+            let initial_collateral = (loan.principal * 30) / 70;
+            LoanCollateralRecord {
+                initial_collateral,
+                released_collateral: 0,
+                min_collateral_ratio_bps: 3_000, // 30% default minimum collateral ratio
+            }
+        }
+    }
+
+    /// Calculate releasable collateral amount, remaining collateral, and current collateralization ratio in bps.
+    pub fn get_releasable_collateral(
+        env: Env,
+        loan_id: BytesN<32>,
+    ) -> Result<(i128, i128, u32), PoolError> {
+        let loan = Self::read_loan(&env, &loan_id)?;
+        let collateral = Self::get_or_default_loan_collateral(&env, &loan_id, &loan);
+
+        let (releasable, remaining_collateral, current_ratio_bps) =
+            Self::compute_collateral_release(&loan, &collateral);
+        Ok((releasable, remaining_collateral, current_ratio_bps))
+    }
+
+    fn compute_collateral_release(
+        loan: &LoanRecord,
+        collateral: &LoanCollateralRecord,
+    ) -> (i128, i128, u32) {
+        if loan.principal <= 0 || collateral.initial_collateral <= 0 {
+            return (0, 0, 0);
+        }
+
+        // Cumulative principal paid down (capped at principal)
+        let principal_paid = loan.repaid.min(loan.principal);
+
+        // Earned proportional collateral release
+        let earned_release = (principal_paid * collateral.initial_collateral) / loan.principal;
+        let releasable = earned_release.saturating_sub(collateral.released_collateral);
+
+        let remaining_collateral = collateral
+            .initial_collateral
+            .saturating_sub(collateral.released_collateral + releasable);
+        let remaining_principal = loan.principal.saturating_sub(principal_paid);
+
+        let current_ratio_bps = if remaining_principal > 0 {
+            ((remaining_collateral * 10_000) / remaining_principal) as u32
+        } else {
+            10_000u32
+        };
+
+        (releasable, remaining_collateral, current_ratio_bps)
+    }
+
+    /// Release partial collateral for a loan using its Symbol identifier.
+    pub fn release_collateral(env: Env, loan_id: Symbol) -> Result<i128, PoolError> {
+        let canonical_id: BytesN<32> = if let Some(id) = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanSymbolMap(loan_id.clone()))
+        {
+            id
+        } else {
+            // Derive canonical 32-byte hash from Symbol
+            env.crypto().sha256(&loan_id.to_xdr(&env)).into()
+        };
+        Self::do_release_collateral(&env, &canonical_id)
+    }
+
+    /// Release partial collateral for a loan using its BytesN<32> identifier.
+    pub fn release_collateral_by_id(env: Env, loan_id: BytesN<32>) -> Result<i128, PoolError> {
+        Self::do_release_collateral(&env, &loan_id)
+    }
+
+    fn do_release_collateral(env: &Env, loan_id: &BytesN<32>) -> Result<i128, PoolError> {
+        Self::check_not_paused(env)?;
+        let mut loan = Self::read_loan(env, loan_id)?;
+
+        if loan.status != LoanStatus::Approved && loan.status != LoanStatus::Repaid {
+            return Err(PoolError::InvalidLoanState);
+        }
+
+        loan.borrower.require_auth();
+
+        // Accrue interest to ensure loan state is up to date
+        Self::accrue_interest(env, &mut loan);
+
+        let mut collateral = Self::get_or_default_loan_collateral(env, loan_id, &loan);
+
+        let (releasable, remaining_collateral, ratio_bps) =
+            Self::compute_collateral_release(&loan, &collateral);
+
+        if releasable <= 0 {
+            return Err(PoolError::NoCollateralToRelease);
+        }
+
+        let remaining_principal = loan
+            .principal
+            .saturating_sub(loan.repaid.min(loan.principal));
+        if remaining_principal > 0 && ratio_bps < collateral.min_collateral_ratio_bps {
+            return Err(PoolError::CollateralRatioBreached);
+        }
+
+        // Transfer released collateral tokens to the borrower
+        let config = Self::read_config(env)?;
+        let token = Self::token_client(env, &config.token);
+        token.transfer(&env.current_contract_address(), &loan.borrower, &releasable);
+
+        collateral.released_collateral += releasable;
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanCollateral(loan_id.clone()), &collateral);
+
+        env.events().publish(
+            (Symbol::new(env, "collateral_released"), loan_id.clone()),
+            (loan.borrower.clone(), releasable, remaining_collateral),
+        );
+
+        Ok(releasable)
+    }
 
     /// Trigger an on-chain liquidation for a defaulted loan.
     /// Allocates the seized savings collateral to the lending pool to cover investor losses.
@@ -1755,7 +2373,11 @@ impl LendingPoolContract {
             return Err(PoolError::InvalidLoanState);
         }
 
-        if !env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanSchedule(loan_id.clone()))
+        {
             return Err(PoolError::InvalidLoanState);
         }
         if !Self::is_loan_overdue(&env, &loan_id) {
@@ -1769,7 +2391,11 @@ impl LendingPoolContract {
         // is tracked as the compounded outstanding debt.
         let gross_loss = loan.outstanding_debt;
 
-        let sched: RepaymentSchedule = env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap();
+        let sched: RepaymentSchedule = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanSchedule(loan_id.clone()))
+            .unwrap();
         if sched.payments_missed < DEFAULT_MISSED_THRESHOLD {
             return Err(PoolError::NotEligibleForDefault);
         }
@@ -1779,7 +2405,11 @@ impl LendingPoolContract {
         let seized_amount: i128 = env.invoke_contract(
             &config.escrow,
             &soroban_sdk::Symbol::new(&env, "seize_collateral"),
-            soroban_sdk::vec![&env, loan.borrower.into_val(&env), env.current_contract_address().into_val(&env)],
+            soroban_sdk::vec![
+                &env,
+                loan.borrower.into_val(&env),
+                env.current_contract_address().into_val(&env)
+            ],
         );
 
         let net_loss = gross_loss.saturating_sub(seized_amount);
@@ -1799,9 +2429,6 @@ impl LendingPoolContract {
             senior_info.total_deposited -= senior_loss;
             senior_info.total_loss_absorbed += senior_loss;
 
-        // Record the realized loss for pool-health accounting.
-        let total_loss = Self::read_total_defaulted_loss(&env) + loss;
-        Self::set_total_defaulted_loss(&env, total_loss);
             Self::set_tranche_info(&env, &Tranche::Junior, &junior_info);
             Self::set_tranche_info(&env, &Tranche::Senior, &senior_info);
 
@@ -1810,15 +2437,18 @@ impl LendingPoolContract {
             let total_loss = Self::read_total_defaulted_loss(&env) + net_loss;
             Self::set_total_defaulted_loss(&env, total_loss);
         }
-        env.storage().instance().set(&DataKey::TotalLiquidity, &liquidity);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalLiquidity, &liquidity);
 
         // Release the undisbursed portion of this loan's commitment.
         let undisbursed = (loan.principal - loan.disbursed).max(0);
         if undisbursed > 0 {
             let commitments = Self::read_active_commitments(&env);
-            env.storage()
-                .instance()
-                .set(&DataKey::ActiveLoanCommitments, &(commitments - undisbursed).max(0));
+            env.storage().instance().set(
+                &DataKey::ActiveLoanCommitments,
+                &(commitments - undisbursed).max(0),
+            );
         }
 
         // Increment the defaulted-loan counter for default-rate reporting.
@@ -1833,13 +2463,21 @@ impl LendingPoolContract {
         loan.outstanding_debt = net_loss;
         Self::set_loan(&env, &loan_id, &loan);
 
+        // A defaulted loan is no longer active; free the borrower's slot.
+        Self::release_borrower_loan_slot(&env, &loan.borrower);
+
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         env.events().publish(
             (soroban_sdk::symbol_short!("default"),),
-            (loan_id.clone(), loan.borrower.clone(), seized_amount, net_loss),
+            (
+                loan_id.clone(),
+                loan.borrower.clone(),
+                seized_amount,
+                net_loss,
+            ),
         );
         env.events().publish(
             (Symbol::new(&env, "loan_defaulted"),),
@@ -1996,89 +2634,113 @@ impl LendingPoolContract {
         Self::check_not_paused(&env)?;
         investor.require_auth();
         Self::non_reentrant(&env, || {
+            if amount <= 0 {
+                return Err(PoolError::InvalidAmount);
+            }
 
-        if amount <= 0 {
-            return Err(PoolError::InvalidAmount);
-        }
+            let mut record = Self::read_investor(&env, &investor);
+            if record.deposited < amount {
+                return Err(PoolError::InsufficientBalance);
+            }
 
-        let mut record = Self::read_investor(&env, &investor);
-        if record.deposited < amount {
-            return Err(PoolError::InsufficientBalance);
-        }
+            let liquidity = Self::read_total_liquidity(&env);
+            let active_commitments = Self::read_active_commitments(&env);
+            let available_liquidity = liquidity - active_commitments;
 
-        let liquidity = Self::read_total_liquidity(&env);
-        let active_commitments = Self::read_active_commitments(&env);
-        let available_liquidity = liquidity - active_commitments;
+            if available_liquidity < amount {
+                return Err(PoolError::InsufficientLiquidity);
+            }
 
-        if available_liquidity < amount {
-            return Err(PoolError::InsufficientLiquidity);
-        }
+            let config = Self::read_config(&env)?;
 
-        let config = Self::read_config(&env)?;
+            // ── Lockup Period Check ───────────────────────────────────────
+            if config.lockup_duration_ledgers > 0 {
+                let current_ledger = env.ledger().sequence();
+                if current_ledger < record.start_ledger + config.lockup_duration_ledgers {
+                    return Err(PoolError::LockupPeriodActive);
+                }
+            }
 
-        // ── Dynamic Fee Calculation ───────────────────────────────────
-        let utilization_bps = Self::calculate_utilization(&env);
-        let fee_bps = Self::calculate_withdrawal_fee_bps(utilization_bps);
-        let fee_amount = Self::calculate_fee_amount(amount, fee_bps);
-        let net_amount = amount - fee_amount;
+            // ── Max Single Withdrawal Check ───────────────────────────────
+            // Caps the blast radius of a compromised key or contract bug: a
+            // larger position must be split across multiple calls.
+            if config.max_single_withdrawal > 0 && amount > config.max_single_withdrawal {
+                return Err(PoolError::WithdrawalExceedsMaxSingleLimit);
+            }
 
-        // Ensure net amount is positive
-        if net_amount <= 0 {
-            return Err(PoolError::InvalidAmount);
-        }
+            // ── Dynamic Fee Calculation ───────────────────────────────────
+            let utilization_bps = Self::calculate_utilization(&env);
+            let fee_bps = Self::calculate_withdrawal_fee_bps(utilization_bps);
+            let fee_amount = Self::calculate_fee_amount(amount, fee_bps);
+            let net_amount = amount - fee_amount;
 
-        // Update investor state
-        let mut tranche_info = Self::read_tranche_info(&env, &record.tranche);
-        tranche_info.total_deposited = tranche_info.total_deposited.saturating_sub(amount);
-        Self::set_tranche_info(&env, &record.tranche, &tranche_info);
+            // Ensure net amount is positive
+            if net_amount <= 0 {
+                return Err(PoolError::InvalidAmount);
+            }
 
-        let debt_balance = Self::read_debt_balance(&env, &investor, &record.tranche);
-        if debt_balance < amount {
-            return Err(PoolError::InsufficientBalance);
-        }
-        Self::set_debt_balance(&env, &investor, &record.tranche, debt_balance - amount);
-        let debt_supply = Self::read_debt_total_supply(&env, &record.tranche);
-        Self::set_debt_total_supply(&env, &record.tranche, debt_supply.saturating_sub(amount));
+            // Update investor state
+            let mut tranche_info = Self::read_tranche_info(&env, &record.tranche);
+            tranche_info.total_deposited = tranche_info.total_deposited.saturating_sub(amount);
+            Self::set_tranche_info(&env, &record.tranche, &tranche_info);
 
-        record.deposited -= amount;
-        Self::set_investor(&env, &investor, &record);
+            let debt_balance = Self::read_debt_balance(&env, &investor, &record.tranche);
+            if debt_balance < amount {
+                return Err(PoolError::InsufficientBalance);
+            }
+            Self::set_debt_balance(&env, &investor, &record.tranche, debt_balance - amount);
+            let debt_supply = Self::read_debt_total_supply(&env, &record.tranche);
+            Self::set_debt_total_supply(&env, &record.tranche, debt_supply.saturating_sub(amount));
 
-        // Update pool liquidity: reduce by net amount (fee stays in pool temporarily)
-        let new_liquidity = liquidity - net_amount;
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalLiquidity, &new_liquidity);
+            record.deposited -= amount;
+            Self::set_investor(&env, &investor, &record);
 
-        let total_dep = Self::read_total_deposited(&env) - amount;
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalDeposited, &total_dep);
+            // Update pool liquidity: reduce by net amount (fee stays in pool temporarily)
+            let new_liquidity = liquidity - net_amount;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalLiquidity, &new_liquidity);
 
-        // Track total fees collected
-        let total_fees = Self::read_total_withdrawal_fees(&env) + fee_amount;
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalWithdrawalFees, &total_fees);
+            let total_dep = Self::read_total_deposited(&env) - amount;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalDeposited, &total_dep);
 
-        // Transfer net amount to investor
-        let token = Self::token_client(&env, &config.token);
-        token.transfer(&env.current_contract_address(), &investor, &net_amount);
+            // Track total fees collected
+            let total_fees = Self::read_total_withdrawal_fees(&env) + fee_amount;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalWithdrawalFees, &total_fees);
 
-        // Transfer fee to protocol treasury
-        if fee_amount > 0 {
-            token.transfer(&env.current_contract_address(), &config.treasury_address, &fee_amount);
-        }
+            // Transfer net amount to investor
+            let token = Self::token_client(&env, &config.token);
+            token.transfer(&env.current_contract_address(), &investor, &net_amount);
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            // Transfer fee to protocol treasury
+            if fee_amount > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &config.treasury_address,
+                    &fee_amount,
+                );
+            }
 
-        env.events().publish(
-            (symbol_short!("withdraw"),),
-            (investor.clone(), amount, fee_amount, net_amount, utilization_bps),
-        );
+            env.storage()
+                .instance()
+                .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        Ok(())
+            env.events().publish(
+                (symbol_short!("withdraw"),),
+                (
+                    investor.clone(),
+                    amount,
+                    fee_amount,
+                    net_amount,
+                    utilization_bps,
+                ),
+            );
+
+            Ok(())
         }) // non_reentrant
     }
 
@@ -2223,7 +2885,9 @@ impl LendingPoolContract {
 
     /// Returns the borrower for a loan, if the loan exists.
     pub fn get_loan_borrower(env: Env, loan_id: BytesN<32>) -> Option<Address> {
-        Self::read_loan(&env, &loan_id).ok().map(|loan| loan.borrower)
+        Self::read_loan(&env, &loan_id)
+            .ok()
+            .map(|loan| loan.borrower)
     }
 
     /// Returns aggregate metrics for the specified tranche.
@@ -2245,9 +2909,20 @@ impl LendingPoolContract {
     }
 
     /// Returns repayment schedule for a loan (if one exists).
-    pub fn get_repayment_schedule(env: Env, loan_id: BytesN<32>) -> Result<Option<RepaymentSchedule>, PoolError> {
-        if env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
-            let sched: RepaymentSchedule = env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap();
+    pub fn get_repayment_schedule(
+        env: Env,
+        loan_id: BytesN<32>,
+    ) -> Result<Option<RepaymentSchedule>, PoolError> {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanSchedule(loan_id.clone()))
+        {
+            let sched: RepaymentSchedule = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LoanSchedule(loan_id.clone()))
+                .unwrap();
             Ok(Some(sched))
         } else {
             Ok(None)
@@ -2391,10 +3066,8 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-        env.events().publish(
-            (symbol_short!("prop_adm"),),
-            (config.admin, new_admin),
-        );
+        env.events()
+            .publish((symbol_short!("prop_adm"),), (config.admin, new_admin));
         Ok(())
     }
 
@@ -2414,10 +3087,8 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-        env.events().publish(
-            (symbol_short!("accept_pd"),),
-            (pending,),
-        );
+        env.events()
+            .publish((symbol_short!("accept_pd"),), (pending,));
         Ok(())
     }
 
@@ -2440,10 +3111,8 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("set_vreg"),),
-            (registry,),
-        );
+        env.events()
+            .publish((symbol_short!("set_vreg"),), (registry,));
 
         Ok(())
     }
@@ -2454,11 +3123,140 @@ impl LendingPoolContract {
         Self::read_verification_registry(&env)
     }
 
+    // ── Loan Assumption Transfer (#561) ───────────────────────────────────
+
+    /// Initiate a loan assumption request to transfer an existing loan's obligations
+    /// to a proposed new borrower. Initiated by the current borrower requiring current borrower authorization.
+    pub fn request_loan_assumption(
+        env: Env,
+        loan_id: BytesN<32>,
+        new_borrower: Address,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let loan = Self::read_loan(&env, &loan_id)?;
+
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::LoanNotActive);
+        }
+
+        loan.borrower.require_auth();
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanAssumption(loan_id.clone()))
+        {
+            return Err(PoolError::AssumptionAlreadyRequested);
+        }
+
+        let request = LoanAssumptionRequest {
+            current_borrower: loan.borrower,
+            proposed_borrower: new_borrower,
+            requested_at_ledger: env.ledger().sequence(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanAssumption(loan_id), &request);
+        Ok(())
+    }
+
+    /// Finalize loan assumption transfer to a new borrower.
+    /// Requires dual authorization from both the current borrower and new borrower.
+    /// Re-verifies applicant eligibility before updating loan ownership.
+    pub fn assume_loan(
+        env: Env,
+        loan_id: BytesN<32>,
+        new_borrower: Address,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let mut loan = Self::read_loan(&env, &loan_id)?;
+
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::LoanNotActive);
+        }
+
+        let request: LoanAssumptionRequest = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanAssumption(loan_id.clone()))
+            .ok_or(PoolError::AssumptionNotFound)?;
+
+        if request.proposed_borrower != new_borrower {
+            return Err(PoolError::AssumptionNotAuthorized);
+        }
+
+        // Dual authorization enforcement
+        loan.borrower.require_auth();
+        new_borrower.require_auth();
+
+        // Re-verify new borrower applicant verification if registry is set
+        if let Some(registry_addr) = Self::read_verification_registry(&env) {
+            let registry_client = VerificationRegistryContractClient::new(&env, &registry_addr);
+            if registry_client.try_get_score(&new_borrower).is_err() {
+                return Err(PoolError::ApplicantNotVerified);
+            }
+        }
+
+        // Transfer loan obligations to new borrower
+        loan.borrower = new_borrower;
+        Self::set_loan(&env, &loan_id, &loan);
+
+        // Remove pending assumption request
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanAssumption(loan_id));
+        Ok(())
+    }
+
+    /// Cancel a pending loan assumption request. Initiated by current borrower.
+    pub fn cancel_loan_assumption(env: Env, loan_id: BytesN<32>) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let loan = Self::read_loan(&env, &loan_id)?;
+        loan.borrower.require_auth();
+
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanAssumption(loan_id.clone()))
+        {
+            return Err(PoolError::AssumptionNotFound);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanAssumption(loan_id));
+        Ok(())
+    }
+
+    /// Retrieve pending loan assumption request for a loan, if one exists.
+    pub fn get_loan_assumption(env: Env, loan_id: BytesN<32>) -> Option<LoanAssumptionRequest> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LoanAssumption(loan_id))
+    }
+
     // ── Multisig Validator ────────────────────────────────────────────────
 
     /// Set the MultisigValidator contract address used for admin multisig
     /// approval of privileged operations (e.g. restructure approval). Admin-only.
     pub fn set_multisig_validator(env: Env, validator: Address) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultisigValidator, &validator);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events()
+            .publish((symbol_short!("set_msig"),), (validator,));
+
+        Ok(())
+    }
+
     /// Set (or update) the InsurancePool contract that receives the 5 bps
     /// premium skimmed from every disbursement. Admin-only.
     ///
@@ -2470,16 +3268,11 @@ impl LendingPoolContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::MultisigValidator, &validator);
             .set(&DataKey::InsurancePool, &insurance_pool);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("set_msig"),),
-            (validator,),
-        );
         env.events()
             .publish((symbol_short!("set_ins"),), (insurance_pool,));
 
@@ -2489,9 +3282,95 @@ impl LendingPoolContract {
     /// Returns the configured MultisigValidator contract address, or `None`
     /// if one has not been set.
     pub fn get_multisig_validator(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::MultisigValidator)
+    }
+
+    /// Set the protocol fee switch, in basis points of loan interest.
+    ///
+    /// This is the protocol's revenue lever, so it is deliberately the hardest
+    /// setting on the pool to change: the caller must both hold admin auth
+    /// *and* present signers meeting the configured k-of-n threshold on the
+    /// `MultisigValidator`. There is no admin-only path — if no validator has
+    /// been configured the call fails closed with `MultisigValidatorNotSet`,
+    /// so a lone compromised admin key cannot start diverting yield.
+    ///
+    /// `new_bps` is capped at `MAX_FEE_SWITCH_BPS` (50%). Passing `0` turns
+    /// the switch back off and restores the full yield to investors.
+    ///
+    /// # Arguments
+    /// - `new_bps` — Share of interest routed to the treasury, in bps.
+    /// - `signers` — Signer addresses validated against the multisig threshold.
+    pub fn set_fee_switch_bps(
+        env: Env,
+        new_bps: u32,
+        signers: Vec<Address>,
+    ) -> Result<(), PoolError> {
+        if new_bps > MAX_FEE_SWITCH_BPS {
+            return Err(PoolError::FeeSwitchTooHigh);
+        }
+
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        // Governance gate. Fails closed when no validator is configured.
+        let validator = Self::read_multisig_validator(&env)?;
+        MultisigValidatorClient::new(&env, &validator).enforce_signatures(&signers);
+
+        let previous_bps = config.fee_switch_bps;
+        config.fee_switch_bps = new_bps;
+        env.storage().instance().set(&DataKey::Config, &config);
         env.storage()
             .instance()
-            .get(&DataKey::MultisigValidator)
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "fee_switch_set"),),
+            (previous_bps, new_bps),
+        );
+
+        Ok(())
+    }
+
+    /// Returns the current protocol fee switch in basis points. `0` means the
+    /// switch is off and all interest is distributed to investors.
+    pub fn get_fee_switch_bps(env: Env) -> Result<u32, PoolError> {
+        Ok(Self::read_config(&env)?.fee_switch_bps)
+    }
+
+    /// Set the loan origination fee in basis points. The fee is deducted from
+    /// disbursement transfers and sent to the existing protocol treasury;
+    /// loan principal and repayment obligations remain gross. Admin-only.
+    pub fn set_origination_fee_bps(env: Env, new_bps: u32) -> Result<(), PoolError> {
+        if new_bps > MAX_ORIGINATION_FEE_BPS {
+            return Err(PoolError::OriginationFeeTooHigh);
+        }
+
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        let previous_bps = config.origination_fee_bps;
+        config.origination_fee_bps = new_bps;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "orig_fee_set"),),
+            (previous_bps, new_bps),
+        );
+        Ok(())
+    }
+
+    /// Returns the current loan origination fee in basis points.
+    pub fn get_origination_fee_bps(env: Env) -> Result<u32, PoolError> {
+        Ok(Self::read_config(&env)?.origination_fee_bps)
+    }
+
+    /// Lifetime interest routed to the treasury by the fee switch.
+    pub fn get_total_protocol_fees(env: Env) -> i128 {
+        Self::read_total_protocol_fees(&env)
+    }
+
     /// Returns the configured InsurancePool address, or `None` if the
     /// protocol insurance fund is not wired up.
     pub fn get_insurance_pool(env: Env) -> Option<Address> {
@@ -2519,10 +3398,8 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("set_limit"),),
-            (limit,),
-        );
+        env.events()
+            .publish((symbol_short!("set_limit"),), (limit,));
 
         Ok(())
     }
@@ -2577,6 +3454,147 @@ impl LendingPoolContract {
         Ok(())
     }
 
+    /// Configure the smallest deposit the pool will accept, in token stroops.
+    /// Admin-only.
+    ///
+    /// Without a floor, `deposit` can be flooded with negligible amounts to
+    /// grief the pool's storage: every call touches an `InvestorRecord`, the
+    /// per-tranche aggregate and the debt-share ledger. Setting a minimum
+    /// makes that attack cost the attacker real capital per entry.
+    ///
+    /// Pass `0` to disable the floor. Negative values are rejected — the
+    /// intent there is ambiguous, and silently treating them as "off" would
+    /// hide a mistake in a governance transaction.
+    ///
+    /// Existing positions are untouched: the floor applies to new deposits
+    /// only, so raising it can never strand capital already in the pool.
+    pub fn set_min_deposit_amount(env: Env, amount: i128) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if amount < 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        config.min_deposit_amount = amount;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish((symbol_short!("set_mindp"),), amount);
+
+        Ok(())
+    }
+
+    /// Get the currently configured minimum deposit amount, in token stroops.
+    /// `0` means no floor is enforced.
+    pub fn get_min_deposit_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.min_deposit_amount)
+            .unwrap_or(0)
+    }
+
+    /// Set the maximum number of simultaneously active loans (in `Requested`
+    /// or `Approved` state) a single borrower address may hold. Admin-only.
+    ///
+    /// Caps risk concentration on any one borrower: once at the cap, that
+    /// borrower cannot originate another loan until an existing one is
+    /// repaid, cancelled or defaulted.
+    ///
+    /// Pass `0` to disable the cap. Raising or lowering the cap never
+    /// disturbs loans that already exist — the limit is only checked at
+    /// origination — so lowering it below a borrower's current count simply
+    /// blocks new requests until they drop back under the new ceiling.
+    pub fn set_borrower_active_loan_cap(env: Env, max_loans: u32) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        let previous = config.max_active_loans_per_borrower;
+        config.max_active_loans_per_borrower = max_loans;
+    /// Set the refinancing cooldown period in ledgers.
+    ///
+    /// `0` disables the cooldown entirely (the deployment default).
+    pub fn set_refinance_cooldown_ledgers(env: Env, cooldown: u32) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        config.refinance_cooldown_ledgers = cooldown;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events()
+            .publish((Symbol::new(&env, "set_max_loans"),), (previous, max_loans));
+        env.events().publish((symbol_short!("set_rcool"),), cooldown);
+
+        Ok(())
+    }
+
+    /// Get the configured per-borrower active-loan cap. `0` means no cap.
+    pub fn get_borrower_active_loan_cap(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.max_active_loans_per_borrower)
+            .unwrap_or(0)
+    }
+
+    /// Get the number of currently-active loans (in `Requested` or `Approved`
+    /// state) held by `borrower`.
+    pub fn get_borrower_active_loans(env: Env, borrower: Address) -> u32 {
+        Self::read_borrower_active_loans(&env, &borrower)
+    /// Get the currently configured refinancing cooldown in ledgers.
+    pub fn get_refinance_cooldown_ledgers(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.refinance_cooldown_ledgers)
+            .unwrap_or(0)
+    }
+
+    /// Configure the maximum amount an investor may withdraw in a single
+    /// `withdraw` call, in token stroops. Admin-only.
+    ///
+    /// Caps the damage a compromised key or contract bug can cause in one
+    /// transaction: a position larger than the limit must be withdrawn
+    /// across multiple sequential calls.
+    ///
+    /// Pass `0` to disable the cap. Negative values are rejected — the
+    /// intent there is ambiguous, and silently treating them as "off" would
+    /// hide a mistake in a governance transaction.
+    pub fn set_max_single_withdrawal(env: Env, amount: i128) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if amount < 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        config.max_single_withdrawal = amount;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish((symbol_short!("set_maxsw"),), amount);
+
+        Ok(())
+    }
+
+    /// Get the currently configured maximum single-transaction withdrawal
+    /// limit, in token stroops. `0` means no cap is enforced.
+    pub fn get_max_single_withdrawal(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.max_single_withdrawal)
+            .unwrap_or(0)
+    }
+
     /// Get the currently configured per-day late-payment penalty in basis points.
     pub fn get_daily_penalty_bps(env: Env) -> u32 {
         Self::daily_penalty_bps(&env)
@@ -2609,10 +3627,8 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("wl_add"),),
-            (contractor,),
-        );
+        env.events()
+            .publish((symbol_short!("wl_add"),), (contractor,));
 
         Ok(())
     }
@@ -2629,10 +3645,8 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events().publish(
-            (symbol_short!("wl_rm"),),
-            (contractor,),
-        );
+        env.events()
+            .publish((symbol_short!("wl_rm"),), (contractor,));
 
         Ok(())
     }
@@ -2686,18 +3700,14 @@ impl LendingPoolContract {
                 .instance()
                 .get(&DataKey::Version)
                 .unwrap_or(1u32);
-            env.storage()
-                .instance()
-                .set(&DataKey::Version, &(ver + 1));
+            env.storage().instance().set(&DataKey::Version, &(ver + 1));
             env.deployer()
                 .update_current_contract_wasm(new_wasm_hash.clone());
             env.events()
                 .publish((symbol_short!("upgrade"),), (new_wasm_hash, ver + 1));
         } else {
-            let maybe_pending: Option<PendingUpgradeRecord> = env
-                .storage()
-                .instance()
-                .get(&DataKey::PendingUpgrade);
+            let maybe_pending: Option<PendingUpgradeRecord> =
+                env.storage().instance().get(&DataKey::PendingUpgrade);
 
             match maybe_pending {
                 None => {
@@ -2708,10 +3718,8 @@ impl LendingPoolContract {
                     env.storage()
                         .instance()
                         .set(&DataKey::PendingUpgrade, &proposal);
-                    env.events().publish(
-                        (symbol_short!("upg_prop"),),
-                        (proposal.execute_after,),
-                    );
+                    env.events()
+                        .publish((symbol_short!("upg_prop"),), (proposal.execute_after,));
                 }
                 Some(pending) => {
                     if current_ledger < pending.execute_after {
@@ -2723,13 +3731,13 @@ impl LendingPoolContract {
                         .instance()
                         .get(&DataKey::Version)
                         .unwrap_or(1u32);
-                    env.storage()
-                        .instance()
-                        .set(&DataKey::Version, &(ver + 1));
+                    env.storage().instance().set(&DataKey::Version, &(ver + 1));
                     env.deployer()
                         .update_current_contract_wasm(pending.new_wasm_hash.clone());
-                    env.events()
-                        .publish((symbol_short!("upgrade"),), (pending.new_wasm_hash, ver + 1));
+                    env.events().publish(
+                        (symbol_short!("upgrade"),),
+                        (pending.new_wasm_hash, ver + 1),
+                    );
                 }
             }
         }
@@ -2764,9 +3772,7 @@ impl LendingPoolContract {
 
     /// Returns the pending upgrade proposal, if any.
     pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgradeRecord> {
-        env.storage()
-            .instance()
-            .get(&DataKey::PendingUpgrade)
+        env.storage().instance().get(&DataKey::PendingUpgrade)
     }
 
     // ── Borrower Credit Reward Rebate Functions ──────────────────────────
@@ -2805,7 +3811,11 @@ impl LendingPoolContract {
         }
 
         // Check the repayment schedule for zero missed payments.
-        if env.storage().persistent().has(&DataKey::LoanSchedule(loan_id.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanSchedule(loan_id.clone()))
+        {
             let schedule: RepaymentSchedule = env
                 .storage()
                 .persistent()
@@ -2850,7 +3860,9 @@ impl LendingPoolContract {
         // Mark the rebate as claimed to prevent double-dipping.
         Self::mark_rebate_claimed(&env, &loan_id);
 
-        Self::bump_instance(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         env.events().publish(
             (Symbol::new(&env, "maturity_rebate"),),
@@ -2883,7 +3895,15 @@ mod test {
     };
 
     /// Helper: deploy test token, mint to investor, initialize pool.
-    fn setup_pool(env: &Env) -> (Address, Address, Address, Address, LendingPoolContractClient<'_>) {
+    fn setup_pool(
+        env: &Env,
+    ) -> (
+        Address,
+        Address,
+        Address,
+        Address,
+        LendingPoolContractClient<'_>,
+    ) {
         // 8% pool rate, 4% senior fixed rate
         setup_pool_with_rates(env, 800u32, 400u32)
     }
@@ -2895,7 +3915,13 @@ mod test {
         env: &Env,
         interest_rate_bps: u32,
         senior_rate_bps: u32,
-    ) -> (Address, Address, Address, Address, LendingPoolContractClient<'_>) {
+    ) -> (
+        Address,
+        Address,
+        Address,
+        Address,
+        LendingPoolContractClient<'_>,
+    ) {
         let admin = Address::generate(env);
         let investor = Address::generate(env);
         let treasury = Address::generate(env);
@@ -2912,7 +3938,16 @@ mod test {
 
         let contract_id = env.register(LendingPoolContract, ());
         let client = LendingPoolContractClient::new(env, &contract_id);
-        client.initialize(&admin, &token_address, &escrow, &interest_rate_bps, &senior_rate_bps, &treasury, &0u32);
+        client.initialize(
+            &admin,
+            &token_address,
+            &escrow,
+            &interest_rate_bps,
+            &senior_rate_bps,
+            &treasury,
+            &0u32,
+            &0u32,
+        );
 
         (admin, investor, treasury, token_address, client)
     }
@@ -2949,6 +3984,7 @@ mod test {
         assert_eq!(config.interest_rate_bps, 800u32);
         assert_eq!(config.senior_rate_bps, 400u32);
         assert_eq!(config.treasury_address, treasury);
+        assert_eq!(config.lockup_duration_ledgers, 0u32);
         assert_eq!(client.get_liquidity(), 0);
 
         let si = client.get_tranche_info(&Tranche::Senior);
@@ -3028,7 +4064,16 @@ mod test {
 
         let (admin, _investor, _treasury, token_address, client) = setup_pool(&env);
 
-        let result = client.try_initialize(&admin, &token_address, &Address::generate(&env), &800u32, &400u32, &Address::generate(&env), &0u32);
+        let result = client.try_initialize(
+            &admin,
+            &token_address,
+            &Address::generate(&env),
+            &800u32,
+            &400u32,
+            &Address::generate(&env),
+            &0u32,
+            &0u32,
+        );
         assert!(result.is_err());
     }
 
@@ -3106,7 +4151,8 @@ mod test {
         admin: &Address,
     ) -> verification_registry::VerificationRegistryContractClient<'a> {
         let registry_id = env.register(verification_registry::VerificationRegistryContract, ());
-        let registry = verification_registry::VerificationRegistryContractClient::new(env, &registry_id);
+        let registry =
+            verification_registry::VerificationRegistryContractClient::new(env, &registry_id);
         registry.initialize(admin);
         registry
     }
@@ -3259,6 +4305,106 @@ mod test {
         assert_eq!(loan.interest_rate_bps, INTEREST_RATE_FAIR_BPS);
     }
 
+    fn assert_loan_terms_for_score(
+        env: &Env,
+        client: &LendingPoolContractClient<'_>,
+        registry: &verification_registry::VerificationRegistryContractClient<'_>,
+        investor: &Address,
+        score: u32,
+        expected_rate_bps: u32,
+        loan_seed: u8,
+    ) {
+        let borrower = Address::generate(env);
+        let loan_id = BytesN::from_array(env, &[loan_seed; 32]);
+        let report_hash = BytesN::from_array(env, &[loan_seed.saturating_add(100); 32]);
+
+        registry.register_verification(&borrower, &report_hash, &1_000u32, &score);
+        client.deposit(investor, &70_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+
+        let loan = client.get_loan_info(&loan_id);
+        let schedule = client.get_repayment_schedule(&loan_id).unwrap();
+
+        assert_eq!(
+            loan.interest_rate_bps, expected_rate_bps,
+            "score {} resolved to wrong rate",
+            score
+        );
+        assert_eq!(
+            schedule.duration_months, DEFAULT_DURATION_MONTHS,
+            "score {} resolved to wrong term",
+            score
+        );
+    }
+
+    #[test]
+    fn test_credit_tier_boundary_scores_resolve_exact_rates_and_terms() {
+        let cases = [
+            (39u32, INTEREST_RATE_FALLBACK_BPS, 0x21u8),
+            (40u32, INTEREST_RATE_FAIR_BPS, 0x22u8),
+            (41u32, INTEREST_RATE_FAIR_BPS, 0x23u8),
+            (59u32, INTEREST_RATE_FAIR_BPS, 0x24u8),
+            (60u32, INTEREST_RATE_GOOD_BPS, 0x25u8),
+            (61u32, INTEREST_RATE_GOOD_BPS, 0x26u8),
+            (79u32, INTEREST_RATE_GOOD_BPS, 0x27u8),
+            (80u32, INTEREST_RATE_EXCELLENT_BPS, 0x28u8),
+            (81u32, INTEREST_RATE_EXCELLENT_BPS, 0x29u8),
+        ];
+
+        for (score, expected_rate_bps, loan_seed) in cases {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let (admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+            let registry = setup_registry(&env, &admin);
+            client.set_verification_registry(&registry.address);
+
+            assert_loan_terms_for_score(
+                &env,
+                &client,
+                &registry,
+                &investor,
+                score,
+                expected_rate_bps,
+                loan_seed,
+            );
+        }
+    }
+
+    #[test]
+    fn test_multi_tier_score_jump_uses_final_resolved_tier_immediately() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let registry = setup_registry(&env, &admin);
+        client.set_verification_registry(&registry.address);
+
+        let borrower = Address::generate(&env);
+        let first_loan_id = BytesN::from_array(&env, &[0x31u8; 32]);
+        let second_loan_id = BytesN::from_array(&env, &[0x32u8; 32]);
+        let poor_report_hash = BytesN::from_array(&env, &[0x41u8; 32]);
+        let excellent_report_hash = BytesN::from_array(&env, &[0x42u8; 32]);
+
+        registry.register_verification(&borrower, &poor_report_hash, &1_000u32, &39u32);
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &first_loan_id, &10_000_0000000i128);
+        client.approve_loan(&first_loan_id);
+
+        registry.register_verification(&borrower, &excellent_report_hash, &1_000u32, &81u32);
+        client.request_loan(&borrower, &second_loan_id, &10_000_0000000i128);
+        client.approve_loan(&second_loan_id);
+
+        let first_loan = client.get_loan_info(&first_loan_id);
+        let second_loan = client.get_loan_info(&second_loan_id);
+        let second_schedule = client.get_repayment_schedule(&second_loan_id).unwrap();
+
+        assert_eq!(first_loan.interest_rate_bps, INTEREST_RATE_FALLBACK_BPS);
+        assert_eq!(second_loan.interest_rate_bps, INTEREST_RATE_EXCELLENT_BPS);
+        assert_eq!(second_schedule.duration_months, DEFAULT_DURATION_MONTHS);
+    }
+
     #[test]
     fn test_request_loan_assigns_fallback_rate_for_expired_verification() {
         let env = Env::default();
@@ -3297,12 +4443,7 @@ mod test {
 
         client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
 
-        client.request_loan_with_origin(
-            &borrower,
-            &loan_id,
-            &10_000_0000000i128,
-            &escrow_origin,
-        );
+        client.request_loan_with_origin(&borrower, &loan_id, &10_000_0000000i128, &escrow_origin);
 
         let loan = client.get_loan_info(&loan_id);
         assert_eq!(loan.interest_rate_bps, INTEREST_RATE_FALLBACK_BPS);
@@ -3351,7 +4492,8 @@ mod test {
         assert_eq!(loan.disbursed, 70_000_0000000i128);
 
         // Advance ledger by 1 period to compound interest
-        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100);
 
         // Borrower repays. Total owed = 70,000 + 8% = 75,600.
         let sac = StellarAssetClient::new(&env, &token_address);
@@ -3400,7 +4542,8 @@ mod test {
 
         // Land inside the grace window: past the due date but before penalties.
         let grace = client.get_grace_period();
-        env.ledger().set_sequence_number(sched.next_due_ledger + grace - 10);
+        env.ledger()
+            .set_sequence_number(sched.next_due_ledger + grace - 10);
 
         // Paying exactly the installment (no penalty) is accepted and counts as
         // an on-time payment.
@@ -3531,7 +4674,8 @@ mod test {
         client.disburse(&loan_id, &borrower, &10_000_0000000i128);
 
         // Advance ledger by 1 period to compound interest
-        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100);
 
         sac.mint(&borrower, &20_000_0000000i128);
 
@@ -3541,8 +4685,14 @@ mod test {
         let senior_info = client.get_tranche_info(&Tranche::Senior);
         let junior_info = client.get_tranche_info(&Tranche::Junior);
 
-        assert!(senior_info.total_yield_distributed > 0, "senior should receive yield");
-        assert!(junior_info.total_yield_distributed > 0, "junior should receive yield");
+        assert!(
+            senior_info.total_yield_distributed > 0,
+            "senior should receive yield"
+        );
+        assert!(
+            junior_info.total_yield_distributed > 0,
+            "junior should receive yield"
+        );
         // Junior gets more because it absorbs more risk.
         assert!(
             junior_info.total_yield_distributed > senior_info.total_yield_distributed,
@@ -3672,7 +4822,8 @@ mod test {
         client.approve_loan(&loan_id);
         client.add_contractor(&borrower);
         client.disburse(&loan_id, &borrower, &10_000_0000000i128);
-        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100);
 
         let sac = StellarAssetClient::new(&env, &token_address);
         sac.mint(&borrower, &20_000_0000000i128);
@@ -3700,7 +4851,8 @@ mod test {
         client.approve_loan(&loan_id);
         client.add_contractor(&borrower);
         client.disburse(&loan_id, &borrower, &10_000_0000000i128);
-        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100);
 
         let sac = StellarAssetClient::new(&env, &token_address);
         sac.mint(&borrower, &20_000_0000000i128);
@@ -3716,22 +4868,31 @@ mod test {
         assert_eq!(record.claimed_yield, 800_0000000i128);
     }
 
-
     #[contract]
     pub struct MockEscrow;
 
     #[contractimpl]
     impl MockEscrow {
-        pub fn seize_collateral(env: Env, _borrower: Address, lending_pool_address: Address) -> i128 {
+        pub fn seize_collateral(
+            env: Env,
+            _borrower: Address,
+            lending_pool_address: Address,
+        ) -> i128 {
             // Mock transferring 5000 USDC
-            let token_address = env.storage().instance().get(&symbol_short!("token")).unwrap();
+            let token_address = env
+                .storage()
+                .instance()
+                .get(&symbol_short!("token"))
+                .unwrap();
             let sac = StellarAssetClient::new(&env, &token_address);
             // In a real scenario we'd use transfer, but in test we can just mint to the lending pool to simulate seized funds
             sac.mint(&lending_pool_address, &5_000_0000000i128);
             5_000_0000000i128
         }
         pub fn set_token(env: Env, token: Address) {
-            env.storage().instance().set(&symbol_short!("token"), &token);
+            env.storage()
+                .instance()
+                .set(&symbol_short!("token"), &token);
         }
     }
 
@@ -3753,9 +4914,13 @@ mod test {
 
         let escrow_id = env.register(MockEscrow, ());
         let mock_escrow = escrow_id.clone();
-        
+
         // Setup mock escrow token
-        env.invoke_contract::<()>(&escrow_id, &symbol_short!("set_token"), soroban_sdk::vec![&env, token_address.into_val(&env)]);
+        env.invoke_contract::<()>(
+            &escrow_id,
+            &symbol_short!("set_token"),
+            soroban_sdk::vec![&env, token_address.into_val(&env)],
+        );
 
         let contract_id = env.register(LendingPoolContract, ());
         let client = LendingPoolContractClient::new(&env, &contract_id);
@@ -3767,6 +4932,7 @@ mod test {
             &400u32,
             &Address::generate(&env),
             &0u32,
+            &0u32,
         );
 
         client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
@@ -3777,11 +4943,16 @@ mod test {
 
         // Advance schedule to have missed 3 payments
         let mut sched: RepaymentSchedule = env.as_contract(&contract_id, || {
-            env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap()
+            env.storage()
+                .persistent()
+                .get(&DataKey::LoanSchedule(loan_id.clone()))
+                .unwrap()
         });
         sched.payments_missed = 3;
         env.as_contract(&contract_id, || {
-            env.storage().persistent().set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
         });
 
         // Trigger default
@@ -3844,7 +5015,16 @@ mod test {
 
         // Preview: 10_000 withdrawal at 0.1% = 10 fee, 9990 net
         let preview = client.preview_withdrawal_fee(&10_000_0000000i128);
-        assert_eq!(preview, (10_000_0000000i128, 10_0000000i128, 9_990_0000000i128, 10u32, 3_000u32));
+        assert_eq!(
+            preview,
+            (
+                10_000_0000000i128,
+                10_0000000i128,
+                9_990_0000000i128,
+                10u32,
+                3_000u32
+            )
+        );
     }
 
     #[test]
@@ -3866,7 +5046,16 @@ mod test {
 
         // Preview: 10_000 withdrawal at 0.5% = 50 fee
         let preview = client.preview_withdrawal_fee(&10_000_0000000i128);
-        assert_eq!(preview, (10_000_0000000i128, 50_0000000i128, 9_950_0000000i128, 50u32, 6_000u32));
+        assert_eq!(
+            preview,
+            (
+                10_000_0000000i128,
+                50_0000000i128,
+                9_950_0000000i128,
+                50u32,
+                6_000u32
+            )
+        );
     }
 
     #[test]
@@ -3888,7 +5077,16 @@ mod test {
 
         // Preview: 10_000 withdrawal at 2% = 200 fee
         let preview = client.preview_withdrawal_fee(&10_000_0000000i128);
-        assert_eq!(preview, (10_000_0000000i128, 200_0000000i128, 9_800_0000000i128, 200u32, 9_000u32));
+        assert_eq!(
+            preview,
+            (
+                10_000_0000000i128,
+                200_0000000i128,
+                9_800_0000000i128,
+                200u32,
+                9_000u32
+            )
+        );
     }
 
     #[test]
@@ -3972,7 +5170,8 @@ mod test {
         assert_eq!(client.get_withdrawal_fee_bps(), 200u32);
 
         // Advance ledger by 1 period to compound interest
-        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100);
 
         // Borrower repays full amount
         sac.mint(&borrower, &90_000_0000000i128);
@@ -4063,10 +5262,7 @@ mod test {
 
         // Attempting execution before delay elapses must return UpgradeTimelockActive = 12.
         let result = client.try_upgrade(&dummy_hash);
-        assert_eq!(
-            result.unwrap_err(),
-            Ok(PoolError::UpgradeTimelockActive)
-        );
+        assert_eq!(result.unwrap_err(), Ok(PoolError::UpgradeTimelockActive));
     }
 
     #[test]
@@ -4084,7 +5280,15 @@ mod test {
         assert!(pending.execute_after > env.ledger().sequence());
 
         // Advance ledger past the delay.
-        env.ledger().with_mut(|l| l.sequence_number = pending.execute_after);
+        env.ledger()
+            .with_mut(|l| l.sequence_number = pending.execute_after);
+
+        // Executing here would call `update_current_contract_wasm` with a
+        // dummy hash that was never uploaded to the test host, which panics.
+        // This test's scope is the timelock guard (delay enforcement); the
+        // actual WASM swap + version bump is exercised by
+        // `test_state_preserved_across_upgrade_flow` up to the point of
+        // execution, with real-WASM execution left to integration tests.
 
         // Reset to no delay so re-calling upgrade does not re-trigger a proposal
         // (the pending record was the one we just verified above).
@@ -4134,6 +5338,38 @@ mod test {
         let (_admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
 
         // No delay set → get_pending_upgrade returns None before any call.
+        assert!(client.get_pending_upgrade().is_none());
+    }
+
+    #[test]
+    fn test_non_admin_cannot_call_upgrade() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
+        let non_admin = Address::generate(&env);
+        let dummy_hash = BytesN::from_array(&env, &[9u8; 32]);
+
+        // Only the non-admin signs; the contract requires `config.admin`'s
+        // authorization, so the call must fail with an auth error rather
+        // than proposing or executing the upgrade.
+        env.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "upgrade",
+                args: (dummy_hash.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_upgrade(&dummy_hash);
+        assert!(result.is_err());
+
+        // No proposal should have been stored as a side effect of the
+        // rejected call.
         assert!(client.get_pending_upgrade().is_none());
     }
 
@@ -4210,7 +5446,11 @@ mod test {
         let (admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
 
         client.pause();
-        let result = client.try_deposit(&Address::generate(&env), &10_000_0000000i128, &Tranche::Senior);
+        let result = client.try_deposit(
+            &Address::generate(&env),
+            &10_000_0000000i128,
+            &Tranche::Senior,
+        );
         assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
     }
 
@@ -4413,9 +5653,12 @@ mod test {
     /// Fund the pool, approve and disburse a loan, then advance the ledger so
     /// the loan is overdue. Returns (admin, token_address, loan_id). Uses 0%
     /// interest so the loss equals the disbursed amount exactly.
-    fn setup_overdue_loan(env: &Env) -> (Address, Address, BytesN<32>, LendingPoolContractClient<'_>) {
+    fn setup_overdue_loan(
+        env: &Env,
+    ) -> (Address, Address, BytesN<32>, LendingPoolContractClient<'_>) {
         extend_test_ttls(env);
-        let (admin, senior_investor, _treasury, token_address, client) = setup_pool_with_rates(env, 0u32, 0u32);
+        let (admin, senior_investor, _treasury, token_address, client) =
+            setup_pool_with_rates(env, 0u32, 0u32);
 
         // Junior 30,000 + Senior 70,000 = 100,000 liquidity.
         let junior_investor = Address::generate(env);
@@ -4522,7 +5765,10 @@ mod test {
 
         // Liquidity: 100,000 deposited - 20,000 disbursed - 20,000 loss = 60,000.
         assert_eq!(client.get_liquidity(), 60_000_0000000i128);
-        assert_eq!(client.get_pool_health().total_defaulted_loss, 20_000_0000000i128);
+        assert_eq!(
+            client.get_pool_health().total_defaulted_loss,
+            20_000_0000000i128
+        );
 
         // Admin recovers 8,000 (e.g. from liquidation) and returns it to the pool.
         let sac = StellarAssetClient::new(&env, &token_address);
@@ -4530,7 +5776,10 @@ mod test {
         client.recover_default(&loan_id, &8_000_0000000i128);
 
         // Loss drops by the recovered amount; liquidity rises by it.
-        assert_eq!(client.get_pool_health().total_defaulted_loss, 12_000_0000000i128);
+        assert_eq!(
+            client.get_pool_health().total_defaulted_loss,
+            12_000_0000000i128
+        );
         assert_eq!(client.get_liquidity(), 68_000_0000000i128);
 
         // Junior (the absorber) is partially restored.
@@ -4628,7 +5877,10 @@ mod test {
 
         // Disburse 10k -> should fail.
         let result2 = client.try_disburse(&loan_id, &contractor, &10_000_0000000i128);
-        assert_eq!(result2.unwrap_err(), Ok(PoolError::DailyBorrowLimitExceeded));
+        assert_eq!(
+            result2.unwrap_err(),
+            Ok(PoolError::DailyBorrowLimitExceeded)
+        );
     }
 
     // ── Contractor Whitelist Tests ───────────────────────────────────────
@@ -4672,6 +5924,175 @@ mod test {
         assert_eq!(token.balance(&contractor), 10_000_0000000i128);
     }
 
+    #[test]
+    fn test_origination_fee_is_routed_without_reducing_principal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, investor, treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let contractor = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 100_000_0000000i128;
+
+        client.set_origination_fee_bps(&200);
+        client.deposit(&investor, &150_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        assert_eq!(token.balance(&contractor), 98_000_0000000i128);
+        assert_eq!(token.balance(&treasury), 2_000_0000000i128);
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.principal, principal);
+        assert_eq!(loan.disbursed, principal);
+        assert_eq!(loan.outstanding_debt, principal);
+    }
+
+    #[test]
+    fn test_origination_fee_requires_admin_and_rejects_values_over_100_percent() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let attacker = Address::generate(&env);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_origination_fee_bps",
+                    args: (200u32,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_origination_fee_bps(&200);
+        assert!(result.is_err());
+        assert_eq!(client.get_origination_fee_bps(), 0);
+
+        let result = client.try_set_origination_fee_bps(&(BPS_SCALE + 1));
+        assert_eq!(result.unwrap_err(), Ok(PoolError::OriginationFeeTooHigh));
+    }
+
+    // ── Per-Borrower Active-Loan Cap ─────────────────────────────────────
+
+    #[test]
+    fn test_active_loan_cap_blocks_origination_at_the_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        client.set_borrower_active_loan_cap(&2);
+        assert_eq!(client.get_borrower_active_loan_cap(), 2);
+
+        let loan_a = BytesN::from_array(&env, &[0xA1u8; 32]);
+        let loan_b = BytesN::from_array(&env, &[0xB2u8; 32]);
+        let loan_c = BytesN::from_array(&env, &[0xC3u8; 32]);
+
+        // Up to and including the cap is allowed.
+        client.request_loan(&borrower, &loan_a, &principal);
+        client.request_loan(&borrower, &loan_b, &principal);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 2);
+
+        // The loan that would exceed the cap is rejected.
+        let blocked = client.try_request_loan(&borrower, &loan_c, &principal);
+        assert_eq!(blocked.unwrap_err(), Ok(PoolError::BorrowerLoanCapExceeded));
+        assert_eq!(client.get_borrower_active_loans(&borrower), 2);
+
+        // The cap is per borrower, not global: a different borrower is free
+        // to originate.
+        let other_borrower = Address::generate(&env);
+        client.request_loan(&other_borrower, &loan_c, &principal);
+        assert_eq!(client.get_borrower_active_loans(&other_borrower), 1);
+    }
+
+    #[test]
+    fn test_active_loan_cap_frees_a_slot_when_a_loan_is_cancelled_or_repaid() {
+        let env = Env::default();
+        env.mock_all_auths();
+        // 0% interest keeps outstanding debt flat so a full repayment is exact.
+        let (_admin, investor, _treasury, token_address, client) =
+            setup_pool_with_rates(&env, 0u32, 0u32);
+        let sac = StellarAssetClient::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        client.set_borrower_active_loan_cap(&1);
+        sac.mint(&investor, &(principal * 4));
+        client.deposit(&investor, &(principal * 4), &Tranche::Senior);
+
+        let loan_a = BytesN::from_array(&env, &[0xA1u8; 32]);
+        let loan_b = BytesN::from_array(&env, &[0xB2u8; 32]);
+        let loan_c = BytesN::from_array(&env, &[0xC3u8; 32]);
+
+        // At the cap after one request.
+        client.request_loan(&borrower, &loan_a, &principal);
+        assert_eq!(
+            client
+                .try_request_loan(&borrower, &loan_b, &principal)
+                .unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+
+        // Cancelling the pending request frees the slot.
+        client.cancel_loan(&loan_a);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 0);
+
+        // A fresh loan can now be originated, taken through to full repayment.
+        client.request_loan(&borrower, &loan_b, &principal);
+        client.approve_loan(&loan_b);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_b, &borrower, &principal);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 1);
+
+        sac.mint(&borrower, &principal);
+        client.repay(&borrower, &loan_b, &principal);
+        assert_eq!(client.get_loan_info(&loan_b).status, LoanStatus::Repaid);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 0);
+
+        // Repaying the loan freed the slot for another origination.
+        client.request_loan(&borrower, &loan_c, &principal);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 1);
+    }
+
+    #[test]
+    fn test_active_loan_cap_setter_is_admin_only_and_zero_disables_it() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        // A non-admin cannot change the cap.
+        let attacker = Address::generate(&env);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_borrower_active_loan_cap",
+                    args: (1u32,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_borrower_active_loan_cap(&1);
+        assert!(result.is_err());
+
+        // Default (0) means no cap: the borrower can stack loans freely.
+        assert_eq!(client.get_borrower_active_loan_cap(), 0);
+        for seed in 0u8..4 {
+            let loan_id = BytesN::from_array(&env, &[seed; 32]);
+            client.request_loan(&borrower, &loan_id, &principal);
+        }
+        assert_eq!(client.get_borrower_active_loans(&borrower), 4);
+    }
+
     /// Deploys and initializes an InsurancePool bound to `client`, and wires
     /// the pool to route its disbursement premium there.
     fn setup_insurance<'a>(
@@ -4681,8 +6102,7 @@ mod test {
     ) -> insurance_pool::InsurancePoolContractClient<'a> {
         let insurance_admin = Address::generate(env);
         let insurance_id = env.register(insurance_pool::InsurancePoolContract, ());
-        let insurance =
-            insurance_pool::InsurancePoolContractClient::new(env, &insurance_id);
+        let insurance = insurance_pool::InsurancePoolContractClient::new(env, &insurance_id);
         insurance.initialize(&insurance_admin, token_address, &pool_client.address);
         pool_client.set_insurance_pool(&insurance_id);
         insurance
@@ -4719,7 +6139,7 @@ mod test {
 
         // The borrower still owes the gross amount — the fee is an
         // origination cost, not a reduction in debt.
-        let loan = client.get_loan(&loan_id).unwrap();
+        let loan = client.get_loan_info(&loan_id);
         assert_eq!(loan.disbursed, amount);
         assert_eq!(loan.outstanding_debt, amount);
     }
@@ -4752,7 +6172,10 @@ mod test {
 
         assert_eq!(insurance.get_reserves(), 0);
         assert_eq!(insurance.get_total_claimed(), reserves);
-        assert_eq!(token.balance(&client.address), pool_balance_before + reserves);
+        assert_eq!(
+            token.balance(&client.address),
+            pool_balance_before + reserves
+        );
     }
 
     #[test]
@@ -4914,8 +6337,11 @@ mod test {
         assert_eq!(info.epoch, 0u32);
         assert_eq!(info.reward_multiplier_bps, 10_000u32);
         assert_eq!(info.halving_interval, 1_000u32); // test constant
-        // next_halving = last_halving + interval; ledger is 0 at env start
-        assert_eq!(info.next_halving_ledger, info.last_halving_ledger + 1_000u32);
+                                                     // next_halving = last_halving + interval; ledger is 0 at env start
+        assert_eq!(
+            info.next_halving_ledger,
+            info.last_halving_ledger + 1_000u32
+        );
     }
 
     #[test]
@@ -5000,7 +6426,8 @@ mod test {
         let expected: &[u32] = &[10_000, 5_000, 2_500, 1_250];
 
         for (epoch, &expected_bps) in expected.iter().enumerate() {
-            env.ledger().set_sequence_number(genesis + (epoch as u32) * 1_000);
+            env.ledger()
+                .set_sequence_number(genesis + (epoch as u32) * 1_000);
             // trigger_halving commits the transition if due; get_reward_multiplier_bps
             // reflects the committed value.
             client.trigger_halving();
@@ -5037,7 +6464,9 @@ mod test {
         sac0.mint(&borrower0, &repay_amount0);
         client0.repay(&borrower0, &loan_id0, &repay_amount0);
 
-        let senior0_yield = client0.get_tranche_info(&Tranche::Senior).total_yield_distributed;
+        let senior0_yield = client0
+            .get_tranche_info(&Tranche::Senior)
+            .total_yield_distributed;
 
         // ── Epoch 1 pool ────────────────────────────────────────────────
         // Re-use the same env but register a fresh pool contract instance.
@@ -5046,17 +6475,26 @@ mod test {
         let token_address1 = token_id1.address();
         let sac1 = StellarAssetClient::new(&env, &token_address1);
 
-        let admin1   = Address::generate(&env);
+        let admin1 = Address::generate(&env);
         let investor1 = Address::generate(&env);
         let treasury1 = Address::generate(&env);
-        let escrow1   = Address::generate(&env);
+        let escrow1 = Address::generate(&env);
 
         sac1.mint(&investor1, &100_000_0000000i128);
 
         let contract_id1 = env.register(LendingPoolContract, ());
         let client1 = LendingPoolContractClient::new(&env, &contract_id1);
         // halving_interval = 500 so we can cross the boundary easily.
-        client1.initialize(&admin1, &token_address1, &escrow1, &800u32, &400u32, &treasury1, &500u32);
+        client1.initialize(
+            &admin1,
+            &token_address1,
+            &escrow1,
+            &800u32,
+            &400u32,
+            &treasury1,
+            &500u32,
+            &0u32,
+        );
 
         client1.deposit(&investor1, &100_000_0000000i128, &Tranche::Senior);
 
@@ -5077,7 +6515,9 @@ mod test {
         // This repay call internally calls apply_halving_if_due → epoch transitions → 50 % multiplier.
         client1.repay(&borrower1, &loan_id1, &repay_amount1);
 
-        let senior1_yield = client1.get_tranche_info(&Tranche::Senior).total_yield_distributed;
+        let senior1_yield = client1
+            .get_tranche_info(&Tranche::Senior)
+            .total_yield_distributed;
 
         // The epoch-1 yield must be exactly half of the epoch-0 yield.
         assert_eq!(
@@ -5114,16 +6554,18 @@ mod test {
         let genesis = client.get_halving_info().last_halving_ledger;
         env.ledger().set_sequence_number(genesis + 1); // still epoch 0
         client.repay(&borrower, &loan_id, &54_000_0000000i128);
-        let yield_after_epoch0_repay =
-            client.get_tranche_info(&Tranche::Senior).total_yield_distributed;
+        let yield_after_epoch0_repay = client
+            .get_tranche_info(&Tranche::Senior)
+            .total_yield_distributed;
 
         // ── Advance past one halving interval ───────────────────────────
         env.ledger().set_sequence_number(genesis + 1_001); // epoch 1 now
 
         // ── Repayment 2: epoch 1 (50 % multiplier) ──────────────────────
         client.repay(&borrower, &loan_id, &54_000_0000000i128);
-        let yield_after_epoch1_repay =
-            client.get_tranche_info(&Tranche::Senior).total_yield_distributed;
+        let yield_after_epoch1_repay = client
+            .get_tranche_info(&Tranche::Senior)
+            .total_yield_distributed;
 
         // The increment from the second repayment must be smaller (epoch-1 rate).
         let delta0 = yield_after_epoch0_repay;
@@ -5138,8 +6580,7 @@ mod test {
         );
         // Historical (pre-halving) yield booked before the transition is unchanged.
         assert_eq!(
-            yield_after_epoch0_repay,
-            delta0,
+            yield_after_epoch0_repay, delta0,
             "pre-halving yield accumulator should not be retroactively modified"
         );
     }
@@ -5150,10 +6591,10 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let admin    = Address::generate(&env);
+        let admin = Address::generate(&env);
         let investor = Address::generate(&env);
         let treasury = Address::generate(&env);
-        let escrow   = Address::generate(&env);
+        let escrow = Address::generate(&env);
 
         let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
@@ -5163,7 +6604,16 @@ mod test {
 
         let contract_id = env.register(LendingPoolContract, ());
         let client = LendingPoolContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_address, &escrow, &800u32, &400u32, &treasury, &2_500u32);
+        client.initialize(
+            &admin,
+            &token_address,
+            &escrow,
+            &800u32,
+            &400u32,
+            &treasury,
+            &2_500u32,
+            &0u32,
+        );
 
         let info = client.get_halving_info();
         assert_eq!(info.halving_interval, 2_500u32);
@@ -5192,10 +6642,14 @@ mod test {
 
         // Pure read — epoch must still be 0 since trigger_halving was never called.
         let info = client.get_halving_info();
-        assert_eq!(info.epoch, 0u32,
-            "get_halving_info must not mutate epoch state");
-        assert_eq!(info.reward_multiplier_bps, 10_000u32,
-            "get_halving_info must return stale (epoch 0) multiplier without triggering");
+        assert_eq!(
+            info.epoch, 0u32,
+            "get_halving_info must not mutate epoch state"
+        );
+        assert_eq!(
+            info.reward_multiplier_bps, 10_000u32,
+            "get_halving_info must return stale (epoch 0) multiplier without triggering"
+        );
     }
 
     // ── Loan Cancellation Tests ──────────────────────────────────────────
@@ -5360,14 +6814,15 @@ mod test {
         let loan_id = mock_loan_id(env);
         let investor = Address::generate(env);
         let sac = StellarAssetClient::new(env, token_address);
-        sac.mint(investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(borrower, &loan_id, &principal);
         client.approve_loan(&loan_id);
         client.add_contractor(borrower);
         client.disburse(&loan_id, borrower, &principal);
         // Advance 1 compound period so interest accrues.
-        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100);
         // Give the borrower enough for principal + interest.
         sac.mint(borrower, &(principal + principal / 10));
         loan_id
@@ -5382,7 +6837,8 @@ mod test {
         let borrower = Address::generate(&env);
         let principal = 10_000_0000000i128;
 
-        let loan_id = setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
+        let loan_id =
+            setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
 
         // Full repayment: principal + 8% interest = 10,800
         let interest = (principal * 800) / 10_000;
@@ -5396,7 +6852,7 @@ mod test {
         assert!(lifetime_interest > 0);
 
         // Claim the rebate — should be 10% of interest paid.
-        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        let rebate = client.claim_maturity_rebate(&loan_id);
         let expected_rebate = lifetime_interest / 10;
         assert_eq!(rebate, expected_rebate);
         assert!(rebate > 0);
@@ -5412,13 +6868,14 @@ mod test {
 
         // Use a 0% interest pool to isolate the interest tracking.
         // Actually we need interest to be paid, so use 10% pool for easy math.
-        let (admin, investor, treasury, token_address, client) = setup_pool_with_rates(&env, 1000u32, 500u32);
+        let (admin, investor, treasury, token_address, client) =
+            setup_pool_with_rates(&env, 1000u32, 500u32);
         let borrower = Address::generate(&env);
         let loan_id = mock_loan_id(&env);
         let principal = 100_000_0000000i128; // 100k
 
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
         client.approve_loan(&loan_id);
@@ -5426,12 +6883,13 @@ mod test {
         client.disburse(&loan_id, &borrower, &principal);
 
         // Advance 1 compound period so interest accrues.
-        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100);
 
         // Repay principal + 10% interest = 110,000
         let interest = (principal * 1000) / 10_000; // 10% = 10,000
         let total_owed = principal + interest;
-        sac.mint(&borrower, total_owed);
+        sac.mint(&borrower, &total_owed);
         client.repay(&borrower, &loan_id, &total_owed);
 
         let lifetime_interest = client.get_borrower_lifetime_interest(&borrower);
@@ -5440,7 +6898,7 @@ mod test {
         assert!(lifetime_interest >= 9_000_0000000i128);
 
         // Rebate should be exactly lifetime_interest / 10.
-        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        let rebate = client.claim_maturity_rebate(&loan_id);
         assert_eq!(rebate, lifetime_interest / 10);
     }
 
@@ -5453,14 +6911,15 @@ mod test {
         let borrower = Address::generate(&env);
         let principal = 10_000_0000000i128;
 
-        let loan_id = setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
+        let loan_id =
+            setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
 
         let interest = (principal * 800) / 10_000;
         let total_owed = principal + interest;
         client.repay(&borrower, &loan_id, &total_owed);
 
         // First claim succeeds.
-        let rebate = client.claim_maturity_rebate(&loan_id).unwrap();
+        let rebate = client.claim_maturity_rebate(&loan_id);
         assert!(rebate > 0);
 
         // Second claim fails with RebateAlreadyClaimed.
@@ -5481,7 +6940,7 @@ mod test {
         let loan_id = mock_loan_id(&env);
         let investor = Address::generate(&env);
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
         client.approve_loan(&loan_id);
@@ -5490,12 +6949,19 @@ mod test {
 
         // Manually set missed payments to 1 via direct storage access.
         env.as_contract(&client.address, || {
-            let mut sched: RepaymentSchedule = env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap();
+            let mut sched: RepaymentSchedule = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LoanSchedule(loan_id.clone()))
+                .unwrap();
             sched.payments_missed = 1;
-            env.storage().persistent().set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
         });
 
-        env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100);
 
         sac.mint(&borrower, &(principal + principal / 10));
         let interest = (principal * 800) / 10_000;
@@ -5507,11 +6973,301 @@ mod test {
         assert_eq!(loan.status, LoanStatus::Repaid);
 
         let result = client.try_claim_maturity_rebate(&loan_id);
-        assert_eq!(result.unwrap_err(), Ok(PoolError::MissedPaymentsPreventRebate));
+        assert_eq!(
+            result.unwrap_err(),
+            Ok(PoolError::MissedPaymentsPreventRebate)
+        );
     }
 
     #[test]
     fn test_maturity_rebate_fails_if_loan_not_repaid() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        let loan_id = mock_loan_id(&env);
+        let investor = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, &(principal * 2));
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+
+        // Loan is live, not repaid — the rebate is not available yet.
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Approved);
+
+        let result = client.try_claim_maturity_rebate(&loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::InvalidLoanState));
+    }
+
+    // ── Protocol Fee Switch Tests ─────────────────────────────────────────
+
+    /// 10 000 USDC at the pool's default 8% rate.
+    const FEE_TEST_PRINCIPAL: i128 = 10_000_0000000i128;
+
+    /// Outcome of one full loan cycle run at a given fee-switch setting.
+    struct FeeSwitchRun {
+        /// Tokens actually received by the treasury address.
+        treasury_balance: i128,
+        /// Running total the pool reports for fees routed by the switch.
+        reported_fees: i128,
+        /// Interest credited to the senior and junior tranches combined.
+        distributed_yield: i128,
+        /// Pool's tracked liquidity after the repayment.
+        tracked_liquidity: i128,
+        /// Pool contract's real token balance after the repayment.
+        actual_balance: i128,
+    }
+
+    /// Runs a complete deposit → borrow → disburse → repay cycle in a fresh
+    /// environment with the fee switch set to `fee_bps`, and reports what the
+    /// treasury and the tranches ended up with.
+    ///
+    /// Each run is self-contained so two settings can be compared directly,
+    /// which is what the acceptance criteria are about: the treasury's take
+    /// must grow with `fee_bps`, and it must come out of investor yield.
+    fn run_fee_switch_cycle(fee_bps: u32) -> FeeSwitchRun {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _unused_investor, treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+
+        if fee_bps > 0 {
+            let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+            client.set_multisig_validator(&validator_addr);
+            client.set_fee_switch_bps(&fee_bps, &signers);
+        }
+
+        let borrower = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let principal = FEE_TEST_PRINCIPAL;
+
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, &(principal * 2));
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+
+        let loan_id = mock_loan_id(&env);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+
+        // Clear the whole debt in one payment. Reading `outstanding_debt`
+        // rather than assuming principal + interest keeps the test honest if
+        // interest has compounded.
+        sac.mint(&borrower, &principal);
+        let owed = client.get_loan_info(&loan_id).outstanding_debt;
+        client.repay(&borrower, &loan_id, &owed);
+
+        let senior = client.get_tranche_info(&Tranche::Senior);
+        let junior = client.get_tranche_info(&Tranche::Junior);
+
+        FeeSwitchRun {
+            treasury_balance: token.balance(&treasury),
+            reported_fees: client.get_total_protocol_fees(),
+            distributed_yield: senior.total_yield_distributed + junior.total_yield_distributed,
+            tracked_liquidity: client.get_pool_health().total_liquidity,
+            actual_balance: token.balance(&client.address),
+        }
+    }
+
+    #[test]
+    fn test_fee_switch_defaults_to_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        // Acceptance criterion: off until governance turns it on.
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+        assert_eq!(client.get_total_protocol_fees(), 0i128);
+    }
+
+    #[test]
+    fn test_repay_routes_no_fee_while_switch_is_off() {
+        let run = run_fee_switch_cycle(0);
+
+        assert_eq!(run.treasury_balance, 0i128);
+        assert_eq!(run.reported_fees, 0i128);
+        // Every unit of interest reached the tranches.
+        assert!(run.distributed_yield > 0);
+    }
+
+    #[test]
+    fn test_fee_switch_routes_interest_to_treasury() {
+        let run = run_fee_switch_cycle(1_000);
+
+        // The treasury actually holds the tokens, and the pool's running
+        // total agrees with the on-chain balance.
+        assert!(run.treasury_balance > 0);
+        assert_eq!(run.treasury_balance, run.reported_fees);
+
+        // The fee is 10% of the interest that flowed through the waterfall.
+        let interest = run.reported_fees + run.distributed_yield;
+        assert_eq!(run.reported_fees, interest / 10);
+    }
+
+    #[test]
+    fn test_fee_switch_deducts_before_investor_yield() {
+        let off = run_fee_switch_cycle(0);
+        let on = run_fee_switch_cycle(1_000);
+
+        // Same loan, same interest — the switch only changes who receives it.
+        let interest_off = off.distributed_yield;
+        let interest_on = on.reported_fees + on.distributed_yield;
+        assert_eq!(interest_off, interest_on);
+
+        // Acceptance criterion: the fee comes out of investor yield, and the
+        // two together still account for every stroop of interest.
+        assert_eq!(on.distributed_yield, interest_off - on.reported_fees);
+        assert!(on.distributed_yield < off.distributed_yield);
+    }
+
+    #[test]
+    fn test_treasury_take_scales_with_configured_bps() {
+        let low = run_fee_switch_cycle(1_000);
+        let high = run_fee_switch_cycle(2_500);
+
+        let interest = low.reported_fees + low.distributed_yield;
+        assert_eq!(low.treasury_balance, (interest * 1_000) / 10_000);
+        assert_eq!(high.treasury_balance, (interest * 2_500) / 10_000);
+        assert!(high.treasury_balance > low.treasury_balance);
+    }
+
+    #[test]
+    fn test_fee_switch_at_cap_routes_half_the_interest() {
+        let run = run_fee_switch_cycle(MAX_FEE_SWITCH_BPS);
+
+        let interest = run.reported_fees + run.distributed_yield;
+        assert_eq!(run.reported_fees, interest / 2);
+    }
+
+    #[test]
+    fn test_fee_switch_nets_off_pool_liquidity() {
+        let run = run_fee_switch_cycle(1_000);
+
+        // Fees forwarded to the treasury have left the pool, so tracked
+        // liquidity must not count them as lendable capital.
+        assert!(run.treasury_balance > 0);
+        assert_eq!(run.tracked_liquidity, run.actual_balance);
+    }
+
+    #[test]
+    fn test_fee_switch_can_be_turned_back_off() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+
+        client.set_fee_switch_bps(&1_000u32, &signers);
+        assert_eq!(client.get_fee_switch_bps(), 1_000u32);
+
+        client.set_fee_switch_bps(&0u32, &signers);
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+    }
+
+    #[test]
+    fn test_fee_switch_rejects_rate_above_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+
+        let result = client.try_set_fee_switch_bps(&(MAX_FEE_SWITCH_BPS + 1), &signers);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::FeeSwitchTooHigh));
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+
+        // The cap itself is still reachable.
+        client.set_fee_switch_bps(&MAX_FEE_SWITCH_BPS, &signers);
+        assert_eq!(client.get_fee_switch_bps(), MAX_FEE_SWITCH_BPS);
+    }
+
+    #[test]
+    fn test_fee_switch_fails_closed_without_a_multisig() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Note: no `set_multisig_validator` — governance is not wired up.
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        let signers: Vec<Address> = soroban_sdk::vec![&env, Address::generate(&env)];
+        let result = client.try_set_fee_switch_bps(&1_000u32, &signers);
+
+        assert_eq!(result.unwrap_err(), Ok(PoolError::MultisigValidatorNotSet));
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+    }
+
+    #[test]
+    fn test_fee_switch_rejects_signers_below_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+
+        // One signature against a 2-of-3 threshold.
+        let lone: Vec<Address> = soroban_sdk::vec![&env, signers.get(0).unwrap()];
+        let result = client.try_set_fee_switch_bps(&1_000u32, &lone);
+
+        assert!(result.is_err());
+        assert_eq!(client.get_fee_switch_bps(), 0u32);
+    }
+
+    #[test]
+    fn test_fee_switch_accrues_across_multiple_repayments() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, _unused, treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+        client.set_fee_switch_bps(&1_000u32, &signers);
+
+        let borrower = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let principal = FEE_TEST_PRINCIPAL;
+
+        let sac = StellarAssetClient::new(&env, &token_address);
+        sac.mint(&investor, &(principal * 2));
+        client.deposit(&investor, &(principal * 2), &Tranche::Senior);
+
+        let loan_id = mock_loan_id(&env);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &principal);
+        sac.mint(&borrower, &principal);
+
+        let owed = client.get_loan_info(&loan_id).outstanding_debt;
+        let half = owed / 2;
+
+        client.repay(&borrower, &loan_id, &half);
+        let after_first = token.balance(&treasury);
+        assert!(after_first > 0);
+
+        client.repay(&borrower, &loan_id, &(owed - half));
+
+        // Fees accumulate across payments rather than being overwritten, and
+        // the running total keeps matching what the treasury holds.
+        let total = token.balance(&treasury);
+        assert!(total > after_first);
+        assert_eq!(client.get_total_protocol_fees(), total);
+    }
+
     // ── Debt Restructuring Tests ──────────────────────────────────────────
 
     /// Helper: deploy and configure a MultisigValidator contract with a 2-of-3
@@ -5519,7 +7275,11 @@ mod test {
     fn setup_multisig<'a>(
         env: &'a Env,
         pool_admin: &'a Address,
-    ) -> (Address, Vec<Address>, multisig_validator::MultisigValidatorClient<'a>) {
+    ) -> (
+        Address,
+        Vec<Address>,
+        multisig_validator::MultisigValidatorClient<'a>,
+    ) {
         let validator_id = env.register(multisig_validator::MultisigValidator, ());
         let validator = multisig_validator::MultisigValidatorClient::new(env, &validator_id);
 
@@ -5642,7 +7402,10 @@ mod test {
 
         // Second proposal should fail
         let res = client.try_propose_restructure(&loan_id, &new_schedule);
-        assert_eq!(res.err().unwrap().unwrap(), PoolError::RestructureProposalExists);
+        assert_eq!(
+            res.err().unwrap().unwrap(),
+            PoolError::RestructureProposalExists
+        );
     }
 
     #[test]
@@ -5701,7 +7464,7 @@ mod test {
         let principal = 10_000_0000000i128;
 
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
         client.approve_loan(&loan_id);
@@ -5720,7 +7483,8 @@ mod test {
         let borrower = Address::generate(&env);
         let principal = 10_000_0000000i128;
 
-        let loan_id = setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
+        let loan_id =
+            setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
 
         let interest = (principal * 800) / 10_000;
         let total_owed = principal + interest;
@@ -5733,7 +7497,12 @@ mod test {
     }
 
     #[test]
-    fn test_maturity_rebate_reverted_on_cancelled_loan() {
+    fn test_approve_restructure_fails_without_multisig() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
         let loan_id = BytesN::from_array(&env, &[24u8; 32]);
 
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
@@ -5752,7 +7521,10 @@ mod test {
         // No multisig configured
         let signers = soroban_sdk::vec![&env];
         let res = client.try_approve_restructure(&loan_id, &signers);
-        assert_eq!(res.err().unwrap().unwrap(), PoolError::MultisigValidatorNotSet);
+        assert_eq!(
+            res.err().unwrap().unwrap(),
+            PoolError::MultisigValidatorNotSet
+        );
     }
 
     #[test]
@@ -5775,7 +7547,16 @@ mod test {
         let escrow = Address::generate(&env);
         let contract_id = env.register(LendingPoolContract, ());
         let client = LendingPoolContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_address, &escrow, &800u32, &400u32, &treasury, &0u32);
+        client.initialize(
+            &admin,
+            &token_address,
+            &escrow,
+            &800u32,
+            &400u32,
+            &treasury,
+            &0u32,
+            &0u32,
+        );
 
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &50_000_0000000i128);
@@ -5783,11 +7564,16 @@ mod test {
 
         // Directly set payments_missed > 0 via storage to simulate missed payments
         let mut sched: RepaymentSchedule = env.as_contract(&contract_id, || {
-            env.storage().persistent().get(&DataKey::LoanSchedule(loan_id.clone())).unwrap()
+            env.storage()
+                .persistent()
+                .get(&DataKey::LoanSchedule(loan_id.clone()))
+                .unwrap()
         });
         sched.payments_missed = 3;
         env.as_contract(&contract_id, || {
-            env.storage().persistent().set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
         });
 
         // Verify misses were set
@@ -5828,7 +7614,7 @@ mod test {
         let principal = 10_000_0000000i128;
 
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
         client.cancel_loan(&loan_id);
@@ -5839,7 +7625,12 @@ mod test {
     }
 
     #[test]
-    fn test_maturity_rebate_reverted_on_requested_loan() {
+    fn test_restructure_applies_new_terms_after_approval() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
         let loan_id = BytesN::from_array(&env, &[26u8; 32]);
 
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
@@ -5876,7 +7667,7 @@ mod test {
     }
 
     #[test]
-    fn test_cancel_restructure_by_borrower() {
+    fn test_maturity_rebate_reverted_on_requested_loan() {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -5886,7 +7677,7 @@ mod test {
         let principal = 10_000_0000000i128;
 
         let sac = StellarAssetClient::new(&env, &token_address);
-        sac.mint(&investor, principal * 2);
+        sac.mint(&investor, &(principal * 2));
         client.deposit(&investor, &(principal * 2), &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &principal);
 
@@ -5904,7 +7695,8 @@ mod test {
         let borrower = Address::generate(&env);
         let principal = 10_000_0000000i128;
 
-        let loan_id = setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
+        let loan_id =
+            setup_loan_for_full_repayment(&env, &client, &token_address, &borrower, principal);
 
         // Before repayment — lifetime interest is zero.
         assert_eq!(client.get_borrower_lifetime_interest(&borrower), 0);
@@ -5920,6 +7712,15 @@ mod test {
         // With compound interest after 1 period it may be slightly different.
         let expected_interest = total_owed - principal;
         assert!(lifetime >= expected_interest - 10); // allow small rounding
+    }
+
+    #[test]
+    fn test_cancel_restructure_by_borrower() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
         let loan_id = BytesN::from_array(&env, &[27u8; 32]);
 
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
@@ -5983,6 +7784,667 @@ mod test {
         client.approve_loan(&loan_id);
 
         let res = client.try_cancel_restructure(&loan_id, &_admin);
-        assert_eq!(res.err().unwrap().unwrap(), PoolError::NoRestructureProposal);
+        assert_eq!(
+            res.err().unwrap().unwrap(),
+            PoolError::NoRestructureProposal
+        );
+    }
+
+    // ── Lockup Period Tests ──────────────────────────────────────────
+
+    /// Helper: deploy a pool with a non-zero lockup_duration_ledgers.
+    fn setup_pool_with_lockup(
+        env: &Env,
+        lockup_ledgers: u32,
+    ) -> (
+        Address,
+        Address,
+        Address,
+        Address,
+        LendingPoolContractClient<'_>,
+    ) {
+        let admin = Address::generate(env);
+        let investor = Address::generate(env);
+        let treasury = Address::generate(env);
+        let token_admin = Address::generate(env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let sac = StellarAssetClient::new(env, &token_address);
+        sac.mint(&investor, &100_000_0000000i128);
+        let escrow = Address::generate(env);
+        let contract_id = env.register(LendingPoolContract, ());
+        let client = LendingPoolContractClient::new(env, &contract_id);
+        client.initialize(
+            &admin,
+            &token_address,
+            &escrow,
+            &800u32,
+            &400u32,
+            &treasury,
+            &0u32,
+            &lockup_ledgers,
+        );
+        (admin, investor, treasury, token_address, client)
+    }
+
+    #[test]
+    fn test_withdraw_blocked_during_lockup() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let lockup = 518_400u32; // ~30 days of ledgers
+        let (_admin, investor, _treasury, _token, client) = setup_pool_with_lockup(&env, lockup);
+
+        // Deposit at ledger 1.
+        env.ledger().set_sequence_number(1);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        // Try to withdraw before the lockup has elapsed.
+        env.ledger().set_sequence_number(1 + lockup - 1); // one ledger before expiry
+        let res = client.try_withdraw(&investor, &10_000_0000000i128);
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::LockupPeriodActive);
+
+        // Exactly at expiry boundary — still blocked (strict < check).
+        env.ledger().set_sequence_number(1 + lockup);
+        let res = client.try_withdraw(&investor, &10_000_0000000i128);
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::LockupPeriodActive);
+    }
+
+    #[test]
+    fn test_withdraw_allowed_after_lockup() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let lockup = 518_400u32;
+        let (_admin, investor, _treasury, _token, client) = setup_pool_with_lockup(&env, lockup);
+
+        // Deposit at ledger 1.
+        env.ledger().set_sequence_number(1);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        // Advance past the lockup period.
+        env.ledger().set_sequence_number(1 + lockup + 1);
+        client.withdraw(&investor, &10_000_0000000i128);
+
+        let record = client.get_investor_info(&investor);
+        assert_eq!(record.deposited, 40_000_0000000i128);
+    }
+
+    #[test]
+    fn test_withdraw_no_lockup_when_config_is_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Pool created with lockup = 0 (default from setup_pool).
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+
+        env.ledger().set_sequence_number(1);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        // Immediate withdrawal succeeds because lockup is disabled.
+        client.withdraw(&investor, &10_000_0000000i128);
+
+        let record = client.get_investor_info(&investor);
+        assert_eq!(record.deposited, 40_000_0000000i128);
+    }
+
+    // ── Maximum single-transaction withdrawal limit ──────────────────────
+
+    /// The cap is off at deployment, so nothing changes for existing pools
+    /// until an admin opts in.
+    #[test]
+    fn test_max_single_withdrawal_defaults_to_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+
+        assert_eq!(client.get_max_single_withdrawal(), 0i128);
+        assert_eq!(client.get_pool_config().max_single_withdrawal, 0i128);
+
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        // A large single withdrawal is accepted while the cap is disabled.
+        client.withdraw(&investor, &50_000_0000000i128);
+        assert_eq!(client.get_investor_info(&investor).deposited, 0i128);
+    }
+
+    #[test]
+    fn test_set_max_single_withdrawal_updates_config() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        assert_eq!(client.get_max_single_withdrawal(), 10_000_0000000i128);
+        assert_eq!(
+            client.get_pool_config().max_single_withdrawal,
+            10_000_0000000i128
+        );
+    }
+
+    #[test]
+    fn test_set_max_single_withdrawal_rejects_negative() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        let result = client.try_set_max_single_withdrawal(&-1i128);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::InvalidAmount);
+        assert_eq!(client.get_max_single_withdrawal(), 0i128);
+    }
+
+    #[test]
+    fn test_non_admin_cannot_set_max_single_withdrawal() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let attacker = Address::generate(&env);
+
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_max_single_withdrawal",
+                    args: (10_000_0000000i128,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_max_single_withdrawal(&10_000_0000000i128);
+
+        assert!(result.is_err());
+        assert_eq!(client.get_max_single_withdrawal(), 0i128);
+    }
+
+    /// Withdrawing exactly at the configured limit is allowed — the check is
+    /// `amount > limit`, not `>=`.
+    #[test]
+    fn test_withdraw_at_limit_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        client.withdraw(&investor, &10_000_0000000i128);
+        assert_eq!(client.get_investor_info(&investor).deposited, 40_000_0000000i128);
+    }
+
+    #[test]
+    fn test_withdraw_just_below_limit_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        client.withdraw(&investor, &9_999_9999999i128);
+        assert_eq!(
+            client.get_investor_info(&investor).deposited,
+            40_000_0000001i128
+        );
+    }
+
+    /// A withdrawal of one stroop over the limit is rejected outright — the
+    /// caller must split it across multiple calls instead.
+    #[test]
+    fn test_withdraw_above_limit_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        let result = client.try_withdraw(&investor, &10_000_0000001i128);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::WithdrawalExceedsMaxSingleLimit
+        );
+        // Rejected withdrawal must not touch the investor's balance.
+        assert_eq!(client.get_investor_info(&investor).deposited, 50_000_0000000i128);
+    }
+
+    /// A position larger than the per-call limit must be drained across
+    /// multiple sequential withdrawals, each individually within the cap.
+    #[test]
+    fn test_withdraw_above_limit_requires_multiple_sequential_calls() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.deposit(&investor, &25_000_0000000i128, &Tranche::Senior);
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        // One call for the full amount is rejected.
+        let result = client.try_withdraw(&investor, &25_000_0000000i128);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::WithdrawalExceedsMaxSingleLimit
+        );
+
+        // Three sequential calls, each at or below the cap, succeed.
+        client.withdraw(&investor, &10_000_0000000i128);
+        client.withdraw(&investor, &10_000_0000000i128);
+        client.withdraw(&investor, &5_000_0000000i128);
+
+        assert_eq!(client.get_investor_info(&investor).deposited, 0i128);
+    }
+
+    /// Setting the cap must not disturb any other config field.
+    #[test]
+    fn test_set_max_single_withdrawal_preserves_other_config_fields() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let before = client.get_pool_config();
+
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        let after = client.get_pool_config();
+        assert_eq!(after.max_single_withdrawal, 10_000_0000000i128);
+        assert_eq!(after.admin, before.admin);
+        assert_eq!(after.token, before.token);
+        assert_eq!(after.escrow, before.escrow);
+        assert_eq!(after.interest_rate_bps, before.interest_rate_bps);
+        assert_eq!(after.senior_rate_bps, before.senior_rate_bps);
+        assert_eq!(after.treasury_address, before.treasury_address);
+        assert_eq!(after.min_deposit_amount, before.min_deposit_amount);
+        assert_eq!(
+            after.refinance_cooldown_ledgers,
+            before.refinance_cooldown_ledgers
+        );
+    }
+
+    // ── Minimum deposit amount (dust guard) ──────────────────────────────
+
+    /// The floor is off at deployment, so nothing changes for existing pools
+    /// until an admin opts in.
+    #[test]
+    fn test_min_deposit_defaults_to_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+
+        assert_eq!(client.get_min_deposit_amount(), 0i128);
+        assert_eq!(client.get_pool_config().min_deposit_amount, 0i128);
+
+        // A single stroop is accepted while the floor is disabled.
+        client.deposit(&investor, &1i128, &Tranche::Senior);
+        assert_eq!(client.get_liquidity(), 1i128);
+    }
+
+    #[test]
+    fn test_set_min_deposit_amount_updates_config() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        assert_eq!(client.get_min_deposit_amount(), 100_0000000i128);
+        assert_eq!(client.get_pool_config().min_deposit_amount, 100_0000000i128);
+    }
+
+    /// Setting the floor must not disturb any other config field.
+    #[test]
+    fn test_set_min_deposit_preserves_other_config_fields() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let before = client.get_pool_config();
+
+        client.set_min_deposit_amount(&250_0000000i128);
+        let after = client.get_pool_config();
+
+        assert_eq!(after.admin, before.admin);
+        assert_eq!(after.token, before.token);
+        assert_eq!(after.escrow, before.escrow);
+        assert_eq!(after.interest_rate_bps, before.interest_rate_bps);
+        assert_eq!(after.senior_rate_bps, before.senior_rate_bps);
+        assert_eq!(after.treasury_address, before.treasury_address);
+        assert_eq!(after.fee_switch_bps, before.fee_switch_bps);
+        assert_eq!(
+            after.lockup_duration_ledgers,
+            before.lockup_duration_ledgers
+        );
+        assert_eq!(after.min_deposit_amount, 250_0000000i128);
+    }
+
+    #[test]
+    fn test_set_min_deposit_rejects_negative() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        let result = client.try_set_min_deposit_amount(&-1i128);
+        assert_eq!(result, Err(Ok(PoolError::InvalidAmount)));
+        assert_eq!(client.get_min_deposit_amount(), 0i128);
+    }
+
+    /// Boundary: just below the minimum is rejected.
+    #[test]
+    fn test_deposit_just_below_minimum_reverts() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        let minimum = 100_0000000i128;
+        client.set_min_deposit_amount(&minimum);
+
+        let result = client.try_deposit(&investor, &(minimum - 1), &Tranche::Senior);
+        assert_eq!(result, Err(Ok(PoolError::DepositBelowMinimum)));
+    }
+
+    /// Boundary: exactly the minimum is accepted.
+    #[test]
+    fn test_deposit_exactly_at_minimum_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        let minimum = 100_0000000i128;
+        client.set_min_deposit_amount(&minimum);
+
+        client.deposit(&investor, &minimum, &Tranche::Senior);
+
+        assert_eq!(client.get_liquidity(), minimum);
+        assert_eq!(client.get_investor_info(&investor).deposited, minimum);
+    }
+
+    /// Boundary: above the minimum is unaffected by the check.
+    #[test]
+    fn test_deposit_above_minimum_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        let minimum = 100_0000000i128;
+        client.set_min_deposit_amount(&minimum);
+
+        client.deposit(&investor, &(minimum + 1), &Tranche::Senior);
+
+        assert_eq!(client.get_liquidity(), minimum + 1);
+    }
+
+    /// The acceptance criterion: a rejected deposit must leave pool state and
+    /// the investor's token balance exactly as they were.
+    #[test]
+    fn test_rejected_dust_deposit_leaves_state_untouched() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        // Establish a real position first, so we are asserting that the
+        // rejected call changes nothing rather than that everything is zero.
+        client.deposit(&investor, &500_0000000i128, &Tranche::Senior);
+
+        let liquidity_before = client.get_liquidity();
+        let record_before = client.get_investor_info(&investor);
+        let tranche_before = client.get_tranche_info(&Tranche::Senior);
+        let investor_balance_before = token.balance(&investor);
+        let pool_balance_before = token.balance(&client.address);
+
+        let result = client.try_deposit(&investor, &1i128, &Tranche::Senior);
+        assert_eq!(result, Err(Ok(PoolError::DepositBelowMinimum)));
+
+        assert_eq!(client.get_liquidity(), liquidity_before);
+        assert_eq!(client.get_investor_info(&investor), record_before);
+        assert_eq!(client.get_tranche_info(&Tranche::Senior), tranche_before);
+        // No tokens moved — the guard runs before the transfer.
+        assert_eq!(token.balance(&investor), investor_balance_before);
+        assert_eq!(token.balance(&client.address), pool_balance_before);
+    }
+
+    /// A flood of dust deposits is rejected wholesale, which is the griefing
+    /// vector the floor exists to close.
+    #[test]
+    fn test_dust_flood_is_rejected_wholesale() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        for amount in 1i128..=25i128 {
+            let result = client.try_deposit(&investor, &amount, &Tranche::Senior);
+            assert_eq!(result, Err(Ok(PoolError::DepositBelowMinimum)));
+        }
+
+        // Not a single record was created.
+        assert_eq!(client.get_liquidity(), 0i128);
+        assert_eq!(client.get_investor_info(&investor).deposited, 0i128);
+    }
+
+    /// Zero and negative amounts keep reporting InvalidAmount rather than
+    /// being reclassified by the new floor.
+    #[test]
+    fn test_zero_deposit_still_reports_invalid_amount_under_a_floor() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        assert_eq!(
+            client.try_deposit(&investor, &0i128, &Tranche::Senior),
+            Err(Ok(PoolError::InvalidAmount))
+        );
+        assert_eq!(
+            client.try_deposit(&investor, &-5i128, &Tranche::Senior),
+            Err(Ok(PoolError::InvalidAmount))
+        );
+    }
+
+    /// Lowering the floor re-admits amounts that were previously rejected;
+    /// raising it never touches capital already deposited.
+    #[test]
+    fn test_min_deposit_is_reconfigurable_and_not_retroactive() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+
+        client.set_min_deposit_amount(&100_0000000i128);
+        client.deposit(&investor, &100_0000000i128, &Tranche::Senior);
+
+        // Raise the floor above the existing position.
+        client.set_min_deposit_amount(&1_000_0000000i128);
+        assert_eq!(
+            client.get_investor_info(&investor).deposited,
+            100_0000000i128
+        );
+        assert_eq!(
+            client.try_deposit(&investor, &100_0000000i128, &Tranche::Senior),
+            Err(Ok(PoolError::DepositBelowMinimum))
+        );
+
+        // Disable it again and the same amount is accepted.
+        client.set_min_deposit_amount(&0i128);
+        client.deposit(&investor, &100_0000000i128, &Tranche::Senior);
+        assert_eq!(
+            client.get_investor_info(&investor).deposited,
+            200_0000000i128
+        );
+    }
+
+    /// The floor applies per tranche-agnostic deposit call, junior included.
+    #[test]
+    fn test_min_deposit_applies_to_junior_tranche_too() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.set_min_deposit_amount(&100_0000000i128);
+
+        assert_eq!(
+            client.try_deposit(&investor, &1i128, &Tranche::Junior),
+            Err(Ok(PoolError::DepositBelowMinimum))
+        );
+        client.deposit(&investor, &100_0000000i128, &Tranche::Junior);
+        assert_eq!(
+            client.get_tranche_info(&Tranche::Junior).total_deposited,
+            100_0000000i128
+        );
+    }
+
+    // ── Partial Collateral Release Tests ──────────────────────────────────
+
+    #[test]
+    fn test_sequential_partial_collateral_releases_scale_with_paydown() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+
+        // Initial investor deposit: 100k
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+
+        // Request and approve a 70k loan with 30k collateral (70/30 standard)
+        let principal = 70_000_0000000i128;
+        let initial_collateral = 30_000_0000000i128;
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+        client.set_loan_collateral(&loan_id, &initial_collateral, &3_000u32); // 30% min ratio
+
+        // Before any repayment, releasable collateral is 0
+        let (releasable, remaining_c, ratio) = client.get_releasable_collateral(&loan_id);
+        assert_eq!(releasable, 0i128);
+        assert_eq!(remaining_c, initial_collateral);
+        assert_eq!(ratio, 4_285u32); // 30k / 70k ≈ 42.85%
+
+        // Attempting release with 0 repayment returns an error
+        let res = client.try_release_collateral_by_id(&loan_id);
+        assert!(res.is_err());
+
+        // Mint tokens to borrower for repayment
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        sac.mint(&borrower, &100_000_0000000i128);
+
+        // Repayment 1: Pay 35k principal (50% paydown)
+        client.repay(&borrower, &loan_id, &35_000_0000000i128);
+
+        // After 50% paydown, earned release is 50% of 30k = 15k
+        let (releasable_1, rem_1, ratio_1) = client.get_releasable_collateral(&loan_id);
+        assert_eq!(releasable_1, 15_000_0000000i128);
+        assert_eq!(rem_1, 15_000_0000000i128);
+        assert_eq!(ratio_1, 4_285u32); // 15k / 35k ≈ 42.85% (>= 30% min)
+
+        // Execute first partial release
+        let borrower_bal_before = token.balance(&borrower);
+        let released_1 = client.release_collateral_by_id(&loan_id);
+        assert_eq!(released_1, 15_000_0000000i128);
+        assert_eq!(
+            token.balance(&borrower),
+            borrower_bal_before + 15_000_0000000i128
+        );
+
+        // Immediately calling again returns error (already claimed this tranche)
+        assert!(client.try_release_collateral_by_id(&loan_id).is_err());
+
+        // Repayment 2: Pay another 17.5k principal (25% paydown -> 75% cumulative)
+        client.repay(&borrower, &loan_id, &17_500_0000000i128);
+
+        // Releasable is 75% * 30k (22.5k) - 15k = 7.5k
+        let (releasable_2, rem_2, _ratio_2) = client.get_releasable_collateral(&loan_id);
+        assert_eq!(releasable_2, 7_500_0000000i128);
+        assert_eq!(rem_2, 7_500_0000000i128);
+
+        let released_2 = client.release_collateral_by_id(&loan_id);
+        assert_eq!(released_2, 7_500_0000000i128);
+
+        // Repayment 3: Pay remaining principal + interest to reach 100%
+        let loan_info = client.get_loan_info(&loan_id);
+        client.repay(&borrower, &loan_id, &loan_info.outstanding_debt);
+
+        // Final release unlocks all remaining collateral (7.5k)
+        let released_3 = client.release_collateral_by_id(&loan_id);
+        assert_eq!(released_3, 7_500_0000000i128);
+
+        // Total released across all 3 steps = 15k + 7.5k + 7.5k = 30k (100%)
+        let col_record = client.get_loan_collateral(&loan_id).unwrap();
+        assert_eq!(col_record.released_collateral, initial_collateral);
+    }
+
+    #[test]
+    fn test_partial_collateral_release_via_symbol_identifier() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let loan_sym = Symbol::new(&env, "loan_milestone_1");
+        let principal = 50_000_0000000i128;
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+        client.register_loan_symbol(&loan_sym, &loan_id);
+
+        // Mint & Repay 25k (50%)
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        sac.mint(&borrower, &50_000_0000000i128);
+        client.repay(&borrower, &loan_id, &25_000_0000000i128);
+
+        // Release via symbol
+        let released = client.release_collateral(&loan_sym);
+        let expected_50pct = (50_000_0000000i128 * 30 / 70) / 2;
+        assert_eq!(released, expected_50pct);
+    }
+
+    #[test]
+    fn test_collateral_release_reverts_if_minimum_ratio_breached() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 70_000_0000000i128;
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        // Set a strict 60% minimum collateral ratio (6000 bps)
+        client.set_loan_collateral(&loan_id, &30_000_0000000i128, &6_000u32);
+
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        sac.mint(&borrower, &50_000_0000000i128);
+        // Repay 20k (remaining principal 50k).
+        // Collateral remaining after release would be 30k - (20/70 * 30) = ~21.4k
+        // 21.4k / 50k = 42.8% which is below the strict 60% min ratio -> should revert
+        client.repay(&borrower, &loan_id, &20_000_0000000i128);
+
+        let res = client.try_release_collateral_by_id(&loan_id);
+        assert!(res.is_err());
     }
 }

@@ -1,12 +1,30 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Map, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    Map, Vec,
 };
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 const BPS_SCALE: u32 = 10_000;
+
+/// Errors returned by the staking pool.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum StakingError {
+    /// Amount or share count must be greater than zero.
+    InvalidAmount = 1,
+    /// The deposit is too small to mint a whole share at the current rate.
+    NoSharesMinted = 2,
+    /// Staker does not hold enough shares for this operation.
+    InsufficientShares = 3,
+    /// The pool holds no shares, so there is nothing to unstake or reward.
+    EmptyPool = 4,
+    /// The token has not been registered on the pool via `add_token`.
+    UnsupportedToken = 5,
+}
 
 /// Multi-asset staking pool data key.
 #[contracttype]
@@ -224,14 +242,14 @@ impl StakingPoolContract {
 
     /// Stake `amount` of `token` into the pool. Mints shares proportional to
     /// the current exchange rate and records the deposit for yield distribution.
-    pub fn stake(env: Env, staker: Address, token: Address, amount: i128) -> Result<i128, ()> {
+    pub fn stake(env: Env, staker: Address, token: Address, amount: i128) -> Result<i128, StakingError> {
         staker.require_auth();
 
         if amount <= 0 {
-            return Err(());
+            return Err(StakingError::InvalidAmount);
         }
 
-        let mut info = Self::read_token_info(&env, &token).ok_or(())?;
+        let mut info = Self::read_token_info(&env, &token).ok_or(StakingError::UnsupportedToken)?;
 
         // Pull tokens from staker into the pool.
         let token_client = token::Client::new(&env, &token);
@@ -243,7 +261,7 @@ impl StakingPoolContract {
         let minted = Self::shares_for_deposit(amount, rate);
 
         if minted <= 0 {
-            return Err(());
+            return Err(StakingError::NoSharesMinted);
         }
 
         // Update pool-level totals.
@@ -272,21 +290,21 @@ impl StakingPoolContract {
     /// Unstake `shares` from the pool. Burns the shares and returns the
     /// proportional deposit from each token pool based on the staker's
     /// token allocation.
-    pub fn unstake(env: Env, staker: Address, shares: i128) -> Result<i128, ()> {
+    pub fn unstake(env: Env, staker: Address, shares: i128) -> Result<i128, StakingError> {
         staker.require_auth();
 
         if shares <= 0 {
-            return Err(());
+            return Err(StakingError::InvalidAmount);
         }
 
         let staker_shares = Self::read_shares(&env, &staker);
         if shares > staker_shares {
-            return Err(());
+            return Err(StakingError::InsufficientShares);
         }
 
         let total_shares = Self::total_shares(&env);
         if total_shares == 0 {
-            return Err(());
+            return Err(StakingError::EmptyPool);
         }
 
         // Compute the fraction of pool being withdrawn.
@@ -356,12 +374,12 @@ impl StakingPoolContract {
         from: Address,
         reward_token: Address,
         total_reward: i128,
-    ) -> Result<(), ()> {
+    ) -> Result<(), StakingError> {
         let admin = Self::admin(&env);
         admin.require_auth();
 
         if total_reward <= 0 {
-            return Err(());
+            return Err(StakingError::InvalidAmount);
         }
 
         // Pull reward tokens into the pool.
@@ -406,17 +424,17 @@ impl StakingPoolContract {
     /// Claim accumulated rewards for a staker. Rewards are distributed
     /// proportionally based on the staker's share weight across all pools.
     /// Returns the total reward amount claimed.
-    pub fn claim_rewards(env: Env, staker: Address) -> Result<i128, ()> {
+    pub fn claim_rewards(env: Env, staker: Address) -> Result<i128, StakingError> {
         staker.require_auth();
 
         let staker_shares = Self::read_shares(&env, &staker);
         if staker_shares <= 0 {
-            return Err(());
+            return Err(StakingError::InsufficientShares);
         }
 
         let total_shares = Self::total_shares(&env);
         if total_shares == 0 {
-            return Err(());
+            return Err(StakingError::EmptyPool);
         }
 
         let tokens = Self::read_supported_tokens(&env);
@@ -529,6 +547,10 @@ impl StakingPoolContract {
 
 #[cfg(test)]
 mod test {
+    // The crate is `no_std`, but these tests reach for `std::panic::catch_unwind`
+    // to assert on panicking contract calls.
+    extern crate std;
+
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::{token::StellarAssetClient, Env, IntoVal, Vec};
@@ -844,7 +866,7 @@ mod test {
         let staker = Address::generate(&env);
 
         let result = client.try_stake(&staker, &token_a, &0i128);
-        assert_eq!(result, Err(Err(())));
+        assert_eq!(result, Err(Ok(StakingError::InvalidAmount)));
     }
 
     #[test]
@@ -855,7 +877,7 @@ mod test {
 
         let staker = Address::generate(&env);
         let result = client.try_stake(&staker, &token_a, &100i128);
-        assert_eq!(result, Err(Err(())));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -867,7 +889,7 @@ mod test {
 
         let staker = Address::generate(&env);
         let result = client.try_unstake(&staker, &100i128);
-        assert_eq!(result, Err(Err(())));
+        assert_eq!(result, Err(Ok(StakingError::InsufficientShares)));
     }
 
     #[test]

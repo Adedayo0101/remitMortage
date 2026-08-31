@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { getOnboardingStore, useOnboardingState } from "@/hooks/useOnboardingState";
@@ -10,11 +10,18 @@ import { onboardingSchema, STEP_FIELDS, type OnboardingFormValues } from "@/lib/
 import ProgressStepper from "./ProgressStepper";
 import { toast } from "react-hot-toast";
 import { useWallet } from "@/context/WalletContext";
+import {
+  attributeReferralCode,
+  persistReferralCode,
+  readPersistedReferralCode,
+  REFERRAL_QUERY_PARAM,
+} from "@/lib/referralApi";
 
 const STEPS = ["Connect Wallet", "Verify History", "Set Goal", "First Deposit"];
 
 export default function OnboardingWizard() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const store = getOnboardingStore();
   const { publicKey, connect } = useWallet();
 
@@ -76,6 +83,22 @@ export default function OnboardingWizard() {
   const USDC_TOKEN_ID = process.env.NEXT_PUBLIC_USDC_TOKEN_ID!;
 
   useEffect(() => {
+    const refCode = searchParams.get(REFERRAL_QUERY_PARAM);
+    if (refCode) {
+      persistReferralCode(refCode);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    const referralCode = readPersistedReferralCode();
+    if (!referralCode || !publicKey) return;
+
+    attributeReferralCode(referralCode, publicKey).catch(() => {
+      // Attribution is best-effort during onboarding.
+    });
+  }, [publicKey]);
+
+  useEffect(() => {
     if (step === 1 && publicKey) {
       fetchUSDCBalance(publicKey);
     }
@@ -119,13 +142,21 @@ export default function OnboardingWizard() {
     const valid = await trigger("recipientAddress");
     if (!valid) return;
 
+    if (!publicKey) {
+      toast.error("Please connect your wallet first.");
+      return;
+    }
+
     setIsLoading(true);
     setVerificationMessage("");
     try {
-      const response = await fetch("/api/verify", {
+      const response = await fetch("/api/verification/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recipientAddress: getValues("recipientAddress") }),
+        body: JSON.stringify({
+          senderAddress: publicKey,
+          recipientAddress: getValues("recipientAddress"),
+        }),
       });
       const data = await response.json();
       if (response.ok && data.eligible) {
@@ -135,9 +166,9 @@ export default function OnboardingWizard() {
       } else {
         store.getState().setIsVerified(false);
         setVerificationMessage(
-          data.message || "Verification failed. Please check the address and try again."
+          data.message || data.error || "Verification failed. Please check the address and try again."
         );
-        toast.error(data.message || "Verification failed.");
+        toast.error(data.message || data.error || "Verification failed.");
       }
     } catch (e) {
       console.error(e);
@@ -226,7 +257,7 @@ export default function OnboardingWizard() {
               name="recipientAddress"
               control={control}
               render={({ field }) => (
-                <div className="flex gap-3">
+                <div className="flex flex-col sm:flex-row gap-3">
                   <input
                     type="text"
                     placeholder="Recipient's G... address"
@@ -241,7 +272,7 @@ export default function OnboardingWizard() {
                   />
                   <button
                     onClick={handleVerify}
-                    className="btn-cta py-2.5 px-5 !text-xs"
+                    className="btn-cta py-2.5 px-5 !text-xs w-full sm:w-auto"
                     disabled={isLoading || !field.value || isVerified}
                   >
                     {isLoading ? "Auditing..." : isVerified ? "Verified ✓" : "Verify"}
@@ -403,16 +434,16 @@ export default function OnboardingWizard() {
   };
 
   return (
-    <div className="p-6 md:p-8 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl max-w-xl mx-auto backdrop-blur-xl">
+    <div className="p-6 md:p-8 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl w-full max-w-2xl backdrop-blur-xl flex flex-col gap-6">
       {hasDraft && (
-        <div className="mb-5 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between">
-          <div>
-            <p className="text-amber-300 font-semibold text-sm">Resume Session</p>
-            <p className="text-amber-200/70 text-xs">
+        <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-amber-400 font-bold text-sm">Resume Session</p>
+            <p className="text-slate-300 text-xs leading-relaxed">
               You have unsaved form data from a previous session
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               onClick={() => {
                 const draft = restoreDraft();
@@ -437,7 +468,7 @@ export default function OnboardingWizard() {
         </div>
       )}
       <ProgressStepper steps={STEPS} currentStep={step} />
-      <div className="my-8">{renderStepContent()}</div>
+      <div>{renderStepContent()}</div>
       <div className="flex justify-between border-t border-slate-800/80 pt-5">
         <button
           onClick={handleBack}

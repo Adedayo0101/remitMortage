@@ -1,0 +1,63 @@
+name: DB Query Performance Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  perf-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: remitmortage
+          POSTGRES_PASSWORD: remitmortage_pass
+          POSTGRES_DB: remitmortage
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Use Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18.x'
+
+    - name: Install dependencies
+      working-directory: ./backend
+      run: npm ci
+
+    - name: Generate Prisma Client
+      working-directory: ./backend
+      run: npx prisma generate
+
+    - name: Run Migrations
+      working-directory: ./backend
+      env:
+        DATABASE_URL: postgresql://remitmortage:remitmortage_pass@localhost:5432/remitmortage
+      run: npx prisma migrate deploy
+
+    - name: Run DB Performance Tests
+      working-directory: ./backend
+      env:
+        DATABASE_URL: postgresql://remitmortage:remitmortage_pass@localhost:5432/remitmortage
+      run: npx tsx scripts/db-perf.ts
+
+    - name: Run Contract Resource Benchmarks
+      run: ./scripts/benchmark-contracts.sh
+
+    - name: Upload Benchmark Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: contract-benchmarks
+        path: scripts/benchmarks-current.json

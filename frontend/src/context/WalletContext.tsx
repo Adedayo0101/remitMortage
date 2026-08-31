@@ -9,6 +9,7 @@ import {
   WALLET_ERROR_MESSAGES,
   type WalletError,
 } from "../lib/wallet-errors";
+import { DEFAULT_LEDGER_PATH, getLedgerPublicKey } from "../lib/ledger";
 
 type BalanceLine = {
   asset_code?: string;
@@ -22,6 +23,7 @@ type FreighterClient = {
   getNetwork?: () => string | Promise<string>;
   isConnected?: () => boolean | Promise<boolean>;
   isAllowed?: () => boolean | Promise<boolean>;
+  signBlob?: (blob: string) => string | Promise<string>;
 };
 
 /**
@@ -49,7 +51,7 @@ type WalletWindow = Window & {
   };
 };
 
-type WalletType = "stellar" | "evm" | "solana" | null;
+type WalletType = "stellar" | "evm" | "solana" | "ledger" | null;
 
 type WalletContextType = {
   publicKey: string | null;
@@ -66,8 +68,11 @@ type WalletContextType = {
   walletError: WalletError | null;
   clearError: () => void;
   connect: () => Promise<string | null>;
+  connectLedger: () => Promise<string | null>;
   connectEVM: () => Promise<string | null>;
   connectSolana: () => Promise<string | null>;
+  ledgerPath: string;
+  setLedgerPath: React.Dispatch<React.SetStateAction<string>>;
   disconnect: () => void;
   disconnectAll: () => void;
   signMessage: (message: string) => Promise<string | null>;
@@ -111,6 +116,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [walletType, setWalletType] = useState<WalletType>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
+  const [ledgerPath, setLedgerPath] = useState<string>(DEFAULT_LEDGER_PATH);
   const [network, setNetwork] = useState<string | null>(null);
   const [wrongNetwork, setWrongNetwork] = useState<boolean>(false);
   const [walletError, setWalletError] = useState<WalletError | null>(null);
@@ -212,6 +218,28 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  async function connectLedger(): Promise<string | null> {
+    setIsConnecting(true);
+    setWalletError(null);
+
+    try {
+      const result = await getLedgerPublicKey(ledgerPath);
+      const publicKeyFromLedger = result.publicKey;
+      setPublicKey(publicKeyFromLedger);
+      publicKeyRef.current = publicKeyFromLedger;
+      setWalletType("ledger");
+      setNetwork(null);
+      setWrongNetwork(false);
+      await fetchBalances(publicKeyFromLedger);
+      return publicKeyFromLedger;
+    } catch (err) {
+      reportError(err);
+      return null;
+    } finally {
+      setIsConnecting(false);
+    }
+  }
+
   async function connectEVM(): Promise<string | null> {
     setIsConnecting(true);
     setWalletError(null);
@@ -289,6 +317,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         return Array.from(signedMessage.signature)
           .map((byte) => byte.toString(16).padStart(2, "0"))
           .join("");
+      }
+
+      if (walletType === "stellar") {
+        const freighter = await loadFreighter();
+        if (!freighter || typeof freighter.signBlob !== "function") {
+          throw new Error("Freighter is not available or does not support signBlob");
+        }
+        return await freighter.signBlob(message);
       }
 
       return null;
@@ -412,8 +448,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     walletError,
     clearError,
     connect,
+    connectLedger,
     connectEVM,
     connectSolana,
+    ledgerPath,
+    setLedgerPath,
     disconnect,
     disconnectAll,
     signMessage,
@@ -426,6 +465,14 @@ export function useWallet() {
   const ctx = useContext(WalletContext);
   if (!ctx) throw new Error("useWallet must be used within WalletProvider");
   return ctx;
+}
+
+export function OptionalWalletProvider({ children }: { children: React.ReactNode }) {
+  const ctx = useContext(WalletContext);
+  if (ctx) {
+    return <>{children}</>;
+  }
+  return <WalletProvider>{children}</WalletProvider>;
 }
 
 export default WalletContext;

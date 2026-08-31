@@ -21,6 +21,10 @@ export interface Config {
   usdcTokenId: string;
   pinataApiKey: string;
   pinataSecretApiKey: string;
+  /** Secondary IPFS provider API key for redundancy (e.g., NFT.storage or Web3.storage). */
+  secondaryIpfsProvider: "nft.storage" | "web3.storage" | null;
+  /** Secondary IPFS provider API key. */
+  secondaryIpfsApiKey: string | null;
   smtpHost: string;
   smtpPort: number;
   smtpUser: string;
@@ -49,6 +53,12 @@ export interface Config {
   kmsActiveKeyVersion: string;
   /** Signing secret for temporary IAM-style KYC document decryption tokens. */
   kycOperatorSecret: string;
+  /** Secret used to sign output verification proofs. */
+  backendSigningSecret: string;
+  /** Private key for the Irys bundler node to pay for Arweave uploads. */
+  irysPrivateKey: string;
+  /** Network token used for Irys payments (e.g. "matic", "ethereum"). */
+  irysNetworkToken: string;
   /** Lifetime (seconds) of a temporary KYC decryption access token. */
   kycAccessTokenTtlSeconds: number;
   /** Maximum base fee for Stellar transactions (in stroops). */
@@ -74,6 +84,42 @@ export interface Config {
   rpcMinLedgerRetention: number;
   /** Interval (ms) between background Soroban RPC health probes. */
   rpcHealthCheckIntervalMs: number;
+  /** Per-status SLA window in hours for loan applications. */
+  applicationSlaHours: Record<string, number>;
+  /** Fallback recipient email for ops SLA alerts. */
+  opsFallbackAlertEmail: string;
+  /** Incoming Slack webhook URL for ops SLA alerts. */
+  opsSlackWebhookUrl: string | null;
+  /** Number of days expired session/refresh tokens are retained before being purged. */
+  sessionTokenRetentionDays: number;
+  /** Compliance-reviewed retention window for soft-deleted borrower profiles. */
+  borrowerRecordRetentionDays: number;
+  /** Compliance-reviewed retention window for soft-deleted loan applications. */
+  loanRecordRetentionDays: number;
+  /** Days of inactivity before a Draft loan application is flagged as stale and the applicant notified. */
+  draftStaleThresholdDays: number;
+  /** Days after a stale notice before an unresumed Draft is soft-deleted (expired). */
+  draftStaleExpiryGraceDays: number;
+  /** When true, registration requires a valid unused invite code (soft-launch gating). */
+  inviteCodeRequired: boolean;
+}
+
+/** Parses APPLICATION_SLA_HOURS (a JSON map of status -> SLA hours). */
+function parseApplicationSlaHours(raw: string | undefined): Record<string, number> {
+  const defaults: Record<string, number> = {
+    Pending: 48,
+    Disbursing: 24,
+  };
+  if (!raw) return defaults;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...defaults, ...parsed };
+    }
+  } catch {
+    // fallback
+  }
+  return defaults;
 }
 
 /** Parses KMS_KEY_VERSIONS (a JSON map of version -> 64-hex-char key) with a dev-safe fallback. */
@@ -126,6 +172,8 @@ export function loadConfig(): Config {
     usdcTokenId: process.env.USDC_TOKEN_ID || "",
     pinataApiKey: process.env.PINATA_API_KEY || "",
     pinataSecretApiKey: process.env.PINATA_SECRET_API_KEY || "",
+    secondaryIpfsProvider: (process.env.SECONDARY_IPFS_PROVIDER as "nft.storage" | "web3.storage") || null,
+    secondaryIpfsApiKey: process.env.SECONDARY_IPFS_API_KEY || null,
     smtpHost: process.env.SMTP_HOST || "localhost",
     smtpPort: parseInt(process.env.SMTP_PORT || "587", 10),
     smtpUser: process.env.SMTP_USER || "",
@@ -153,6 +201,9 @@ export function loadConfig(): Config {
     kmsKeyVersions: parseKmsKeyVersions(process.env.KMS_KEY_VERSIONS),
     kmsActiveKeyVersion: process.env.KMS_ACTIVE_KEY_VERSION || "v1",
     kycOperatorSecret: process.env.KYC_OPERATOR_SECRET || "default_kyc_operator_secret",
+    backendSigningSecret: process.env.BACKEND_SIGNING_SECRET || "default_backend_signing_secret",
+    irysPrivateKey: process.env.IRYS_PRIVATE_KEY || "",
+    irysNetworkToken: process.env.IRYS_NETWORK_TOKEN || "matic",
     kycAccessTokenTtlSeconds: parseInt(process.env.KYC_ACCESS_TOKEN_TTL || "300", 10),
     maxStellarBaseFee: parseInt(process.env.MAX_STELLAR_BASE_FEE || "100000", 10),
     maxEvmBaseFee: parseInt(process.env.MAX_EVM_BASE_FEE || "100000000000", 10),
@@ -164,5 +215,38 @@ export function loadConfig(): Config {
       process.env.RPC_HEALTH_CHECK_INTERVAL_MS || "60000",
       10
     ),
+    applicationSlaHours: parseApplicationSlaHours(process.env.APPLICATION_SLA_HOURS),
+    opsFallbackAlertEmail:
+      process.env.OPS_FALLBACK_ALERT_EMAIL ||
+      process.env.ALERT_DEFAULT_RECIPIENT ||
+      "ops@remitmortgage.com",
+    opsSlackWebhookUrl:
+      process.env.OPS_SLACK_WEBHOOK_URL ||
+      process.env.SLACK_WEBHOOK_URL ||
+      process.env.ALERT_WEBHOOK_URL ||
+      null,
+    sessionTokenRetentionDays: parseInt(
+      process.env.SESSION_TOKEN_RETENTION_DAYS ||
+        process.env.RETENTION_DAYS ||
+        "7",
+      10
+    ),
+    borrowerRecordRetentionDays: parseInt(
+      process.env.BORROWER_RECORD_RETENTION_DAYS || "2555",
+      10
+    ),
+    loanRecordRetentionDays: parseInt(
+      process.env.LOAN_RECORD_RETENTION_DAYS || "2555",
+      10
+    ),
+    draftStaleThresholdDays: parseInt(
+      process.env.DRAFT_STALE_THRESHOLD_DAYS || "90",
+      10
+    ),
+    draftStaleExpiryGraceDays: parseInt(
+      process.env.DRAFT_STALE_EXPIRY_GRACE_DAYS || "7",
+      10
+    ),
+    inviteCodeRequired: process.env.INVITE_CODE_REQUIRED === "true",
   };
 }

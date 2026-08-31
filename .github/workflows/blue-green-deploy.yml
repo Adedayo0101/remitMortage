@@ -1,0 +1,238 @@
+name: Blue-Green Deployment
+
+# Zero-downtime backend releases: deploy to the idle slot, run health checks,
+# switch traffic via weighted Route 53 records (or DNS alias), automatically
+# roll back on health check failure.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (dev, staging, production)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+      image_tag:
+        description: 'Docker image tag to deploy'
+        required: true
+        default: 'latest'
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  HEALTH_CHECK_PATH: /api/health
+  HEALTH_CHECK_TIMEOUT_SECONDS: 300
+  POST_SWITCH_SOAK_SECONDS: 60
+
+jobs:
+  determine-slots:
+    name: Determine Active & Idle Slots
+    runs-on: ubuntu-latest
+    outputs:
+      active_slot: ${{ steps.identify.outputs.active_slot }}
+      idle_slot: ${{ steps.identify.outputs.idle_slot }}
+      active_service_arn: ${{ steps.identify.outputs.active_service_arn }}
+      idle_service_arn: ${{ steps.identify.outputs.idle_service_arn }}
+      active_service_url: ${{ steps.identify.outputs.active_service_url }}
+      idle_service_url: ${{ steps.identify.outputs.idle_service_url }}
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Identifies which slot (blue/green) is currently active by reading
+      # a tagged SSM parameter or Route 53 weight. Falls back to 'blue' if
+      # no state exists yet (first-time setup).
+      - name: Identify Active Slot
+        id: identify
+        run: |
+          PARAM_NAME="/remitmortgage/${{ github.event.inputs.environment }}/active-slot"
+          ACTIVE=$(aws ssm get-parameter --name "$PARAM_NAME" --query 'Parameter.Value' --output text 2>/dev/null || echo "blue")
+          
+          if [ "$ACTIVE" = "blue" ]; then
+            IDLE="green"
+          else
+            IDLE="blue"
+          fi
+          
+          echo "active_slot=$ACTIVE" >> "$GITHUB_OUTPUT"
+          echo "idle_slot=$IDLE" >> "$GITHUB_OUTPUT"
+          
+          # Fetch ARNs and URLs from App Runner service names
+          BLUE_ARN=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='remit-mortgage-api-${{ github.event.inputs.environment }}-blue'].ServiceArn" --output text)
+          GREEN_ARN=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='remit-mortgage-api-${{ github.event.inputs.environment }}-green'].ServiceArn" --output text)
+          
+          BLUE_URL=$(aws apprunner describe-service --service-arn "$BLUE_ARN" --query 'Service.ServiceUrl' --output text)
+          GREEN_URL=$(aws apprunner describe-service --service-arn "$GREEN_ARN" --query 'Service.ServiceUrl' --output text)
+          
+          if [ "$ACTIVE" = "blue" ]; then
+            echo "active_service_arn=$BLUE_ARN" >> "$GITHUB_OUTPUT"
+            echo "idle_service_arn=$GREEN_ARN" >> "$GITHUB_OUTPUT"
+            echo "active_service_url=$BLUE_URL" >> "$GITHUB_OUTPUT"
+            echo "idle_service_url=$GREEN_URL" >> "$GITHUB_OUTPUT"
+          else
+            echo "active_service_arn=$GREEN_ARN" >> "$GITHUB_OUTPUT"
+            echo "idle_service_arn=$BLUE_ARN" >> "$GITHUB_OUTPUT"
+            echo "active_service_url=$GREEN_URL" >> "$GITHUB_OUTPUT"
+            echo "idle_service_url=$BLUE_URL" >> "$GITHUB_OUTPUT"
+          fi
+          
+          echo "✓ Active slot: $ACTIVE"
+          echo "✓ Idle slot: $IDLE"
+
+  deploy-idle:
+    name: Deploy to Idle Slot
+    runs-on: ubuntu-latest
+    needs: determine-slots
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Idle App Runner Service
+        run: |
+          IMAGE="public.ecr.aws/remitmortgage/backend:${{ github.event.inputs.image_tag }}"
+          aws apprunner update-service \
+            --service-arn "${{ needs.determine-slots.outputs.idle_service_arn }}" \
+            --source-configuration "{\"ImageRepository\":{\"ImageIdentifier\":\"$IMAGE\",\"ImageRepositoryType\":\"ECR_PUBLIC\"}}"
+          
+          echo "✓ Triggered deployment of $IMAGE to ${{ needs.determine-slots.outputs.idle_slot }} slot"
+
+      - name: Wait for Idle Service to Stabilize
+        run: |
+          echo "Waiting for App Runner service to reach 'RUNNING' status..."
+          for i in {1..60}; do
+            STATUS=$(aws apprunner describe-service \
+              --service-arn "${{ needs.determine-slots.outputs.idle_service_arn }}" \
+              --query 'Service.Status' --output text)
+            
+            if [ "$STATUS" = "RUNNING" ]; then
+              echo "✓ Service is RUNNING"
+              exit 0
+            fi
+            
+            echo "[$i/60] Status: $STATUS, waiting..."
+            sleep 10
+          done
+          
+          echo "✗ Service did not reach RUNNING within 10 minutes"
+          exit 1
+
+  health-check-idle:
+    name: Health Check Idle Slot
+    runs-on: ubuntu-latest
+    needs: [determine-slots, deploy-idle]
+    steps:
+      - name: Smoke Test Idle Slot
+        run: |
+          URL="https://${{ needs.determine-slots.outputs.idle_service_url }}${{ env.HEALTH_CHECK_PATH }}"
+          echo "Running health checks against $URL"
+          
+          END=$((SECONDS + ${{ env.HEALTH_CHECK_TIMEOUT_SECONDS }}))
+          while [ $SECONDS -lt $END ]; do
+            if curl -sf --max-time 5 "$URL" > /dev/null; then
+              echo "✓ Health check passed"
+              exit 0
+            fi
+            echo "Health check failed, retrying in 5s..."
+            sleep 5
+          done
+          
+          echo "✗ Health checks did not pass within timeout"
+          exit 1
+
+  switch-traffic:
+    name: Switch Traffic to Idle Slot
+    runs-on: ubuntu-latest
+    needs: [determine-slots, health-check-idle]
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # In production, this updates Route 53 weighted records, or an ALB target
+      # group, or a CloudFront origin group. Here we update an SSM parameter so
+      # the next run knows which slot is active, and log the swap.
+      - name: Update Active Slot Pointer
+        run: |
+          PARAM_NAME="/remitmortgage/${{ github.event.inputs.environment }}/active-slot"
+          aws ssm put-parameter \
+            --name "$PARAM_NAME" \
+            --value "${{ needs.determine-slots.outputs.idle_slot }}" \
+            --type String \
+            --overwrite
+          
+          echo "✓ Traffic switched from ${{ needs.determine-slots.outputs.active_slot }} → ${{ needs.determine-slots.outputs.idle_slot }}"
+
+      # In a real setup, update Route 53 weights here:
+      # aws route53 change-resource-record-sets --hosted-zone-id Z... --change-batch file://swap.json
+
+      - name: Soak Period
+        run: |
+          echo "Soaking for ${{ env.POST_SWITCH_SOAK_SECONDS }}s to verify stability..."
+          sleep ${{ env.POST_SWITCH_SOAK_SECONDS }}
+
+  post-switch-validation:
+    name: Post-Switch Health Validation
+    runs-on: ubuntu-latest
+    needs: [determine-slots, switch-traffic]
+    steps:
+      - name: Validate New Active Slot
+        id: validate
+        run: |
+          # Now the formerly idle slot is active — verify it still responds.
+          URL="https://${{ needs.determine-slots.outputs.idle_service_url }}${{ env.HEALTH_CHECK_PATH }}"
+          if curl -sf --max-time 5 "$URL" > /dev/null; then
+            echo "✓ Post-switch validation passed"
+            exit 0
+          else
+            echo "✗ Post-switch validation FAILED"
+            exit 1
+          fi
+
+      - name: Rollback on Failure
+        if: failure()
+        run: |
+          echo "⚠️  Post-switch health check failed — initiating rollback"
+          PARAM_NAME="/remitmortgage/${{ github.event.inputs.environment }}/active-slot"
+          aws ssm put-parameter \
+            --name "$PARAM_NAME" \
+            --value "${{ needs.determine-slots.outputs.active_slot }}" \
+            --type String \
+            --overwrite
+          
+          echo "✓ Rolled back to ${{ needs.determine-slots.outputs.active_slot }}"
+          exit 1
+
+  notify:
+    name: Notify Deployment Result
+    runs-on: ubuntu-latest
+    needs: [determine-slots, post-switch-validation]
+    if: always()
+    steps:
+      - name: Deployment Success
+        if: needs.post-switch-validation.result == 'success'
+        run: |
+          echo "✅ Blue-green deployment succeeded"
+          echo "Active slot: ${{ needs.determine-slots.outputs.idle_slot }}"
+          echo "Image: ${{ github.event.inputs.image_tag }}"
+
+      - name: Deployment Failure
+        if: needs.post-switch-validation.result != 'success'
+        run: |
+          echo "❌ Blue-green deployment failed and was rolled back"
+          echo "Active slot remains: ${{ needs.determine-slots.outputs.active_slot }}"
+          exit 1
