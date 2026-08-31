@@ -29,6 +29,7 @@ import {
 } from "@/lib/statementExport";
 
 import MaturityAlertOverlay from "../../components/MaturityAlertOverlay";
+import ReferralStatsCard from "../../components/dashboard/ReferralStatsCard";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { useWidgetStore, WidgetId } from '../stores/useWidgetStore';
@@ -517,6 +518,8 @@ export default function DashboardPage() {
               onOpenDeposit={() => setShowDeposit(true)}
               onOpenRecovery={() => setShowRecoveryTimeline(true)}
             />
+
+            {publicKey && <ReferralStatsCard ownerAddress={publicKey} />}
 
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={order} strategy={verticalListSortingStrategy}>

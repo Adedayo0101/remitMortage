@@ -201,6 +201,7 @@ app.use("/api/audit-logs", auditRouter);
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
 app.use("/api/notifications", notificationsRouter);
+app.use("/api/referral", referralRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
 app.use("/api/admin", adminAuthRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
