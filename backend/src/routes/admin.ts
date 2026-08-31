@@ -63,6 +63,60 @@ adminRouter.post("/loans/bulk-review", requireAdmin, async (req: AuthenticatedRe
   }
 });
 
+// ── Auto-rejection rules (configurable without redeploy) ─────────────────
+
+adminRouter.get("/auto-rejection-rules", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const rules = await listAutoRejectionRules(true);
+    return res.json(rules);
+  } catch (error) {
+    logger.error("List auto-rejection rules error", { error });
+    return res.status(500).json({ error: "failed_to_list_rules" });
+  }
+});
+
+adminRouter.post("/auto-rejection-rules", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { name, ruleType, config, active, priority } = req.body ?? {};
+  if (!name || !ruleType || !config) {
+    return res.status(400).json({
+      error: "invalid_request",
+      message: "name, ruleType, and config are required",
+    });
+  }
+
+  try {
+    const rule = await createAutoRejectionRule({
+      name: String(name),
+      ruleType,
+      config,
+      active,
+      priority,
+    });
+    return res.status(201).json(rule);
+  } catch (error) {
+    logger.error("Create auto-rejection rule error", { error });
+    return res.status(500).json({ error: "failed_to_create_rule" });
+  }
+});
+
+adminRouter.patch("/auto-rejection-rules/:id", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { name, config, active, priority } = req.body ?? {};
+
+  try {
+    const rule = await updateAutoRejectionRule(id, {
+      ...(name !== undefined ? { name: String(name) } : {}),
+      ...(config !== undefined ? { config } : {}),
+      ...(active !== undefined ? { active: Boolean(active) } : {}),
+      ...(priority !== undefined ? { priority: Number(priority) } : {}),
+    });
+    return res.json(rule);
+  } catch (error) {
+    logger.error("Update auto-rejection rule error", { error });
+    return res.status(404).json({ error: "rule_not_found" });
+  }
+});
+
 // Trigger manual retry of a DLQ job
 adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) => {
   const rawId = req.params.id;

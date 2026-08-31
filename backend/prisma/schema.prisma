@@ -276,6 +276,11 @@ model LoanApplication {
   draftStaleNotifiedAt   DateTime?
   comments           LoanComment[]
 
+  // Human-readable rejection reason (manual or auto-rejection).
+  reason                 String?
+  autoRejectedAt         DateTime?
+  autoRejectionLogs      LoanAutoRejectionLog[]
+
   // Index backing getApplicationsByBorrower(): filter by applicant then sort by createdAt
   @@index([applicantId, createdAt])
   // Index backing getPendingApplications(): WHERE status = 'Pending' — avoids full table scan
