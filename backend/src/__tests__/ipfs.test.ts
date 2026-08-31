@@ -43,6 +43,9 @@ import {
   PINATA_MAX_RETRIES,
   pinJSONToIPFS,
   unpinFileFromIPFS,
+  pinFileToMultipleProviders,
+  pinJSONToMultipleProviders,
+  MultiProviderPinResult,
 } from "../services/ipfs.js";
 import { unpinEvidenceCid } from "../services/ipfsCleanup.js";
 import { prisma } from "../services/db.js";

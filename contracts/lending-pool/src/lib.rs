@@ -9,11 +9,14 @@ mod fuzz;
 #[cfg(test)]
 mod upgrade_migration_tests;
 
+#[cfg(test)]
+mod test_loan_assumption;
+
 pub use crate::errors::PoolError;
 pub use crate::types::{
-    BatchDisburseItem, DataKey, HalvingInfo, InvestorRecord, LoanCollateralRecord, LoanRecord,
-    LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule,
-    RestructureProposal, Tranche, TrancheInfo,
+    BatchDisburseItem, DataKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
+    LoanCollateralRecord, LoanRecord, LoanStatus, PendingUpgradeRecord, PoolConfig, PoolHealth,
+    RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo,
 };
 use insurance_pool::{premium_for, InsurancePoolContractClient};
 use multisig_validator::MultisigValidatorClient;
@@ -43,6 +46,8 @@ const DEFAULT_OVERDUE_LEDGERS: u32 = 3 * LEDGERS_PER_MONTH; // ~90 days past due
 // ── Dynamic Fee Structure Constants ──────────────────────────────────
 /// Basis points scale (10000 = 100%).
 const BPS_SCALE: u32 = 10_000;
+/// Origination fees may not exceed 100% of a disbursement.
+const MAX_ORIGINATION_FEE_BPS: u32 = BPS_SCALE;
 /// Utilization threshold for low-fee tier (50%).
 const UTILIZATION_LOW_THRESHOLD_BPS: u32 = 5_000; // 50%
 /// Utilization threshold for medium-fee tier (80%).
@@ -261,6 +266,22 @@ impl LendingPoolContract {
         (fee, interest - fee)
     }
 
+    /// Return the fee and net transfer for a gross disbursement. The gross
+    /// amount remains the amount recorded against the loan.
+    fn calculate_origination_fee(
+        config: &PoolConfig,
+        principal: i128,
+    ) -> Result<(i128, i128), PoolError> {
+        if config.origination_fee_bps > MAX_ORIGINATION_FEE_BPS {
+            return Err(PoolError::OriginationFeeTooHigh);
+        }
+        let fee = principal
+            .checked_mul(config.origination_fee_bps as i128)
+            .ok_or(PoolError::InvalidAmount)?
+            / BPS_SCALE as i128;
+        Ok((fee, principal - fee))
+    }
+
     fn read_loan(env: &Env, loan_id: &BytesN<32>) -> Result<LoanRecord, PoolError> {
         env.storage()
             .persistent()
@@ -312,6 +333,34 @@ impl LendingPoolContract {
         env.storage()
             .persistent()
             .set(&DataKey::BorrowerLifetimeInterest(borrower.clone()), &total);
+    }
+
+    // ── Per-Borrower Active-Loan Cap Helpers ─────────────────────────────
+
+    /// Number of loans currently in `Requested` or `Approved` state for this
+    /// borrower. A missing entry means zero.
+    fn read_borrower_active_loans(env: &Env, borrower: &Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BorrowerActiveLoans(borrower.clone()))
+            .unwrap_or(0)
+    }
+
+    fn set_borrower_active_loans(env: &Env, borrower: &Address, count: u32) {
+        let key = DataKey::BorrowerActiveLoans(borrower.clone());
+        if count == 0 {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &count);
+        }
+    }
+
+    /// Decrement the borrower's active-loan counter when a loan leaves an
+    /// active state (repaid, cancelled or defaulted), freeing a slot.
+    /// Saturates at zero so an accounting mismatch can never underflow.
+    fn release_borrower_loan_slot(env: &Env, borrower: &Address) {
+        let current = Self::read_borrower_active_loans(env, borrower);
+        Self::set_borrower_active_loans(env, borrower, current.saturating_sub(1));
     }
 
     fn is_rebate_claimed(env: &Env, loan_id: &BytesN<32>) -> bool {
@@ -730,10 +779,21 @@ impl LendingPoolContract {
             // Off at deployment. Turning the switch on is a deliberate
             // governance act, never a deployment-time default.
             fee_switch_bps: 0,
+            // Disabled by default for backwards-compatible deployments.
+            origination_fee_bps: 0,
             lockup_duration_ledgers,
             // No deposit floor at deployment, so existing integrations are
             // unaffected until an admin sets one via `set_min_deposit_amount`.
             min_deposit_amount: 0,
+            // No per-borrower active-loan cap at deployment; an admin opts in
+            // via `set_borrower_active_loan_cap`.
+            max_active_loans_per_borrower: 0,
+            // No refinancing cooldown by default.
+            refinance_cooldown_ledgers: 0,
+            // No per-transaction withdrawal cap at deployment, so existing
+            // integrations are unaffected until an admin opts in via
+            // `set_max_single_withdrawal`.
+            max_single_withdrawal: 0,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
@@ -978,6 +1038,16 @@ impl LendingPoolContract {
             return Err(PoolError::LoanAlreadyExists);
         }
 
+        // Enforce the per-borrower active-loan cap, when one is configured.
+        // `0` disables the cap. An "active" loan is one in Requested or
+        // Approved state; the counter is released when a loan is repaid,
+        // cancelled or defaulted.
+        let active_loan_cap = Self::read_config(env)?.max_active_loans_per_borrower;
+        let borrower_active_loans = Self::read_borrower_active_loans(env, &borrower);
+        if active_loan_cap != 0 && borrower_active_loans >= active_loan_cap {
+            return Err(PoolError::BorrowerLoanCapExceeded);
+        }
+
         let interest_rate_bps = Self::resolve_borrower_interest_rate(env, &borrower)?;
 
         let loan = LoanRecord {
@@ -997,6 +1067,9 @@ impl LendingPoolContract {
         };
 
         Self::set_loan(env, &loan_id, &loan);
+
+        // Track the new loan against the borrower's active-loan count.
+        Self::set_borrower_active_loans(env, &borrower, borrower_active_loans + 1);
 
         // Increment loan count.
         let count: u32 = env
@@ -1101,6 +1174,9 @@ impl LendingPoolContract {
         loan.status = LoanStatus::Cancelled;
         Self::set_loan(&env, &loan_id, &loan);
 
+        // Cancelling a still-pending request frees the borrower's slot.
+        Self::release_borrower_loan_slot(&env, &loan.borrower);
+
         let count = Self::read_loan_count(&env);
         env.storage()
             .instance()
@@ -1141,7 +1217,7 @@ impl LendingPoolContract {
     ) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
 
-        let mut loan = Self::read_loan(&env, &loan_id)?;
+        let loan = Self::read_loan(&env, &loan_id)?;
         loan.borrower.require_auth();
 
         if loan.status != LoanStatus::Approved {
@@ -1334,6 +1410,17 @@ impl LendingPoolContract {
             return Err(PoolError::RefinanceNotEligible);
         }
 
+        // Enforce cooldown between consecutive refinancing requests.
+        if config.refinance_cooldown_ledgers > 0 {
+            if let Some(last_refi) = loan.refinanced_at_ledger {
+                let current_ledger = env.ledger().sequence();
+                let elapsed = current_ledger.saturating_sub(last_refi);
+                if elapsed < config.refinance_cooldown_ledgers {
+                    return Err(PoolError::RefinanceCooldownActive);
+                }
+            }
+        }
+
         // Accrue any outstanding compound interest before computing what is owed.
         Self::accrue_interest(&env, &mut loan);
 
@@ -1434,6 +1521,11 @@ impl LendingPoolContract {
                 return Err(PoolError::UnauthorizedContractor);
             }
 
+            // Calculate the configurable origination fee from the gross amount.
+            // Loan accounting remains gross; only token transfers use the net.
+            let (origination_fee, net_disbursement) =
+                Self::calculate_origination_fee(&config, amount)?;
+
             // Skim the 5 bps protocol insurance premium off the top. The borrower
             // still owes the full `amount` — the premium is an origination cost
             // that buys the tranches a secondary loss backstop.
@@ -1447,13 +1539,23 @@ impl LendingPoolContract {
             } else {
                 0
             };
+            if net_disbursement < premium {
+                return Err(PoolError::InvalidAmount);
+            }
 
-            // Transfer funds to recipient, net of the premium.
-            token.transfer(
-                &env.current_contract_address(),
-                &recipient,
-                &(amount - premium),
-            );
+            if origination_fee > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &config.treasury_address,
+                    &origination_fee,
+                );
+            }
+
+            // Transfer the remaining amount to the recipient.
+            let recipient_amount = net_disbursement - premium;
+            if recipient_amount > 0 {
+                token.transfer(&env.current_contract_address(), &recipient, &recipient_amount);
+            }
 
             if let Some(insurance_addr) = insurance_pool {
                 token.transfer(&env.current_contract_address(), &insurance_addr, &premium);
@@ -1614,6 +1716,17 @@ impl LendingPoolContract {
 
             // Perform disbursement for valid item
             let token = Self::token_client(&env, &config.token);
+            let (origination_fee, net_disbursement) =
+                match Self::calculate_origination_fee(&config, item.amount) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        env.events().publish(
+                            (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                            symbol_short!("fee_high"),
+                        );
+                        continue;
+                    }
+                };
             let insurance_pool =
                 Self::read_insurance_pool(&env).filter(|_| premium_for(item.amount) > 0);
             let premium = if insurance_pool.is_some() {
@@ -1621,12 +1734,29 @@ impl LendingPoolContract {
             } else {
                 0
             };
+            if net_disbursement < premium {
+                env.events().publish(
+                    (Symbol::new(&env, "batch_skip"), item.loan_id.clone()),
+                    symbol_short!("fee_amt"),
+                );
+                continue;
+            }
 
-            token.transfer(
-                &env.current_contract_address(),
-                &item.recipient,
-                &(item.amount - premium),
-            );
+            if origination_fee > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &config.treasury_address,
+                    &origination_fee,
+                );
+            }
+            let recipient_amount = net_disbursement - premium;
+            if recipient_amount > 0 {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &item.recipient,
+                    &recipient_amount,
+                );
+            }
 
             if let Some(insurance_addr) = insurance_pool {
                 token.transfer(&env.current_contract_address(), &insurance_addr, &premium);
@@ -1969,6 +2099,9 @@ impl LendingPoolContract {
         // Mark as repaid if fully paid (compound debt cleared).
         if loan.outstanding_debt == 0 {
             loan.status = LoanStatus::Repaid;
+
+            // Full repayment frees the borrower's active-loan slot.
+            Self::release_borrower_loan_slot(&env, &loan.borrower);
 
             // Release any undisbursed locked commitments
             let undisbursed = loan.principal - loan.disbursed;
@@ -2330,6 +2463,9 @@ impl LendingPoolContract {
         loan.outstanding_debt = net_loss;
         Self::set_loan(&env, &loan_id, &loan);
 
+        // A defaulted loan is no longer active; free the borrower's slot.
+        Self::release_borrower_loan_slot(&env, &loan.borrower);
+
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -2523,6 +2659,13 @@ impl LendingPoolContract {
                 if current_ledger < record.start_ledger + config.lockup_duration_ledgers {
                     return Err(PoolError::LockupPeriodActive);
                 }
+            }
+
+            // ── Max Single Withdrawal Check ───────────────────────────────
+            // Caps the blast radius of a compromised key or contract bug: a
+            // larger position must be split across multiple calls.
+            if config.max_single_withdrawal > 0 && amount > config.max_single_withdrawal {
+                return Err(PoolError::WithdrawalExceedsMaxSingleLimit);
             }
 
             // ── Dynamic Fee Calculation ───────────────────────────────────
@@ -2980,6 +3123,119 @@ impl LendingPoolContract {
         Self::read_verification_registry(&env)
     }
 
+    // ── Loan Assumption Transfer (#561) ───────────────────────────────────
+
+    /// Initiate a loan assumption request to transfer an existing loan's obligations
+    /// to a proposed new borrower. Initiated by the current borrower requiring current borrower authorization.
+    pub fn request_loan_assumption(
+        env: Env,
+        loan_id: BytesN<32>,
+        new_borrower: Address,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let loan = Self::read_loan(&env, &loan_id)?;
+
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::LoanNotActive);
+        }
+
+        loan.borrower.require_auth();
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanAssumption(loan_id.clone()))
+        {
+            return Err(PoolError::AssumptionAlreadyRequested);
+        }
+
+        let request = LoanAssumptionRequest {
+            current_borrower: loan.borrower,
+            proposed_borrower: new_borrower,
+            requested_at_ledger: env.ledger().sequence(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanAssumption(loan_id), &request);
+        Ok(())
+    }
+
+    /// Finalize loan assumption transfer to a new borrower.
+    /// Requires dual authorization from both the current borrower and new borrower.
+    /// Re-verifies applicant eligibility before updating loan ownership.
+    pub fn assume_loan(
+        env: Env,
+        loan_id: BytesN<32>,
+        new_borrower: Address,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let mut loan = Self::read_loan(&env, &loan_id)?;
+
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::LoanNotActive);
+        }
+
+        let request: LoanAssumptionRequest = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanAssumption(loan_id.clone()))
+            .ok_or(PoolError::AssumptionNotFound)?;
+
+        if request.proposed_borrower != new_borrower {
+            return Err(PoolError::AssumptionNotAuthorized);
+        }
+
+        // Dual authorization enforcement
+        loan.borrower.require_auth();
+        new_borrower.require_auth();
+
+        // Re-verify new borrower applicant verification if registry is set
+        if let Some(registry_addr) = Self::read_verification_registry(&env) {
+            let registry_client = VerificationRegistryContractClient::new(&env, &registry_addr);
+            if registry_client.try_get_score(&new_borrower).is_err() {
+                return Err(PoolError::ApplicantNotVerified);
+            }
+        }
+
+        // Transfer loan obligations to new borrower
+        loan.borrower = new_borrower;
+        Self::set_loan(&env, &loan_id, &loan);
+
+        // Remove pending assumption request
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanAssumption(loan_id));
+        Ok(())
+    }
+
+    /// Cancel a pending loan assumption request. Initiated by current borrower.
+    pub fn cancel_loan_assumption(env: Env, loan_id: BytesN<32>) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let loan = Self::read_loan(&env, &loan_id)?;
+        loan.borrower.require_auth();
+
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanAssumption(loan_id.clone()))
+        {
+            return Err(PoolError::AssumptionNotFound);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanAssumption(loan_id));
+        Ok(())
+    }
+
+    /// Retrieve pending loan assumption request for a loan, if one exists.
+    pub fn get_loan_assumption(env: Env, loan_id: BytesN<32>) -> Option<LoanAssumptionRequest> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LoanAssumption(loan_id))
+    }
+
     // ── Multisig Validator ────────────────────────────────────────────────
 
     /// Set the MultisigValidator contract address used for admin multisig
@@ -3079,6 +3335,35 @@ impl LendingPoolContract {
     /// switch is off and all interest is distributed to investors.
     pub fn get_fee_switch_bps(env: Env) -> Result<u32, PoolError> {
         Ok(Self::read_config(&env)?.fee_switch_bps)
+    }
+
+    /// Set the loan origination fee in basis points. The fee is deducted from
+    /// disbursement transfers and sent to the existing protocol treasury;
+    /// loan principal and repayment obligations remain gross. Admin-only.
+    pub fn set_origination_fee_bps(env: Env, new_bps: u32) -> Result<(), PoolError> {
+        if new_bps > MAX_ORIGINATION_FEE_BPS {
+            return Err(PoolError::OriginationFeeTooHigh);
+        }
+
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        let previous_bps = config.origination_fee_bps;
+        config.origination_fee_bps = new_bps;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "orig_fee_set"),),
+            (previous_bps, new_bps),
+        );
+        Ok(())
+    }
+
+    /// Returns the current loan origination fee in basis points.
+    pub fn get_origination_fee_bps(env: Env) -> Result<u32, PoolError> {
+        Ok(Self::read_config(&env)?.origination_fee_bps)
     }
 
     /// Lifetime interest routed to the treasury by the fee switch.
@@ -3209,6 +3494,104 @@ impl LendingPoolContract {
             .instance()
             .get::<DataKey, PoolConfig>(&DataKey::Config)
             .map(|config| config.min_deposit_amount)
+            .unwrap_or(0)
+    }
+
+    /// Set the maximum number of simultaneously active loans (in `Requested`
+    /// or `Approved` state) a single borrower address may hold. Admin-only.
+    ///
+    /// Caps risk concentration on any one borrower: once at the cap, that
+    /// borrower cannot originate another loan until an existing one is
+    /// repaid, cancelled or defaulted.
+    ///
+    /// Pass `0` to disable the cap. Raising or lowering the cap never
+    /// disturbs loans that already exist — the limit is only checked at
+    /// origination — so lowering it below a borrower's current count simply
+    /// blocks new requests until they drop back under the new ceiling.
+    pub fn set_borrower_active_loan_cap(env: Env, max_loans: u32) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        let previous = config.max_active_loans_per_borrower;
+        config.max_active_loans_per_borrower = max_loans;
+    /// Set the refinancing cooldown period in ledgers.
+    ///
+    /// `0` disables the cooldown entirely (the deployment default).
+    pub fn set_refinance_cooldown_ledgers(env: Env, cooldown: u32) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        config.refinance_cooldown_ledgers = cooldown;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events()
+            .publish((Symbol::new(&env, "set_max_loans"),), (previous, max_loans));
+        env.events().publish((symbol_short!("set_rcool"),), cooldown);
+
+        Ok(())
+    }
+
+    /// Get the configured per-borrower active-loan cap. `0` means no cap.
+    pub fn get_borrower_active_loan_cap(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.max_active_loans_per_borrower)
+            .unwrap_or(0)
+    }
+
+    /// Get the number of currently-active loans (in `Requested` or `Approved`
+    /// state) held by `borrower`.
+    pub fn get_borrower_active_loans(env: Env, borrower: Address) -> u32 {
+        Self::read_borrower_active_loans(&env, &borrower)
+    /// Get the currently configured refinancing cooldown in ledgers.
+    pub fn get_refinance_cooldown_ledgers(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.refinance_cooldown_ledgers)
+            .unwrap_or(0)
+    }
+
+    /// Configure the maximum amount an investor may withdraw in a single
+    /// `withdraw` call, in token stroops. Admin-only.
+    ///
+    /// Caps the damage a compromised key or contract bug can cause in one
+    /// transaction: a position larger than the limit must be withdrawn
+    /// across multiple sequential calls.
+    ///
+    /// Pass `0` to disable the cap. Negative values are rejected — the
+    /// intent there is ambiguous, and silently treating them as "off" would
+    /// hide a mistake in a governance transaction.
+    pub fn set_max_single_withdrawal(env: Env, amount: i128) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if amount < 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        config.max_single_withdrawal = amount;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish((symbol_short!("set_maxsw"),), amount);
+
+        Ok(())
+    }
+
+    /// Get the currently configured maximum single-transaction withdrawal
+    /// limit, in token stroops. `0` means no cap is enforced.
+    pub fn get_max_single_withdrawal(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.max_single_withdrawal)
             .unwrap_or(0)
     }
 
@@ -5541,6 +5924,175 @@ mod test {
         assert_eq!(token.balance(&contractor), 10_000_0000000i128);
     }
 
+    #[test]
+    fn test_origination_fee_is_routed_without_reducing_principal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, investor, treasury, token_address, client) = setup_pool(&env);
+        let token = token::Client::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let contractor = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 100_000_0000000i128;
+
+        client.set_origination_fee_bps(&200);
+        client.deposit(&investor, &150_000_0000000i128, &Tranche::Senior);
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        assert_eq!(token.balance(&contractor), 98_000_0000000i128);
+        assert_eq!(token.balance(&treasury), 2_000_0000000i128);
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.principal, principal);
+        assert_eq!(loan.disbursed, principal);
+        assert_eq!(loan.outstanding_debt, principal);
+    }
+
+    #[test]
+    fn test_origination_fee_requires_admin_and_rejects_values_over_100_percent() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let attacker = Address::generate(&env);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_origination_fee_bps",
+                    args: (200u32,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_origination_fee_bps(&200);
+        assert!(result.is_err());
+        assert_eq!(client.get_origination_fee_bps(), 0);
+
+        let result = client.try_set_origination_fee_bps(&(BPS_SCALE + 1));
+        assert_eq!(result.unwrap_err(), Ok(PoolError::OriginationFeeTooHigh));
+    }
+
+    // ── Per-Borrower Active-Loan Cap ─────────────────────────────────────
+
+    #[test]
+    fn test_active_loan_cap_blocks_origination_at_the_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        client.set_borrower_active_loan_cap(&2);
+        assert_eq!(client.get_borrower_active_loan_cap(), 2);
+
+        let loan_a = BytesN::from_array(&env, &[0xA1u8; 32]);
+        let loan_b = BytesN::from_array(&env, &[0xB2u8; 32]);
+        let loan_c = BytesN::from_array(&env, &[0xC3u8; 32]);
+
+        // Up to and including the cap is allowed.
+        client.request_loan(&borrower, &loan_a, &principal);
+        client.request_loan(&borrower, &loan_b, &principal);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 2);
+
+        // The loan that would exceed the cap is rejected.
+        let blocked = client.try_request_loan(&borrower, &loan_c, &principal);
+        assert_eq!(blocked.unwrap_err(), Ok(PoolError::BorrowerLoanCapExceeded));
+        assert_eq!(client.get_borrower_active_loans(&borrower), 2);
+
+        // The cap is per borrower, not global: a different borrower is free
+        // to originate.
+        let other_borrower = Address::generate(&env);
+        client.request_loan(&other_borrower, &loan_c, &principal);
+        assert_eq!(client.get_borrower_active_loans(&other_borrower), 1);
+    }
+
+    #[test]
+    fn test_active_loan_cap_frees_a_slot_when_a_loan_is_cancelled_or_repaid() {
+        let env = Env::default();
+        env.mock_all_auths();
+        // 0% interest keeps outstanding debt flat so a full repayment is exact.
+        let (_admin, investor, _treasury, token_address, client) =
+            setup_pool_with_rates(&env, 0u32, 0u32);
+        let sac = StellarAssetClient::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        client.set_borrower_active_loan_cap(&1);
+        sac.mint(&investor, &(principal * 4));
+        client.deposit(&investor, &(principal * 4), &Tranche::Senior);
+
+        let loan_a = BytesN::from_array(&env, &[0xA1u8; 32]);
+        let loan_b = BytesN::from_array(&env, &[0xB2u8; 32]);
+        let loan_c = BytesN::from_array(&env, &[0xC3u8; 32]);
+
+        // At the cap after one request.
+        client.request_loan(&borrower, &loan_a, &principal);
+        assert_eq!(
+            client
+                .try_request_loan(&borrower, &loan_b, &principal)
+                .unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+
+        // Cancelling the pending request frees the slot.
+        client.cancel_loan(&loan_a);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 0);
+
+        // A fresh loan can now be originated, taken through to full repayment.
+        client.request_loan(&borrower, &loan_b, &principal);
+        client.approve_loan(&loan_b);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_b, &borrower, &principal);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 1);
+
+        sac.mint(&borrower, &principal);
+        client.repay(&borrower, &loan_b, &principal);
+        assert_eq!(client.get_loan_info(&loan_b).status, LoanStatus::Repaid);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 0);
+
+        // Repaying the loan freed the slot for another origination.
+        client.request_loan(&borrower, &loan_c, &principal);
+        assert_eq!(client.get_borrower_active_loans(&borrower), 1);
+    }
+
+    #[test]
+    fn test_active_loan_cap_setter_is_admin_only_and_zero_disables_it() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let borrower = Address::generate(&env);
+        let principal = 10_000_0000000i128;
+
+        // A non-admin cannot change the cap.
+        let attacker = Address::generate(&env);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_borrower_active_loan_cap",
+                    args: (1u32,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_borrower_active_loan_cap(&1);
+        assert!(result.is_err());
+
+        // Default (0) means no cap: the borrower can stack loans freely.
+        assert_eq!(client.get_borrower_active_loan_cap(), 0);
+        for seed in 0u8..4 {
+            let loan_id = BytesN::from_array(&env, &[seed; 32]);
+            client.request_loan(&borrower, &loan_id, &principal);
+        }
+        assert_eq!(client.get_borrower_active_loans(&borrower), 4);
+    }
+
     /// Deploys and initializes an InsurancePool bound to `client`, and wires
     /// the pool to route its disbursement premium there.
     fn setup_insurance<'a>(
@@ -7334,6 +7886,185 @@ mod test {
 
         let record = client.get_investor_info(&investor);
         assert_eq!(record.deposited, 40_000_0000000i128);
+    }
+
+    // ── Maximum single-transaction withdrawal limit ──────────────────────
+
+    /// The cap is off at deployment, so nothing changes for existing pools
+    /// until an admin opts in.
+    #[test]
+    fn test_max_single_withdrawal_defaults_to_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+
+        assert_eq!(client.get_max_single_withdrawal(), 0i128);
+        assert_eq!(client.get_pool_config().max_single_withdrawal, 0i128);
+
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        // A large single withdrawal is accepted while the cap is disabled.
+        client.withdraw(&investor, &50_000_0000000i128);
+        assert_eq!(client.get_investor_info(&investor).deposited, 0i128);
+    }
+
+    #[test]
+    fn test_set_max_single_withdrawal_updates_config() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        assert_eq!(client.get_max_single_withdrawal(), 10_000_0000000i128);
+        assert_eq!(
+            client.get_pool_config().max_single_withdrawal,
+            10_000_0000000i128
+        );
+    }
+
+    #[test]
+    fn test_set_max_single_withdrawal_rejects_negative() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+
+        let result = client.try_set_max_single_withdrawal(&-1i128);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::InvalidAmount);
+        assert_eq!(client.get_max_single_withdrawal(), 0i128);
+    }
+
+    #[test]
+    fn test_non_admin_cannot_set_max_single_withdrawal() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let attacker = Address::generate(&env);
+
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_max_single_withdrawal",
+                    args: (10_000_0000000i128,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_max_single_withdrawal(&10_000_0000000i128);
+
+        assert!(result.is_err());
+        assert_eq!(client.get_max_single_withdrawal(), 0i128);
+    }
+
+    /// Withdrawing exactly at the configured limit is allowed — the check is
+    /// `amount > limit`, not `>=`.
+    #[test]
+    fn test_withdraw_at_limit_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        client.withdraw(&investor, &10_000_0000000i128);
+        assert_eq!(client.get_investor_info(&investor).deposited, 40_000_0000000i128);
+    }
+
+    #[test]
+    fn test_withdraw_just_below_limit_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        client.withdraw(&investor, &9_999_9999999i128);
+        assert_eq!(
+            client.get_investor_info(&investor).deposited,
+            40_000_0000001i128
+        );
+    }
+
+    /// A withdrawal of one stroop over the limit is rejected outright — the
+    /// caller must split it across multiple calls instead.
+    #[test]
+    fn test_withdraw_above_limit_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        let result = client.try_withdraw(&investor, &10_000_0000001i128);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::WithdrawalExceedsMaxSingleLimit
+        );
+        // Rejected withdrawal must not touch the investor's balance.
+        assert_eq!(client.get_investor_info(&investor).deposited, 50_000_0000000i128);
+    }
+
+    /// A position larger than the per-call limit must be drained across
+    /// multiple sequential withdrawals, each individually within the cap.
+    #[test]
+    fn test_withdraw_above_limit_requires_multiple_sequential_calls() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _treasury, _token, client) = setup_pool(&env);
+        client.deposit(&investor, &25_000_0000000i128, &Tranche::Senior);
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        // One call for the full amount is rejected.
+        let result = client.try_withdraw(&investor, &25_000_0000000i128);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::WithdrawalExceedsMaxSingleLimit
+        );
+
+        // Three sequential calls, each at or below the cap, succeed.
+        client.withdraw(&investor, &10_000_0000000i128);
+        client.withdraw(&investor, &10_000_0000000i128);
+        client.withdraw(&investor, &5_000_0000000i128);
+
+        assert_eq!(client.get_investor_info(&investor).deposited, 0i128);
+    }
+
+    /// Setting the cap must not disturb any other config field.
+    #[test]
+    fn test_set_max_single_withdrawal_preserves_other_config_fields() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, _investor, _treasury, _token, client) = setup_pool(&env);
+        let before = client.get_pool_config();
+
+        client.set_max_single_withdrawal(&10_000_0000000i128);
+
+        let after = client.get_pool_config();
+        assert_eq!(after.max_single_withdrawal, 10_000_0000000i128);
+        assert_eq!(after.admin, before.admin);
+        assert_eq!(after.token, before.token);
+        assert_eq!(after.escrow, before.escrow);
+        assert_eq!(after.interest_rate_bps, before.interest_rate_bps);
+        assert_eq!(after.senior_rate_bps, before.senior_rate_bps);
+        assert_eq!(after.treasury_address, before.treasury_address);
+        assert_eq!(after.min_deposit_amount, before.min_deposit_amount);
+        assert_eq!(
+            after.refinance_cooldown_ledgers,
+            before.refinance_cooldown_ledgers
+        );
     }
 
     // ── Minimum deposit amount (dust guard) ──────────────────────────────

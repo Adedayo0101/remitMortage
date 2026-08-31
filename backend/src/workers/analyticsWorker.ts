@@ -1,7 +1,6 @@
 import { Worker, type WorkerOptions } from "bullmq";
 import { getClusterClient } from "../services/redisCluster.js";
-import { processAnalyticsJob } from "../services/analyticsEvents.js";
-import type { AnalyticsJobData } from "../services/queueService.js";
+import { processAnalyticsJob, type AnalyticsJobData } from "../services/analyticsEvents.js";
 import logger from "../utils/logger.js";
 
 function connection(): WorkerOptions["connection"] {

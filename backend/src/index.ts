@@ -29,6 +29,7 @@ import { kycRouter } from "./routes/kyc.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
+import { adminAuthRouter } from "./routes/adminAuth.js";
 import { workspaceRouter } from "./routes/workspace.js";
 import { userRouter } from "./routes/user.js";
 import { metricsRouter } from "./routes/metrics.js";
@@ -36,6 +37,8 @@ import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { incidentWebhookRouter } from "./routes/incidentWebhooks.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
+import { waitlistRouter } from "./routes/waitlist.js";
+import { authRouter } from "./routes/auth.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { logMasker } from "./middleware/logMasker.js";
@@ -43,6 +46,7 @@ import { correlationId } from "./middleware/correlationId.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { rlsMiddleware } from "./middleware/rls.js";
 import { startEventIndexer } from "./services/eventIndexer.js";
 import {
   globalRateLimiter,
@@ -163,6 +167,11 @@ app.get("/api/csrf-token", (req, res) => {
   res.json({ csrfToken, cookieName: CSRF_COOKIE });
 });
 
+// Row-Level Security: sets PostgreSQL session tenant context per-request.
+// Runs after cookie parsing so the auth token is available, but before any
+// route handlers execute database queries.
+app.use(rlsMiddleware);
+
 // Basic rate limiter for verification endpoints: 100 requests per minute per IP
 const verificationLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -193,10 +202,13 @@ app.use("/api/audit-logs", auditRouter);
 app.use("/api/kyc", kycRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
+app.use("/api/admin", adminAuthRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/webhooks/pagerduty", incidentWebhookRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
 app.use("/api/user", userRouter);
+app.use("/api/waitlist", waitlistRouter);
+app.use("/api/auth", authRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 

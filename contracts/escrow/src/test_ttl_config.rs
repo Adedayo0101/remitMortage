@@ -10,10 +10,11 @@ use crate::errors::EscrowError;
 use crate::types::{DataKey, EscrowConfig};
 use crate::{EscrowContract, EscrowContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    testutils::{storage::{Instance, Persistent}, Address as _, Ledger as _},
     token::StellarAssetClient,
     Address, Env, Symbol,
 };
+use soroban_sdk::testutils::storage::{Instance, Persistent};
 
 /// Testnet-style TTL profile: short bumps, cheap to maintain.
 const TESTNET_INSTANCE_BUMP: u32 = 100_000;
