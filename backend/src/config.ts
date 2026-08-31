@@ -100,6 +100,8 @@ export interface Config {
   draftStaleThresholdDays: number;
   /** Days after a stale notice before an unresumed Draft is soft-deleted (expired). */
   draftStaleExpiryGraceDays: number;
+  /** When true, registration requires a valid unused invite code (soft-launch gating). */
+  inviteCodeRequired: boolean;
 }
 
 /** Parses APPLICATION_SLA_HOURS (a JSON map of status -> SLA hours). */
@@ -245,5 +247,6 @@ export function loadConfig(): Config {
       process.env.DRAFT_STALE_EXPIRY_GRACE_DAYS || "7",
       10
     ),
+    inviteCodeRequired: process.env.INVITE_CODE_REQUIRED === "true",
   };
 }

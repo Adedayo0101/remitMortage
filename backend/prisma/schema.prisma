@@ -540,3 +540,32 @@ model SessionToken {
   @@index([expiresAt])
   @@index([createdAt])
 }
+
+model InviteCode {
+  id        String    @id @default(uuid())
+  code      String    @unique
+  email     String?
+  used      Boolean   @default(false)
+  usedBy    String?
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  @@index([code])
+  @@index([used])
+}
+
+model WaitlistEntry {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  walletAddress String?
+  status        String    @default("pending")
+  inviteCode    String?
+  position      Int?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+}
