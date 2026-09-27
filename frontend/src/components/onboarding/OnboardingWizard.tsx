@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -12,8 +12,22 @@ import { toast } from "react-hot-toast";
 import { useWallet } from "@/context/WalletContext";
 import DocumentChecklist from "./DocumentChecklist";
 import type { LoanType } from "@/lib/document-checklist";
+import ErrorSummary from "@/components/forms/ErrorSummary";
 
 const STEPS = ["Connect Wallet", "Verify History", "Set Goal", "Documents", "Submit Application"];
+const FIELD_STEPS: Record<keyof OnboardingFormValues, number> = {
+  recipientAddress: 2,
+  savingsTarget: 3,
+  savingsDuration: 3,
+  firstDepositAmount: 5,
+};
+
+const FIELD_LABELS: Record<keyof OnboardingFormValues, string> = {
+  recipientAddress: "Recipient's Stellar wallet address",
+  savingsTarget: "Down Payment Goal (USDC)",
+  savingsDuration: "Savings Duration",
+  firstDepositAmount: "Initial Deposit Amount (USDC)",
+};
 
 export default function OnboardingWizard() {
   const router = useRouter();
@@ -31,12 +45,15 @@ export default function OnboardingWizard() {
   const [loanType, setLoanType] = useState<LoanType>("purchase");
   const [documentsAccepted, setDocumentsAccepted] = useState(false);
   const [authenticatedAddress, setAuthenticatedAddress] = useState<string | null>(null);
+  const [errorAnnouncementKey, setErrorAnnouncementKey] = useState(0);
+  const pendingFieldFocus = useRef<keyof OnboardingFormValues | null>(null);
 
   const {
     control,
     trigger,
     getValues,
     setValue,
+    setFocus,
     formState: { errors },
   } = useForm<OnboardingFormValues>({
     resolver: zodResolver(onboardingSchema),
@@ -80,25 +97,28 @@ export default function OnboardingWizard() {
   const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL!;
   const USDC_TOKEN_ID = process.env.NEXT_PUBLIC_USDC_TOKEN_ID!;
 
-  const fetchUSDCBalance = useCallback(async (pk: string) => {
-    try {
-      const { Horizon } = await import("@stellar/stellar-sdk");
-      const server = new Horizon.Server(HORIZON_URL);
-      const account = await server.accounts().accountId(pk).call();
-      const balances = account.balances as Array<{
-        asset_code?: string;
-        asset_issuer?: string;
-        balance: string;
-      }>;
-      const usdcBalanceLine = balances.find(
-        (balance) => balance.asset_code === "USDC" && balance.asset_issuer === USDC_TOKEN_ID
-      );
-      setUsdcBalance(usdcBalanceLine ? parseFloat(usdcBalanceLine.balance).toFixed(2) : "0.00");
-    } catch (e) {
-      console.warn("Could not fetch USDC balance.", e);
-      setUsdcBalance("0.00");
-    }
-  }, [HORIZON_URL, USDC_TOKEN_ID, setUsdcBalance]);
+  const fetchUSDCBalance = useCallback(
+    async (pk: string) => {
+      try {
+        const { Horizon } = await import("@stellar/stellar-sdk");
+        const server = new Horizon.Server(HORIZON_URL);
+        const account = await server.accounts().accountId(pk).call();
+        const balances = account.balances as Array<{
+          asset_code?: string;
+          asset_issuer?: string;
+          balance: string;
+        }>;
+        const usdcBalanceLine = balances.find(
+          (balance) => balance.asset_code === "USDC" && balance.asset_issuer === USDC_TOKEN_ID
+        );
+        setUsdcBalance(usdcBalanceLine ? parseFloat(usdcBalanceLine.balance).toFixed(2) : "0.00");
+      } catch (e) {
+        console.warn("Could not fetch USDC balance.", e);
+        setUsdcBalance("0.00");
+      }
+    },
+    [HORIZON_URL, USDC_TOKEN_ID, setUsdcBalance]
+  );
 
   useEffect(() => {
     if (step === 1 && publicKey) {
@@ -106,6 +126,35 @@ export default function OnboardingWizard() {
       return () => clearTimeout(timeout);
     }
   }, [step, publicKey, fetchUSDCBalance]);
+
+  useEffect(() => {
+    const fieldName = pendingFieldFocus.current;
+    if (!fieldName || step !== FIELD_STEPS[fieldName]) return;
+    const field = document.getElementById(fieldName);
+    if (!field) return;
+    field.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    setFocus(fieldName);
+    field.focus();
+    pendingFieldFocus.current = null;
+  }, [setFocus, step]);
+
+  const focusErrorField = (fieldName: keyof OnboardingFormValues) => {
+    const field = document.getElementById(fieldName);
+    if (!field) return;
+    field.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    setFocus(fieldName);
+    field.focus();
+  };
+
+  const handleErrorFieldSelect = (fieldName: keyof OnboardingFormValues & string) => {
+    const targetStep = FIELD_STEPS[fieldName];
+    if (step === targetStep) {
+      focusErrorField(fieldName);
+      return;
+    }
+    pendingFieldFocus.current = fieldName;
+    store.getState().setStep(targetStep);
+  };
 
   const handleConnect = async () => {
     setIsLoading(true);
@@ -128,7 +177,10 @@ export default function OnboardingWizard() {
 
   const handleVerify = async () => {
     const valid = await trigger("recipientAddress");
-    if (!valid) return;
+    if (!valid) {
+      setErrorAnnouncementKey((key) => key + 1);
+      return;
+    }
 
     setIsLoading(true);
     setVerificationMessage("");
@@ -163,7 +215,9 @@ export default function OnboardingWizard() {
 
   const handleDeposit = async () => {
     if (!documentsAccepted) {
-      toast.error("Complete the document checklist: every required document must be accepted before final submission.");
+      toast.error(
+        "Complete the document checklist: every required document must be accepted before final submission."
+      );
       store.getState().setStep(4);
       return;
     }
@@ -172,7 +226,10 @@ export default function OnboardingWizard() {
       return;
     }
     const valid = await trigger("firstDepositAmount");
-    if (!valid) return;
+    if (!valid) {
+      setErrorAnnouncementKey((key) => key + 1);
+      return;
+    }
 
     setIsLoading(true);
     toast.loading("Preparing transaction...");
@@ -197,9 +254,12 @@ export default function OnboardingWizard() {
     }
   };
 
-  const handleDocumentEligibilityChange = useCallback((eligible: boolean) => {
-    setDocumentsAccepted(eligible);
-  }, [setDocumentsAccepted]);
+  const handleDocumentEligibilityChange = useCallback(
+    (eligible: boolean) => {
+      setDocumentsAccepted(eligible);
+    },
+    [setDocumentsAccepted]
+  );
 
   const submitLoanApplication = async (): Promise<boolean> => {
     if (!documentsAccepted) {
@@ -207,7 +267,7 @@ export default function OnboardingWizard() {
       store.getState().setStep(4);
       return false;
     }
-    const authenticated = authenticatedAddress === publicKey || await authenticateApplicant();
+    const authenticated = authenticatedAddress === publicKey || (await authenticateApplicant());
     if (!authenticated || !publicKey) return false;
 
     const applicationResponse = await fetch("/api/loan/apply", {
@@ -227,8 +287,11 @@ export default function OnboardingWizard() {
   };
 
   const getCsrfHeaders = (): Record<string, string> => {
-    const csrf = document.cookie.split(";").map((part) => part.trim())
-      .find((part) => part.startsWith("csrfToken="))?.slice("csrfToken=".length);
+    const csrf = document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith("csrfToken="))
+      ?.slice("csrfToken=".length);
     return csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {};
   };
 
@@ -269,7 +332,6 @@ export default function OnboardingWizard() {
     setAuthenticatedAddress(publicKey);
     return true;
   };
-
 
   const monthlyContribution = useMemo(() => {
     if (watchedDuration > 0 && watchedTarget > 0) {
@@ -320,15 +382,24 @@ export default function OnboardingWizard() {
                 Enter the Stellar wallet address of your remittance recipient.
               </p>
             </div>
+            <label htmlFor="recipientAddress" className="sr-only">
+              {FIELD_LABELS.recipientAddress}
+            </label>
             <Controller
               name="recipientAddress"
               control={control}
               render={({ field }) => (
                 <div className="flex gap-3">
                   <input
+                    id="recipientAddress"
+                    ref={field.ref}
                     type="text"
                     placeholder="Recipient's G... address"
                     className="input-field flex-1 font-mono text-xs"
+                    aria-invalid={Boolean(errors.recipientAddress)}
+                    aria-describedby={
+                      errors.recipientAddress ? "recipientAddress-error" : undefined
+                    }
                     value={field.value ?? ""}
                     onChange={(e) => {
                       field.onChange(e.target.value);
@@ -348,7 +419,9 @@ export default function OnboardingWizard() {
               )}
             />
             {errors.recipientAddress && (
-              <p className="text-red-400 text-xs">{errors.recipientAddress.message}</p>
+              <p id="recipientAddress-error" className="text-red-400 text-xs">
+                {errors.recipientAddress.message}
+              </p>
             )}
             {verificationMessage && (
               <div
@@ -370,7 +443,10 @@ export default function OnboardingWizard() {
             </div>
             <div className="space-y-4">
               <div>
-                <label className="text-xs text-slate-300 font-semibold block mb-1">
+                <label
+                  htmlFor="savingsTarget"
+                  className="text-xs text-slate-300 font-semibold block mb-1"
+                >
                   Down Payment Goal (USDC)
                 </label>
                 <Controller
@@ -378,8 +454,12 @@ export default function OnboardingWizard() {
                   control={control}
                   render={({ field }) => (
                     <input
+                      id="savingsTarget"
+                      ref={field.ref}
                       type="number"
                       className="input-field w-full font-mono"
+                      aria-invalid={Boolean(errors.savingsTarget)}
+                      aria-describedby={errors.savingsTarget ? "savingsTarget-error" : undefined}
                       value={Number.isNaN(field.value) ? "" : field.value}
                       onChange={(e) => {
                         const value = Number(e.target.value);
@@ -391,11 +471,16 @@ export default function OnboardingWizard() {
                   )}
                 />
                 {errors.savingsTarget && (
-                  <p className="text-red-400 text-xs mt-1">{errors.savingsTarget.message}</p>
+                  <p id="savingsTarget-error" className="text-red-400 text-xs mt-1">
+                    {errors.savingsTarget.message}
+                  </p>
                 )}
               </div>
               <div>
-                <label className="text-xs text-slate-300 font-semibold block mb-1">
+                <label
+                  htmlFor="savingsDuration"
+                  className="text-xs text-slate-300 font-semibold block mb-1"
+                >
                   Savings Duration
                 </label>
                 <Controller
@@ -403,8 +488,14 @@ export default function OnboardingWizard() {
                   control={control}
                   render={({ field }) => (
                     <select
+                      id="savingsDuration"
+                      ref={field.ref}
                       className="input-field w-full"
                       value={field.value}
+                      aria-invalid={Boolean(errors.savingsDuration)}
+                      aria-describedby={
+                        errors.savingsDuration ? "savingsDuration-error" : undefined
+                      }
                       onChange={(e) => {
                         const value = Number(e.target.value) as 6 | 9 | 12;
                         field.onChange(value);
@@ -418,6 +509,11 @@ export default function OnboardingWizard() {
                     </select>
                   )}
                 />
+                {errors.savingsDuration && (
+                  <p id="savingsDuration-error" className="text-red-400 text-xs mt-1">
+                    {errors.savingsDuration.message}
+                  </p>
+                )}
               </div>
 
               <div className="p-4 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs flex justify-between items-center">
@@ -462,7 +558,10 @@ export default function OnboardingWizard() {
               </p>
             </div>
             <div>
-              <label className="text-xs text-slate-300 font-semibold block mb-1">
+              <label
+                htmlFor="firstDepositAmount"
+                className="text-xs text-slate-300 font-semibold block mb-1"
+              >
                 Initial Deposit Amount (USDC)
               </label>
               <Controller
@@ -470,8 +569,14 @@ export default function OnboardingWizard() {
                 control={control}
                 render={({ field }) => (
                   <input
+                    id="firstDepositAmount"
+                    ref={field.ref}
                     type="number"
                     className="input-field w-full font-mono"
+                    aria-invalid={Boolean(errors.firstDepositAmount)}
+                    aria-describedby={
+                      errors.firstDepositAmount ? "firstDepositAmount-error" : undefined
+                    }
                     value={Number.isNaN(field.value) ? "" : field.value}
                     onChange={(e) => {
                       const value = Number(e.target.value);
@@ -483,7 +588,9 @@ export default function OnboardingWizard() {
                 )}
               />
               {errors.firstDepositAmount && (
-                <p className="text-red-400 text-xs mt-1">{errors.firstDepositAmount.message}</p>
+                <p id="firstDepositAmount-error" className="text-red-400 text-xs mt-1">
+                  {errors.firstDepositAmount.message}
+                </p>
               )}
             </div>
             <button
@@ -509,7 +616,10 @@ export default function OnboardingWizard() {
     const currentFields = STEP_FIELDS[step];
     if (currentFields.length > 0) {
       const valid = await trigger(currentFields);
-      if (!valid) return;
+      if (!valid) {
+        setErrorAnnouncementKey((key) => key + 1);
+        return;
+      }
     }
 
     if (step === 1 && !publicKey) {
@@ -572,6 +682,12 @@ export default function OnboardingWizard() {
         </div>
       )}
       <ProgressStepper steps={STEPS} currentStep={step} />
+      <ErrorSummary
+        errors={errors}
+        labels={FIELD_LABELS}
+        announcementKey={errorAnnouncementKey}
+        onFieldSelect={handleErrorFieldSelect}
+      />
       <div className="my-8">{renderStepContent()}</div>
       <div className="flex justify-between border-t border-slate-800/80 pt-5">
         <button
