@@ -177,6 +177,7 @@ model LoanApplication {
   escrowContractId   String?
   loanId             String?
   principal          Float
+  loanType           String?
   status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 

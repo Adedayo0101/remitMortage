@@ -11,16 +11,63 @@ import {
   escrowTargetMetForAmount,
 } from "../services/loanStore.js";
 import { queueNotification } from "../services/notification.js";
+import { listApplicantDocuments } from "../services/kycStorage.js";
+import type { AuthenticatedRequest } from "../middleware/auth.js";
 
 export const loanRouter = Router();
+
+const REQUIRED_DOCUMENTS_BY_LOAN_TYPE: Record<string, string[]> = {
+  purchase: ["identity", "income", "bank_statement", "property_contract"],
+  construction: ["identity", "income", "bank_statement", "construction_plan"],
+};
 
 // POST /api/loan/apply
 loanRouter.post("/apply", validatePositiveNumber("amount"), async (req, res) => {
   try {
-    const { borrowerAddress, amount } = req.body ?? {};
+    const { borrowerAddress, amount, loanType = "purchase" } = req.body ?? {};
 
-    if (!borrowerAddress) {
-      return res.status(400).json({ error: "missing_field", field: "borrowerAddress", message: "borrowerAddress is required" });
+    if (typeof borrowerAddress !== "string") {
+      return res.status(400).json({ error: "invalid_address", field: "borrowerAddress", message: "Invalid Stellar G-address" });
+    }
+
+    const authenticatedAddress = (req as AuthenticatedRequest).user?.walletAddress;
+    if (authenticatedAddress && authenticatedAddress !== borrowerAddress) {
+      return res.status(403).json({
+        error: "forbidden",
+        message: "You may only submit a loan application for your authenticated wallet.",
+      });
+    }
+
+    const requiredDocuments = REQUIRED_DOCUMENTS_BY_LOAN_TYPE[loanType];
+    if (!requiredDocuments) {
+      return res.status(400).json({
+        error: "invalid_loan_type",
+        message: "loanType must be purchase or construction.",
+      });
+    }
+
+    const applicantDocuments = await listApplicantDocuments(borrowerAddress);
+    const unacceptedDocuments = requiredDocuments.filter((documentType) => {
+      const latest = applicantDocuments
+        .filter((document) => document.documentType === documentType)
+        .sort((left, right) => Date.parse(right.uploadedAt) - Date.parse(left.uploadedAt))[0];
+      return latest?.status !== "Accepted";
+    });
+    if (unacceptedDocuments.length > 0) {
+      return res.status(400).json({
+        error: "required_documents_incomplete",
+        message: "Loan application cannot be submitted until every required document is accepted.",
+        unacceptedDocuments: unacceptedDocuments.map((documentType) => {
+          const document = applicantDocuments
+            .filter((entry) => entry.documentType === documentType)
+            .sort((left, right) => Date.parse(right.uploadedAt) - Date.parse(left.uploadedAt))[0];
+          return {
+            documentType,
+            status: document?.status ?? "Missing",
+            reviewMessage: document?.reviewMessage,
+          };
+        }),
+      });
     }
 
     try {
@@ -34,7 +81,7 @@ loanRouter.post("/apply", validatePositiveNumber("amount"), async (req, res) => 
       return res.status(400).json({ error: "escrow_target_not_met", message: "Escrow target not reached for borrower" });
     }
 
-    const app = await createApplication(borrowerAddress, String(amount));
+    const app = await createApplication(borrowerAddress, String(amount), loanType);
     return res.status(201).json(app);
   } catch (error) {
     logger.error("Loan apply error", { error });

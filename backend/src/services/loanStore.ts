@@ -18,6 +18,7 @@ export interface LoanApplication {
   id: string;
   borrowerAddress: string;
   amount: string;
+  loanType?: string;
   status: LoanStatus;
   reason?: string;
   createdAt: string;
@@ -29,6 +30,7 @@ function mapLoanApplication(record: any): LoanApplication {
     id: record.id,
     borrowerAddress: record.applicant.stellarAddress,
     amount: record.principal,
+    loanType: record.loanType ?? "purchase",
     status: record.status,
     reason: record.reason ?? undefined,
     createdAt: record.createdAt.toISOString(),
@@ -44,7 +46,11 @@ async function findOrCreateApplicant(stellarAddress: string) {
   });
 }
 
-export async function createApplication(borrowerAddress: string, amount: string) {
+export async function createApplication(
+  borrowerAddress: string,
+  amount: string,
+  loanType = "purchase"
+) {
   StrKey.decodeEd25519PublicKey(borrowerAddress);
 
   const applicant = await findOrCreateApplicant(borrowerAddress);
@@ -55,6 +61,7 @@ export async function createApplication(borrowerAddress: string, amount: string)
       id,
       applicantId: applicant.id,
       principal: amount,
+      loanType,
       status: "Pending",
     },
     include: { applicant: true },

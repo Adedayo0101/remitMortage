@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -10,13 +10,15 @@ import { onboardingSchema, STEP_FIELDS, type OnboardingFormValues } from "@/lib/
 import ProgressStepper from "./ProgressStepper";
 import { toast } from "react-hot-toast";
 import { useWallet } from "@/context/WalletContext";
+import DocumentChecklist from "./DocumentChecklist";
+import type { LoanType } from "@/lib/document-checklist";
 
-const STEPS = ["Connect Wallet", "Verify History", "Set Goal", "First Deposit"];
+const STEPS = ["Connect Wallet", "Verify History", "Set Goal", "Documents", "Submit Application"];
 
 export default function OnboardingWizard() {
   const router = useRouter();
   const store = getOnboardingStore();
-  const { publicKey, connect } = useWallet();
+  const { publicKey, connect, signMessage } = useWallet();
 
   // State from Zustand store (persisted across reloads).
   const step = useOnboardingState((s) => s.step);
@@ -26,6 +28,9 @@ export default function OnboardingWizard() {
   const [usdcBalance, setUsdcBalance] = useState("0");
   const [isLoading, setIsLoading] = useState(false);
   const [verificationMessage, setVerificationMessage] = useState("");
+  const [loanType, setLoanType] = useState<LoanType>("purchase");
+  const [documentsAccepted, setDocumentsAccepted] = useState(false);
+  const [authenticatedAddress, setAuthenticatedAddress] = useState<string | null>(null);
 
   const {
     control,
@@ -75,11 +80,32 @@ export default function OnboardingWizard() {
   const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL!;
   const USDC_TOKEN_ID = process.env.NEXT_PUBLIC_USDC_TOKEN_ID!;
 
+  const fetchUSDCBalance = useCallback(async (pk: string) => {
+    try {
+      const { Horizon } = await import("@stellar/stellar-sdk");
+      const server = new Horizon.Server(HORIZON_URL);
+      const account = await server.accounts().accountId(pk).call();
+      const balances = account.balances as Array<{
+        asset_code?: string;
+        asset_issuer?: string;
+        balance: string;
+      }>;
+      const usdcBalanceLine = balances.find(
+        (balance) => balance.asset_code === "USDC" && balance.asset_issuer === USDC_TOKEN_ID
+      );
+      setUsdcBalance(usdcBalanceLine ? parseFloat(usdcBalanceLine.balance).toFixed(2) : "0.00");
+    } catch (e) {
+      console.warn("Could not fetch USDC balance.", e);
+      setUsdcBalance("0.00");
+    }
+  }, [HORIZON_URL, USDC_TOKEN_ID, setUsdcBalance]);
+
   useEffect(() => {
     if (step === 1 && publicKey) {
-      fetchUSDCBalance(publicKey);
+      const timeout = window.setTimeout(() => void fetchUSDCBalance(publicKey), 0);
+      return () => clearTimeout(timeout);
     }
-  }, [step, publicKey]);
+  }, [step, publicKey, fetchUSDCBalance]);
 
   const handleConnect = async () => {
     setIsLoading(true);
@@ -100,21 +126,6 @@ export default function OnboardingWizard() {
     setIsLoading(false);
   };
 
-  const fetchUSDCBalance = async (pk: string) => {
-    try {
-      const { Horizon } = await import("@stellar/stellar-sdk");
-      const server = new Horizon.Server(HORIZON_URL);
-      const account = await server.accounts().accountId(pk).call();
-      const usdcBalanceLine = (account.balances as any[]).find(
-        (b) => b.asset_code === "USDC" && b.asset_issuer === USDC_TOKEN_ID
-      );
-      setUsdcBalance(usdcBalanceLine ? parseFloat(usdcBalanceLine.balance).toFixed(2) : "0.00");
-    } catch (e) {
-      console.warn("Could not fetch USDC balance.", e);
-      setUsdcBalance("0.00");
-    }
-  };
-
   const handleVerify = async () => {
     const valid = await trigger("recipientAddress");
     if (!valid) return;
@@ -122,13 +133,17 @@ export default function OnboardingWizard() {
     setIsLoading(true);
     setVerificationMessage("");
     try {
-      const response = await fetch("/api/verify", {
+      const response = await fetch("/api/verification/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recipientAddress: getValues("recipientAddress") }),
+        body: JSON.stringify({
+          senderAddress: publicKey,
+          recipientAddress: getValues("recipientAddress"),
+        }),
       });
       const data = await response.json();
-      if (response.ok && data.eligible) {
+      if (!response.ok) throw new Error(data.error ?? data.message ?? "Verification failed.");
+      if (data.eligible) {
         store.getState().setIsVerified(true);
         setVerificationMessage(data.message);
         toast.success("Remittance history verified!");
@@ -147,6 +162,11 @@ export default function OnboardingWizard() {
   };
 
   const handleDeposit = async () => {
+    if (!documentsAccepted) {
+      toast.error("Complete the document checklist: every required document must be accepted before final submission.");
+      store.getState().setStep(4);
+      return;
+    }
     if (!publicKey) {
       toast.error("Wallet not connected.");
       return;
@@ -158,18 +178,96 @@ export default function OnboardingWizard() {
     toast.loading("Preparing transaction...");
 
     try {
+      const submitted = await submitLoanApplication();
+      if (!submitted) {
+        toast.dismiss();
+        return;
+      }
       toast.dismiss();
-      toast.success("Simulated deposit success! Redirecting to Escrow Dashboard...");
+      toast.success("Loan application submitted. Redirecting to Escrow Dashboard...");
       clearDraft(); // Clear autosaved data on successful submission
       store.getState().reset();
       router.push("/dashboard");
     } catch (e) {
       console.error(e);
       toast.dismiss();
-      toast.error("Deposit failed.");
+      toast.error(e instanceof Error ? e.message : "Application submission failed.");
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleDocumentEligibilityChange = useCallback((eligible: boolean) => {
+    setDocumentsAccepted(eligible);
+  }, [setDocumentsAccepted]);
+
+  const submitLoanApplication = async (): Promise<boolean> => {
+    if (!documentsAccepted) {
+      toast.error("Submission is blocked until every required document is accepted.");
+      store.getState().setStep(4);
+      return false;
+    }
+    const authenticated = authenticatedAddress === publicKey || await authenticateApplicant();
+    if (!authenticated || !publicKey) return false;
+
+    const applicationResponse = await fetch("/api/loan/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getCsrfHeaders() },
+      body: JSON.stringify({
+        borrowerAddress: publicKey,
+        amount: getValues("firstDepositAmount"),
+        loanType,
+      }),
+    });
+    const applicationBody = await applicationResponse.json().catch(() => ({}));
+    if (!applicationResponse.ok) {
+      throw new Error(applicationBody.message ?? "Loan application submission failed.");
+    }
+    return true;
+  };
+
+  const getCsrfHeaders = (): Record<string, string> => {
+    const csrf = document.cookie.split(";").map((part) => part.trim())
+      .find((part) => part.startsWith("csrfToken="))?.slice("csrfToken=".length);
+    return csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {};
+  };
+
+  const authenticateApplicant = async (): Promise<boolean> => {
+    if (!publicKey) {
+      toast.error("Connect your Stellar wallet before continuing.");
+      return false;
+    }
+    const challengeResponse = await fetch("/api/verification/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getCsrfHeaders() },
+      body: JSON.stringify({ walletAddress: publicKey, network: "stellar" }),
+    });
+    const challengeBody = await challengeResponse.json();
+    if (!challengeResponse.ok || typeof challengeBody.challenge !== "string") {
+      toast.error(challengeBody.message ?? "Could not start wallet verification.");
+      return false;
+    }
+    const signature = await signMessage(challengeBody.challenge);
+    if (!signature) {
+      toast.error("Wallet signature is required to access applicant documents.");
+      return false;
+    }
+    const verifyResponse = await fetch("/api/verification/verify-ownership", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getCsrfHeaders() },
+      body: JSON.stringify({
+        walletAddress: publicKey,
+        network: "stellar",
+        challenge: challengeBody.challenge,
+        signature,
+      }),
+    });
+    if (!verifyResponse.ok) {
+      toast.error("Wallet verification failed. Please try again.");
+      return false;
+    }
+    setAuthenticatedAddress(publicKey);
+    return true;
   };
 
 
@@ -331,7 +429,30 @@ export default function OnboardingWizard() {
             </div>
           </div>
         );
-      case 4: // First Deposit
+      case 4: // Required loan documents
+        return (
+          <div className="space-y-5">
+            <label className="block text-xs text-slate-300 font-semibold">
+              Loan purpose
+              <select
+                value={loanType}
+                onChange={(event) => setLoanType(event.target.value as LoanType)}
+                className="input-field mt-2 w-full"
+                aria-label="Loan purpose"
+              >
+                <option value="purchase">Purchase an existing property</option>
+                <option value="construction">Construct a property</option>
+              </select>
+            </label>
+            <DocumentChecklist
+              applicantAddress={publicKey}
+              loanType={loanType}
+              onEligibilityChange={handleDocumentEligibilityChange}
+              onAuthenticate={authenticateApplicant}
+            />
+          </div>
+        );
+      case 5: // First Deposit
         return (
           <div className="space-y-5">
             <div>
@@ -368,10 +489,15 @@ export default function OnboardingWizard() {
             <button
               onClick={handleDeposit}
               className="btn-cta w-full justify-center py-3.5"
-              disabled={isLoading}
+              disabled={isLoading || !documentsAccepted}
             >
-              {isLoading ? "Signing Transaction..." : "Deposit USDC & Unlock Escrow"}
+              {isLoading ? "Submitting Application..." : "Submit Loan Application"}
             </button>
+            {!documentsAccepted && (
+              <p role="status" className="text-xs text-amber-300">
+                Application submission is blocked until every required document is accepted.
+              </p>
+            )}
           </div>
         );
       default:
@@ -393,6 +519,15 @@ export default function OnboardingWizard() {
     if (step === 2 && !isVerified) {
       toast.error("Please verify your remittance history to continue.");
       return;
+    }
+
+    if (step === 4 && !documentsAccepted) {
+      toast.error("Submission is blocked until every required document has been accepted.");
+      return;
+    }
+    if (step === 5 && authenticatedAddress !== publicKey) {
+      const authenticated = await authenticateApplicant();
+      if (!authenticated) return;
     }
 
     store.getState().setStep(step + 1);

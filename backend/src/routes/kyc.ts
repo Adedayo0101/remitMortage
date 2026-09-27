@@ -4,11 +4,32 @@ import logger from "../utils/logger.js";
 import { loadConfig } from "../config.js";
 import { authMiddleware, AuthenticatedRequest } from "../middleware/auth.js";
 import { encryptKycUpload, KycUploadRequest } from "../middleware/kycEncryption.js";
-import { storeEncryptedDocument, getEncryptedDocument } from "../services/kycStorage.js";
+import {
+  storeEncryptedDocument,
+  getEncryptedDocument,
+  listApplicantDocuments,
+  listAllApplicantDocuments,
+  updateDocumentReview,
+  type KycDocumentStatus,
+} from "../services/kycStorage.js";
 import { decryptBuffer } from "../services/kmsEncryption.js";
 import { issueKycAccessToken, verifyKycAccessToken } from "../services/kycAccessToken.js";
 
 export const kycRouter = Router();
+
+const KYC_DOCUMENT_TYPES = new Set([
+  "identity",
+  "income",
+  "bank_statement",
+  "property_contract",
+  "construction_plan",
+]);
+const KYC_REVIEW_STATUSES = new Set<KycDocumentStatus>([
+  "Uploaded",
+  "Under Review",
+  "Accepted",
+  "Rejected",
+]);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -114,14 +135,29 @@ kycRouter.post(
         return;
       }
 
+      const documentType = String(req.body?.documentType ?? "");
+      if (!KYC_DOCUMENT_TYPES.has(documentType)) {
+        res.status(400).json({
+          error: "invalid_document_type",
+          message: "A supported documentType is required.",
+        });
+        return;
+      }
+
       const record = await storeEncryptedDocument(
         address,
+        documentType,
         req.file.originalname,
         req.file.mimetype,
         req.kycEnvelope
       );
 
-      res.status(201).json({ documentId: record.documentId, uploadedAt: record.uploadedAt });
+      res.status(201).json({
+        documentId: record.documentId,
+        documentType: record.documentType,
+        status: record.status,
+        uploadedAt: record.uploadedAt,
+      });
     } catch (error) {
       logger.error("[KYC] Upload error", { error });
       res.status(500).json({
@@ -129,6 +165,39 @@ kycRouter.post(
         message: (error as Error).message || "Failed to store KYC document.",
       });
     }
+  }
+);
+
+/** List the authenticated borrower's safe document metadata and live review state. */
+kycRouter.get("/:address/documents", authMiddleware, async (req: AuthenticatedRequest, res) => {
+  const address = String(req.params.address);
+  if (req.user?.walletAddress !== address) {
+    res.status(403).json({ error: "forbidden", message: "You may only view your own documents." });
+    return;
+  }
+  res.json(await listApplicantDocuments(address));
+});
+
+/** Operator review updates are explicitly constrained to known workflow states. */
+kycRouter.patch(
+  "/:documentId/review",
+  requireOperatorKey,
+  async (req: Request, res: Response) => {
+    const { status, reviewMessage } = req.body ?? {};
+    if (typeof status !== "string" || !KYC_REVIEW_STATUSES.has(status as KycDocumentStatus)) {
+      res.status(400).json({ error: "invalid_status", message: "Unsupported document review status." });
+      return;
+    }
+    const document = await updateDocumentReview(
+      String(req.params.documentId),
+      status as KycDocumentStatus,
+      typeof reviewMessage === "string" ? reviewMessage : undefined
+    );
+    if (!document) {
+      res.status(404).json({ error: "document_not_found" });
+      return;
+    }
+    res.json(document);
   }
 );
 
