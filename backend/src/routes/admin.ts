@@ -1,7 +1,7 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
-import { Router, Request, Response } from "express";
+import { Router, Response } from "express";
 import { prisma } from "../services/db.js";
 import { sendWebhook } from "../services/webhook.js";
 import { runEscrowReconciliation } from "../jobs/escrowReconciliation.js";
@@ -25,6 +25,7 @@ import {
   MAX_LATENCY_WINDOW_MINUTES,
 } from "../services/webhookLatency.js";
 import { listSuppressedApplicants } from "../services/emailSuppression.js";
+import { runUnusedIndexAuditJob } from "../jobs/unusedIndexAudit.js";
 import { loadConfig } from "../config.js";
 
 export const adminRouter = Router();
@@ -307,6 +308,32 @@ adminRouter.get("/email-suppressions", requireAdmin, async (_req: AuthenticatedR
   }
 });
 
+/**
+ * @openapi
+ * /api/admin/db/unused-indexes:
+ *   get:
+ *     summary: Manually trigger the unused-index candidate report
+ *     description: >-
+ *       Report-only (issue #758). Scans pg_stat_user_indexes for indexes with
+ *       sustained near-zero usage, excludes constraint-backing indexes, and
+ *       returns candidates with table/columns/size context for human review.
+ *       Never drops an index — see docs/UNUSED_INDEX_REVIEW.md.
+ *     tags:
+ *       - Admin
+ *     responses:
+ *       200:
+ *         description: Unused-index report.
+ */
+adminRouter.get("/db/unused-indexes", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { report } = await runUnusedIndexAuditJob();
+    return res.json(report);
+  } catch (error) {
+    logger.error("Unused index audit error", { error });
+    return res.status(500).json({ error: "unused_index_audit_failed" });
+  }
+});
+
 adminRouter.get("/webhooks/latency", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   const config = loadConfig();
   const windowMinutes = positiveIntParam(
@@ -331,7 +358,7 @@ adminRouter.get("/webhooks/latency", requireAdmin, async (req: AuthenticatedRequ
 });
 
 // Trigger manual retry of a DLQ job
-adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) => {
+adminRouter.post("/webhooks/dlq/:id/retry", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   const rawId = req.params.id;
   const id = Array.isArray(rawId) ? rawId[0] : rawId;
 
@@ -386,7 +413,7 @@ adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) 
  *       500:
  *         description: Reconciliation job threw an unexpected error.
  */
-adminRouter.post("/escrow/reconcile", async (req: Request, res: Response) => {
+adminRouter.post("/escrow/reconcile", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     logger.info("[AdminRouter] Manual escrow reconciliation triggered", {
       ip: req.ip,

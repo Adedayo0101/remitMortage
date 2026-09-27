@@ -362,32 +362,49 @@ kycRouter.post(
 
     const ocrRecord = await getOcrResult(documentId);
 
-    // When there is no OCR record (document pre-dates OCR, or OCR store
-    // errored) we fall through to allow manual-entry submissions unchanged.
-    if (ocrRecord && !ocrRecord.ocrFailed) {
-      // Verify the document belongs to the authenticated wallet
-      if (req.user?.walletAddress !== ocrRecord.applicantAddress) {
+    // Issue #760: ownership is enforced even when there is no OCR record
+    // (pre-OCR documents) or OCR failed — fall back to the encrypted-document
+    // owner record instead of allowing cross-user submits.
+    if (!ocrRecord || ocrRecord.ocrFailed) {
+      const stored = await getEncryptedDocument(documentId);
+      if (!stored) {
+        res.status(404).json({ error: "document_not_found" });
+        return;
+      }
+      if (req.user?.walletAddress !== stored.applicantAddress) {
         res.status(403).json({
           error: "forbidden",
           message: "You may only submit documents for your own address.",
         });
         return;
       }
-
-      const unconfirmed = getUnconfirmedFields(ocrRecord);
-      if (unconfirmed.length > 0) {
-        res.status(400).json({
-          error: "unconfirmed_ocr_fields",
-          message:
-            "All OCR-extracted fields must be confirmed before submission. " +
-            `Please confirm: ${unconfirmed.join(", ")}.`,
-          unconfirmedFields: unconfirmed,
-        });
-        return;
-      }
+      // Manual-entry path: no OCR confirmations to enforce.
+      res.json({ submitted: true, documentId });
+      return;
     }
 
-    // All fields confirmed (or OCR was not available) — submission accepted.
+    // OCR produced extractable fields — owner check + confirmation gate.
+    if (req.user?.walletAddress !== ocrRecord.applicantAddress) {
+      res.status(403).json({
+        error: "forbidden",
+        message: "You may only submit documents for your own address.",
+      });
+      return;
+    }
+
+    const unconfirmed = getUnconfirmedFields(ocrRecord);
+    if (unconfirmed.length > 0) {
+      res.status(400).json({
+        error: "unconfirmed_ocr_fields",
+        message:
+          "All OCR-extracted fields must be confirmed before submission. " +
+          `Please confirm: ${unconfirmed.join(", ")}.`,
+        unconfirmedFields: unconfirmed,
+      });
+      return;
+    }
+
+    // All fields confirmed — submission accepted.
     res.json({ submitted: true, documentId });
   }
 );

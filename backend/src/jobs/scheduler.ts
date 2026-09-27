@@ -16,6 +16,7 @@ import { startAnalyticsRefreshScheduler, stopAnalyticsRefreshScheduler } from ".
 import { runSuspiciousActivityScan } from "../services/suspiciousActivity.js";
 import { runRateLimitAuditJob } from "./rateLimitAudit.js";
 import { runDeadlockDetectionJob } from "./deadlockDetection.js";
+import { runUnusedIndexAuditJob } from "./unusedIndexAudit.js";
 import { applyDueServicingTransfers } from "../services/loanServicing.js";
 import { prisma } from "../services/db.js";
 import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
@@ -32,6 +33,7 @@ let staleDraftCleanupTask: ReturnType<typeof cron.schedule> | null = null;
 let suspiciousActivityTask: ReturnType<typeof cron.schedule> | null = null;
 let rateLimitAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let deadlockDetectionTask: ReturnType<typeof cron.schedule> | null = null;
+let unusedIndexAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let servicingTransferTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
@@ -121,6 +123,18 @@ export function startScheduler() {
     await runDeadlockDetectionJob();
   }, { timezone: "UTC" });
 
+  // Weekly (Mon 10:00 UTC) by default: unused-index candidate report.
+  // Report-only — never drops an index. See docs/UNUSED_INDEX_REVIEW.md.
+  const unusedIndexSchedule = process.env.UNUSED_INDEX_AUDIT_CRON_SCHEDULE || "0 10 * * 1";
+  unusedIndexAuditTask = cron.schedule(unusedIndexSchedule, async () => {
+    try {
+      console.log("[Scheduler] Triggering unused index audit job...");
+      await runUnusedIndexAuditJob();
+    } catch (error) {
+      logger.error("[Scheduler] Unused index audit job failed", { error });
+    }
+  }, { timezone: "UTC" });
+
   // Every 15 minutes: apply loan servicing transfers whose effective date has passed
   const servicingSchedule = process.env.LOAN_SERVICING_TRANSFER_CRON_SCHEDULE || "*/15 * * * *";
   servicingTransferTask = cron.schedule(servicingSchedule, async () => {
@@ -135,7 +149,7 @@ export function startScheduler() {
   startAnalyticsRefreshScheduler();
 
   console.log(
-    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, slow query digest, suspicious activity scan, rate limit audit, deadlock detection, loan servicing transfer, and analytics refresh jobs scheduled."
+    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, slow query digest, suspicious activity scan, rate limit audit, deadlock detection, unused index audit, loan servicing transfer, and analytics refresh jobs scheduled."
   );
 }
 
@@ -183,6 +197,10 @@ export function stopScheduler() {
   if (deadlockDetectionTask) {
     deadlockDetectionTask.stop();
     deadlockDetectionTask = null;
+  }
+  if (unusedIndexAuditTask) {
+    unusedIndexAuditTask.stop();
+    unusedIndexAuditTask = null;
   }
   if (servicingTransferTask) {
     servicingTransferTask.stop();

@@ -34,6 +34,12 @@ import {
   logReviewerDecision,
   ApplicantFields,
 } from "../utils/fuzzyMatch.js";
+import {
+  requireBorrowerAddressOwnership,
+  requireLoanAdmin,
+  requireLoanOwnership,
+} from "../security/requireResourceOwnership.js";
+import type { AuthenticatedRequest } from "../middleware/auth.js";
 
 export const loanRouter = Router();
 
@@ -175,6 +181,8 @@ loanRouter.get("/borrower/:address", async (req, res) => {
       .status(400)
       .json({ error: "invalid_address", field: "address", message: "Invalid Stellar G-address" });
   }
+  // Issue #760: borrowers may only list their own applications (admins exempt).
+  if (!requireBorrowerAddressOwnership(req as AuthenticatedRequest, res, address)) return;
   const apps = await getApplicationsByBorrower(address);
   return res.json(apps);
 });
@@ -191,8 +199,9 @@ loanRouter.get("/pending", async (req, res) => {
 // POST /api/loan/:id/approve
 loanRouter.post("/:id/approve", idempotencyMiddleware, async (req, res) => {
   const id = String(req.params?.id ?? "");
-  const app = await getApplication(id);
-  if (!app) return res.status(404).json({ error: "not_found" });
+  // Issue #760: approval is operator-only — even the owning borrower is rejected.
+  const app = await requireLoanAdmin(req as AuthenticatedRequest, res, id);
+  if (!app) return;
 
   if (app.status !== "Pending") {
     return res.status(400).json({
@@ -260,8 +269,9 @@ loanRouter.post("/:id/approve", idempotencyMiddleware, async (req, res) => {
 loanRouter.post("/:id/reject", async (req, res) => {
   const id = String(req.params?.id ?? "");
   const { reason } = req.body ?? {};
-  const app = await getApplication(id);
-  if (!app) return res.status(404).json({ error: "not_found" });
+  // Issue #760: rejection is operator-only — even the owning borrower is rejected.
+  const app = await requireLoanAdmin(req as AuthenticatedRequest, res, id);
+  if (!app) return;
 
   if (app.status !== "Pending") {
     return res.status(400).json({
@@ -281,6 +291,9 @@ loanRouter.post("/:id/reject", async (req, res) => {
 // Resumes a Draft application flagged as stale, resetting its inactivity clock.
 loanRouter.post("/:id/resume", async (req, res) => {
   const id = String(req.params?.id ?? "");
+  // Issue #760: only the owning borrower (or admin) may resume this draft.
+  const owned = await requireLoanOwnership(req as AuthenticatedRequest, res, id);
+  if (!owned) return;
   const resumed = await resumeDraftApplication(id);
   if (!resumed) return res.status(404).json({ error: "not_found_or_not_draft" });
   return res.json(resumed);
@@ -290,6 +303,9 @@ loanRouter.post("/:id/resume", async (req, res) => {
 // Lets an applicant explicitly discard a Draft application before it would otherwise expire.
 loanRouter.post("/:id/discard", async (req, res) => {
   const id = String(req.params?.id ?? "");
+  // Issue #760: only the owning borrower (or admin) may discard this draft.
+  const owned = await requireLoanOwnership(req as AuthenticatedRequest, res, id);
+  if (!owned) return;
   const discarded = await discardDraftApplication(id);
   if (!discarded) return res.status(404).json({ error: "not_found_or_not_draft" });
   return res.json(discarded);
@@ -303,6 +319,10 @@ loanRouter.get("/:id", async (req, res) => {
   const id = String(req.params?.id ?? "");
   const asOfRaw = req.query.asOf;
 
+  // Issue #760: loan reads (current and historical) are owner-or-admin only.
+  const owned = await requireLoanOwnership(req as AuthenticatedRequest, res, id);
+  if (!owned) return;
+
   if (asOfRaw !== undefined) {
     if (typeof asOfRaw !== "string") {
       return res.status(400).json({ error: "invalid_asof", field: "asOf", message: "asOf must be a single ISO timestamp" });
@@ -312,8 +332,7 @@ loanRouter.get("/:id", async (req, res) => {
       return res.status(400).json({ error: "invalid_asof", field: "asOf", message: "asOf must be a valid ISO timestamp" });
     }
 
-    const current = await getApplication(id);
-    if (!current) return res.status(404).json({ error: "not_found" });
+    const current = owned;
 
     const historical = await reconstructLoanApplicationAt(id, asOf, {
       // Loans created before the audit trail carried a creation snapshot fall
@@ -331,9 +350,7 @@ loanRouter.get("/:id", async (req, res) => {
     return res.json({ ...historical, asOf: asOf.toISOString() });
   }
 
-  const app = await getApplication(id);
-  if (!app) return res.status(404).json({ error: "not_found" });
-  return res.json(app);
+  return res.json(owned);
 });
 
 // ---------------------------------------------------------------------------
@@ -343,8 +360,9 @@ loanRouter.post("/:id/trigger-payment-due", async (req, res) => {
   const id = String(req.params?.id ?? "");
   const { email, webhookUrl, amount, dueDate } = req.body ?? {};
 
-  const app = await getApplication(id);
-  if (!app) return res.status(404).json({ error: "not_found" });
+  // Issue #760: only the owning borrower (or admin) may trigger notifications for this loan.
+  const app = await requireLoanOwnership(req as AuthenticatedRequest, res, id);
+  if (!app) return;
 
   const targetEmail = email || `${app.borrowerAddress}@example.com`;
   const targetWebhookUrl =
@@ -427,8 +445,9 @@ loanRouter.post("/:id/review", async (req, res) => {
       });
     }
 
-    const app = await getApplication(id);
-    if (!app) return res.status(404).json({ error: "not_found" });
+    // Issue #760: manual review decisions are operator-only.
+    const app = await requireLoanAdmin(req as AuthenticatedRequest, res, id);
+    if (!app) return;
 
     const auditLog = logReviewerDecision(id, reviewerId, decision, reason);
 
@@ -468,8 +487,9 @@ function extractMentions(content: string): string[] {
  */
 loanRouter.get("/:id/comments", async (req, res) => {
   const id = String(req.params?.id ?? "");
-  const app = await getApplication(id);
-  if (!app) return res.status(404).json({ error: "not_found" });
+  // Issue #760: comment threads are owner-or-admin only.
+  const app = await requireLoanOwnership(req as AuthenticatedRequest, res, id);
+  if (!app) return;
 
   const comments = await prisma.loanComment.findMany({
     where: { loanApplicationId: id },
@@ -514,8 +534,9 @@ loanRouter.post("/:id/comments", async (req, res) => {
     return res.status(400).json({ error: "invalid_request", message: "content too long (max 5000)" });
   }
 
-  const app = await getApplication(id);
-  if (!app) return res.status(404).json({ error: "not_found" });
+  // Issue #760: comment threads are owner-or-admin only; the caller must own the loan.
+  const app = await requireLoanOwnership(req as AuthenticatedRequest, res, id);
+  if (!app) return;
 
   if (parentId) {
     const parent = await prisma.loanComment.findUnique({ where: { id: parentId } });
