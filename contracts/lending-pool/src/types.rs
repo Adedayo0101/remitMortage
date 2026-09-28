@@ -51,6 +51,25 @@ pub struct PoolConfig {
     /// Loan origination fee, in basis points, deducted from each disbursement
     /// and routed to `treasury_address`. Loan accounting remains gross.
     pub origination_fee_bps: u32,
+    /// Loan application (processing) fee, in basis points of the requested
+    /// principal, collected from the borrower when the application is
+    /// submitted. Unlike the origination fee — which is taken out of the
+    /// disbursement and is only ever payable by a loan that reaches funds —
+    /// the application fee is paid up front, before any credit decision, so
+    /// it is escrowed by the pool against that application until a final
+    /// decision is reached:
+    ///
+    /// * `approve_loan` retains it and routes it to `treasury_address`.
+    /// * `reject_loan` and `cancel_loan` refund it in full to the borrower
+    ///   automatically, in the same transaction as the transition.
+    ///
+    /// The escrowed tokens are never booked as pool liquidity, so settling
+    /// the fee in either direction leaves investor accounting untouched.
+    ///
+    /// `0` — the deployment default — charges no application fee at all, so
+    /// existing integrations are unaffected until an admin opts in via
+    /// `set_application_fee_bps`.
+    pub application_fee_bps: u32,
     /// Minimum number of ledgers an LP's deposit must remain in the pool
     /// before a withdrawal is allowed. 0 means no lockup.
     pub lockup_duration_ledgers: u32,
@@ -89,6 +108,17 @@ pub struct PoolConfig {
     /// `false` — the deployment default — preserves existing permissionless
     /// behaviour.
     pub permissioned_mode: bool,
+    /// Minimum holding period, in ledgers, after which an investor's
+    /// withdrawal is waived of the early-redemption (utilization-based
+    /// withdrawal) fee. Holding duration is measured from the investor's
+    /// `start_ledger` to the current ledger at withdrawal time.
+    /// `0` — the deployment default — disables the waiver so every
+    /// withdrawal pays the fee exactly as before.
+    pub redemption_fee_waiver_ledgers: u32,
+    /// Fixed window, in ledgers, for which a `quote_payoff` snapshot stays
+    /// valid. A payoff executed within the window settles at exactly the
+    /// quoted amount. `0` disables quoting (quotes cannot be created).
+    pub payoff_quote_window_ledgers: u32,
 }
 
 /// Tracks an individual investor's capital contribution.
@@ -140,6 +170,11 @@ pub enum LoanStatus {
     /// Loan defaulted — losses are distributed via the waterfall.
     /// Loan has defaulted after missed payments.
     Defaulted = 4,
+    /// The admin rejected this application. Terminal, and distinct from
+    /// `Cancelled` so a credit decision is distinguishable on-chain from a
+    /// borrower withdrawing their own request. Any application fee escrowed
+    /// at submission is refunded to the borrower on entry to this state.
+    Rejected = 5,
 }
 
 /// Repayment schedule for a loan, tracked on-chain.
@@ -306,6 +341,16 @@ pub enum DataKey {
     PendingAdmin,
     /// Total withdrawal fees collected and routed to treasury.
     TotalWithdrawalFees,
+    /// Application (processing) fee escrowed for a loan, keyed by loan ID.
+    /// Present only while a `Requested` loan is awaiting a final decision;
+    /// removed as soon as the fee is settled — retained by `approve_loan`,
+    /// or refunded by `reject_loan` / `cancel_loan`. A missing entry means
+    /// either no fee was collected or it has already been settled.
+    ApplicationFee(BytesN<32>),
+    /// Lifetime application fees retained by the protocol, i.e. collected on
+    /// applications that went on to be approved. Refunded fees are never
+    /// counted here.
+    TotalApplicationFees,
     /// Lifetime protocol fees skimmed from interest by the fee switch and
     /// routed to the treasury.
     TotalProtocolFees,
@@ -363,6 +408,8 @@ pub enum DataKey {
     LoanSymbolMap(Symbol),
     /// Pending loan assumption request, keyed by loan ID.
     LoanAssumption(BytesN<32>),
+    /// Locked payoff quote for a loan, keyed by loan ID.
+    PayoffQuote(BytesN<32>),
 }
 
 /// A pending loan assumption request where an existing borrower proposes to transfer
@@ -388,4 +435,17 @@ pub struct LoanCollateralRecord {
     pub released_collateral: i128,
     /// Minimum required collateralization ratio in basis points (e.g. 3000 = 30%).
     pub min_collateral_ratio_bps: u32,
+}
+
+/// A locked payoff quote: the exact amount that settles the loan if paid
+/// within the validity window, regardless of intervening interest accrual.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayoffQuote {
+    /// Snapshotted payoff amount (outstanding debt at quote time).
+    pub quoted_amount: i128,
+    /// Ledger at which the quote was created.
+    pub quoted_at_ledger: u32,
+    /// Last ledger at which the quote is still valid (inclusive).
+    pub expires_ledger: u32,
 }

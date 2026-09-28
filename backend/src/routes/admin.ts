@@ -339,6 +339,29 @@ adminRouter.get("/db/unused-indexes", requireAdmin, async (_req: AuthenticatedRe
   }
 });
 
+/**
+ * @openapi
+ * /api/admin/db/query-killer:
+ *   post:
+ *     summary: Manually trigger the long-running query killer sweep
+ *     description: >-
+ *       Ops-only (issue #736). Terminates backends running past
+ *       QUERY_KILLER_THRESHOLD_MS, never touching the documented
+ *       maintenance allowlist. Every termination is logged/alerted with
+ *       query text and origin context.
+ *     tags:
+ *       - Admin
+ */
+adminRouter.post("/db/query-killer", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { runQueryKillerJob } = await import("../jobs/queryKiller.js");
+    return res.json(await runQueryKillerJob());
+  } catch (error) {
+    logger.error("Query killer error", { error });
+    return res.status(500).json({ error: "query_killer_failed" });
+  }
+});
+
 adminRouter.get("/webhooks/latency", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   const config = loadConfig();
   const windowMinutes = positiveIntParam(

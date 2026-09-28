@@ -48,6 +48,12 @@ import { waitlistRouter } from "./routes/waitlist.js";
 import { loanImportRouter } from "./routes/loanImport.js";
 import { exportsRouter } from "./routes/exports.js";
 import { authRouter } from "./routes/auth.js";
+import {
+  feeWaiverLoanRouter,
+  feeWaiverAdminRouter,
+  feeWaiverBorrowerRouter,
+} from "./routes/feeWaiver.js";
+import { rateSheetAdminRouter } from "./routes/rateSheet.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { logMasker } from "./middleware/logMasker.js";
@@ -56,6 +62,7 @@ import { tenantContext } from "./services/tenant.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { credentialStuffingGuard } from "./middleware/credentialStuffing.js";
 import { rlsMiddleware } from "./middleware/rls.js";
 import { startEventIndexer } from "./services/eventIndexer.js";
 import {
@@ -79,6 +86,10 @@ import {
   HttpKycProvider,
   sendKycFailoverAlert,
 } from "./services/kycProviderFailover.js";
+import {
+  HttpPayrollVerificationProvider,
+  setPayrollVerificationProvider,
+} from "./services/payrollVerificationProvider.js";
 import logger from "./utils/logger.js";
 import { feeEstimator } from "./services/feeEstimator.js";
 import { initializeRedis } from "./services/redis.js";
@@ -112,6 +123,19 @@ if (config.kycBackupProviderUrl) {
         onAlert: sendKycFailoverAlert,
       }
     )
+  );
+}
+
+// Automated employment verification (issue #802). Disabled unless a provider
+// URL is configured — the Null provider stays active otherwise, so every
+// applicant falls back to manual document review.
+if (config.payrollVerificationApiUrl) {
+  setPayrollVerificationProvider(
+    new HttpPayrollVerificationProvider({
+      url: config.payrollVerificationApiUrl,
+      apiKey: config.payrollVerificationApiKey,
+      providerName: "payroll_provider",
+    })
   );
 }
 
@@ -233,7 +257,9 @@ app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
 app.use("/api/verify", verificationLimiter, verifyRouter);
 app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
+app.use("/api/borrower", mutationRateLimiter, authMiddleware, feeWaiverBorrowerRouter);
 app.use("/api/loan", mutationRateLimiter, authMiddleware, loanRouter);
+app.use("/api/loan", mutationRateLimiter, authMiddleware, feeWaiverLoanRouter);
 app.use("/api/loan/import", mutationRateLimiter, authMiddleware, loanImportRouter);
 app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
@@ -247,6 +273,8 @@ app.use("/api/notifications", notificationsRouter);
 app.use("/api/referral", referralRouter);
 app.use("/api/tenant", tenantRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
+app.use("/api/admin", authMiddleware, feeWaiverAdminRouter);
+app.use("/api/admin", authMiddleware, rateSheetAdminRouter);
 app.use("/api/admin", adminAuthRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/exports", exportsRouter);
@@ -255,7 +283,7 @@ app.use("/api/webhooks/email-events", emailEventsRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
 app.use("/api/user", userRouter);
 app.use("/api/waitlist", waitlistRouter);
-app.use("/api/auth", authRouter);
+app.use("/api/auth", credentialStuffingGuard, authRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
