@@ -333,6 +333,7 @@ app.listen(PORT, () => {
 // ── Graceful Shutdown ─────────────────────────────────────────────────
 async function shutdown(signal: string) {
   logger.info(`[shutdown] received ${signal}, shutting down gracefully`);
+  stopIpfsOrphanCleanupScheduler();
   await Promise.allSettled([
     stopNotificationWorker(),
     stopWebhookWorker(),
