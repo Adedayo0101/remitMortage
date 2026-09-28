@@ -1,11 +1,20 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import toast, { Toaster } from "react-hot-toast";
-import { useWallet, WalletProvider } from "../../context/WalletContext";
+import { useWallet, OptionalWalletProvider } from "../../context/WalletContext";
+import { EmptyState } from "../../components/EmptyState";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { ClipboardList, Hammer, History } from "lucide-react";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
+import ActiveLoansMapView from "../../components/ActiveLoansMapView";
+import AuditLogViewer from "../../components/AuditLogViewer";
+import LoanCommentsPanel from "../../components/LoanCommentsPanel";
+import { LoanKanbanBoard, KanbanLoan } from "../../components/LoanKanbanBoard";
 
 // The admin wallet authorized to approve loans and milestones. Configured via
 // NEXT_PUBLIC_ADMIN_ADDRESS at build time.
@@ -13,12 +22,7 @@ const ADMIN_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-interface PendingLoan {
-  id: string;
-  borrower: string;
-  principal: number;
-  verificationScore: number;
-}
+interface PendingLoan extends KanbanLoan {}
 
 interface MilestoneReview {
   id: string;
@@ -56,9 +60,9 @@ const IPFS_GATEWAY = "https://ipfs.io/ipfs/";
 
 export default function AdminPage() {
   return (
-    <WalletProvider>
+    <OptionalWalletProvider>
       <AdminPageInner />
-    </WalletProvider>
+    </OptionalWalletProvider>
   );
 }
 
@@ -124,7 +128,8 @@ function AdminShell({ children }: { children: React.ReactNode }) {
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-type Tab = "loans" | "milestones";
+type Tab = "loans" | "milestones" | "audit";
+const TAB_ORDER: Tab[] = ["loans", "milestones", "audit"];
 
 function AdminDashboard() {
   const [tab, setTab] = useState<Tab>("loans");
@@ -134,27 +139,35 @@ function AdminDashboard() {
   const [loading, setLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { status: impersonationStatus } = useImpersonation();
+  const isReadOnly = impersonationStatus.active;
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      // Placeholder data. Swap for the Soroban query layer once wired:
-      //   pool.get_pending_loans(), milestone.get_pending(), pool overview.
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      setLoans([
-        {
-          id: "loan-1",
-          borrower: "GBORROWER1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-          principal: 70000,
-          verificationScore: 82,
-        },
-        {
-          id: "loan-2",
-          borrower: "GBORROWER2BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-          principal: 45000,
-          verificationScore: 67,
-        },
-      ]);
+      const pendingResponse = await fetch("/api/loan/pending");
+      if (pendingResponse.ok) {
+        const pending = await pendingResponse.json();
+        setLoans((Array.isArray(pending) ? pending : []).map((loan: any) => {
+          let mappedStatus = "submitted";
+          if (loan.status === "Approved") mappedStatus = "approved";
+          else if (loan.status === "Disbursing") mappedStatus = "disbursing";
+          else if (loan.status === "MANUAL_REVIEW") mappedStatus = "underwriting";
+          
+          const daysInStatus = loan.updatedAt ? Math.floor((Date.now() - new Date(loan.updatedAt).getTime()) / 86400000) : 0;
+          
+          return {
+            id: loan.id,
+            borrower: loan.borrowerAddress,
+            principal: Number(loan.amount),
+            verificationScore: Number(loan.verificationScore ?? 0),
+            status: mappedStatus,
+            daysInStatus,
+          };
+        }));
+      } else {
+        setLoans([]);
+      }
       setMilestones([
         {
           id: "ms-1",
@@ -181,12 +194,41 @@ function AdminDashboard() {
     loadData();
   }, [loadData]);
 
+  function handleTabKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const index = TAB_ORDER.indexOf(tab);
+    const next =
+      event.key === "ArrowRight"
+        ? (index + 1) % TAB_ORDER.length
+        : event.key === "ArrowLeft"
+          ? (index - 1 + TAB_ORDER.length) % TAB_ORDER.length
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? TAB_ORDER.length - 1
+              : null;
+    if (next === null) return;
+    event.preventDefault();
+    setTab(TAB_ORDER[next]);
+    document.getElementById(`admin-tab-${TAB_ORDER[next]}`)?.focus();
+  }
+
   async function confirmAction() {
     if (!pendingAction) return;
+    if (isReadOnly) {
+      toast.error("Approvals are disabled while viewing read-only.");
+      setPendingAction(null);
+      return;
+    }
     setSubmitting(true);
     try {
-      // TODO: build and submit the matching Soroban transaction via Freighter.
-      await new Promise((resolve) => setTimeout(resolve, 900));
+      if (pendingAction.kind === "approve-loan") {
+        const response = await fetch(`/api/loan/${pendingAction.loan.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!response.ok) throw new Error("Loan approval failed.");
+      }
 
       if (pendingAction.kind === "approve-loan") {
         toast.success("Loan approved.");
@@ -208,33 +250,55 @@ function AdminDashboard() {
 
   return (
     <div className="space-y-8">
+      <ViewAsUserPanel isReadOnly={isReadOnly} />
+
       <PoolOverviewCard overview={overview} loading={loading} />
 
-      <div className="flex gap-2 border-b border-[var(--border-color)]">
-        <TabButton active={tab === "loans"} onClick={() => setTab("loans")}>
+      <ActiveLoansMapView />
+
+      <div
+        role="tablist"
+        aria-label="Admin sections"
+        onKeyDown={handleTabKeyDown}
+        className="flex gap-2 border-b border-[var(--border-color)]"
+      >
+        <TabButton id="loans" active={tab === "loans"} onClick={() => setTab("loans")}>
           Pending Loans
           {loans.length > 0 && <Count value={loans.length} />}
         </TabButton>
-        <TabButton active={tab === "milestones"} onClick={() => setTab("milestones")}>
+        <TabButton
+          id="milestones"
+          active={tab === "milestones"}
+          onClick={() => setTab("milestones")}
+        >
           Milestone Reviews
           {milestones.length > 0 && <Count value={milestones.length} />}
         </TabButton>
+        <TabButton id="audit" active={tab === "audit"} onClick={() => setTab("audit")}>
+          <History className="h-3.5 w-3.5 mr-1.5" aria-hidden="true" />
+          Audit Log
+        </TabButton>
       </div>
 
-      {tab === "loans" ? (
-        <PendingLoansTab
-          loans={loans}
-          loading={loading}
-          onApprove={(loan) => setPendingAction({ kind: "approve-loan", loan })}
-          onReject={(loan) => setPendingAction({ kind: "reject-loan", loan })}
-        />
-      ) : (
-        <MilestoneReviewsTab
-          milestones={milestones}
-          loading={loading}
-          onApprove={(milestone) => setPendingAction({ kind: "approve-milestone", milestone })}
-        />
-      )}
+      <div id="admin-tabpanel" role="tabpanel" aria-labelledby={`admin-tab-${tab}`} tabIndex={0}>
+        {tab === "loans" ? (
+          <PendingLoansTab
+            loans={loans}
+            loading={loading}
+            onApprove={(loan) => setPendingAction({ kind: "approve-loan", loan })}
+            onReject={(loan) => setPendingAction({ kind: "reject-loan", loan })}
+            onRefresh={loadData}
+          />
+        ) : tab === "milestones" ? (
+          <MilestoneReviewsTab
+            milestones={milestones}
+            loading={loading}
+            onApprove={(milestone) => setPendingAction({ kind: "approve-milestone", milestone })}
+          />
+        ) : (
+          <AuditLogViewer />
+        )}
+      </div>
 
       {pendingAction && (
         <ConfirmationModal
@@ -257,16 +321,24 @@ function Count({ value }: { value: number }) {
 }
 
 function TabButton({
+  id,
   active,
   onClick,
   children,
 }: {
+  id: Tab;
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
     <button
+      type="button"
+      id={`admin-tab-${id}`}
+      role="tab"
+      aria-selected={active}
+      aria-controls="admin-tabpanel"
+      tabIndex={active ? 0 : -1}
       onClick={onClick}
       className={`px-4 py-2.5 text-sm font-medium -mb-px border-b-2 transition-colors ${
         active
@@ -276,6 +348,83 @@ function TabButton({
     >
       {children}
     </button>
+  );
+}
+
+// ── View As User (read-only impersonation) ─────────────────────────────────
+
+function ViewAsUserPanel({ isReadOnly }: { isReadOnly: boolean }) {
+  const [targetWallet, setTargetWallet] = useState("");
+  const [reason, setReason] = useState("");
+  const [starting, setStarting] = useState(false);
+
+  async function handleStart(e: React.FormEvent) {
+    e.preventDefault();
+    if (!targetWallet.trim()) return;
+
+    setStarting(true);
+    try {
+      await startImpersonation(targetWallet.trim(), reason.trim() || undefined);
+      toast.success("Now viewing as user, read-only. Look for the banner at the top of the page.");
+      setTargetWallet("");
+      setReason("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to start impersonation session.");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  if (isReadOnly) {
+    return (
+      <div className="p-4 rounded-lg border border-rose-500/30 bg-rose-500/10 text-sm text-rose-300">
+        You're currently viewing as another user, read-only. End that session (via the banner above)
+        before starting a new one.
+      </div>
+    );
+  }
+
+  return (
+    <details className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)]">
+      <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-[var(--text-primary)]">
+        View as user (read-only support session)
+      </summary>
+      <form onSubmit={handleStart} className="flex flex-col gap-3 px-4 pb-4 md:flex-row md:items-end">
+        <div className="flex-1">
+          <label htmlFor="impersonate-wallet" className="block text-xs text-[var(--text-muted)] mb-1">
+            User wallet address
+          </label>
+          <input
+            id="impersonate-wallet"
+            type="text"
+            value={targetWallet}
+            onChange={(e) => setTargetWallet(e.target.value)}
+            placeholder="G..."
+            className="w-full rounded-lg border border-[var(--border-color)] bg-transparent px-3 py-2 text-sm font-mono"
+          />
+        </div>
+        <div className="flex-1">
+          <label htmlFor="impersonate-reason" className="block text-xs text-[var(--text-muted)] mb-1">
+            Reason (optional, for the audit log)
+          </label>
+          <input
+            id="impersonate-reason"
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Support ticket #1234"
+            className="w-full rounded-lg border border-[var(--border-color)] bg-transparent px-3 py-2 text-sm"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={starting || !targetWallet.trim()}
+          className="btn-primary !py-2 !px-4 whitespace-nowrap disabled:opacity-50"
+        >
+          {starting ? "Starting…" : "View as user"}
+        </button>
+      </form>
+    </details>
   );
 }
 
@@ -313,59 +462,393 @@ function PoolOverviewCard({
 
 // ── Pending Loans ────────────────────────────────────────────────────────────
 
+interface BulkResultItem {
+  applicationId: string;
+  status: "SUCCESS" | "FAILED";
+  message: string;
+}
+
 function PendingLoansTab({
   loans,
   loading,
+  isReadOnly,
   onApprove,
   onReject,
+  onRefresh,
 }: {
   loans: PendingLoan[];
   loading: boolean;
+  isReadOnly: boolean;
   onApprove: (loan: PendingLoan) => void;
   onReject: (loan: PendingLoan) => void;
+  onRefresh: () => void;
 }) {
+  const { publicKey } = useWallet();
+  const [expandedLoanId, setExpandedLoanId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"list" | "kanban">("kanban");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [summaryItems, setSummaryItems] = useState<BulkResultItem[] | null>(null);
+  const [reassignModalOpen, setReassignModalOpen] = useState(false);
+  const [assigneeAddress, setAssigneeAddress] = useState("");
+
   if (loading) return <EmptyRow text="Loading pending loans…" />;
-  if (loans.length === 0) return <EmptyRow text="No loan requests awaiting review." />;
+  if (loans.length === 0) {
+    return (
+      <EmptyState
+        icon={<ClipboardList className="h-5 w-5" />}
+        title="No loan requests awaiting review"
+        message="New borrower applications will appear here once submitted."
+        action={{ label: "View pool overview", href: "/stats" }}
+      />
+    );
+  }
+
+  const allSelected = loans.length > 0 && loans.every((l) => selectedIds.has(l.id));
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(loans.map((l) => l.id)));
+    }
+  };
+
+  const toggleSelectLoan = (id: string) => {
+    const next = new Set(selectedIds);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setSelectedIds(next);
+  };
+
+  const handleBulkAction = async (decision: "APPROVED" | "REJECTED") => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkProcessing(true);
+
+    try {
+      const res = await fetch("/api/admin/loans/bulk-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          applicationIds: ids,
+          decision,
+          reason: `Bulk ${decision.toLowerCase()} by admin ${publicKey || "system"}`,
+        }),
+      });
+
+      const data = await res.json();
+
+      const resultsMap: BulkResultItem[] = [];
+      if (data.results && Array.isArray(data.results)) {
+        for (const item of data.results) {
+          resultsMap.push({
+            applicationId: item.applicationId,
+            status: "SUCCESS",
+            message: `Successfully ${decision.toLowerCase()}`,
+          });
+        }
+      }
+      if (data.failures && Array.isArray(data.failures)) {
+        for (const fail of data.failures) {
+          resultsMap.push({
+            applicationId: fail.applicationId,
+            status: "FAILED",
+            message: fail.error || "Review failed for this item",
+          });
+        }
+      }
+
+      setSummaryItems(resultsMap);
+      setSelectedIds(new Set());
+      onRefresh();
+    } catch (err: any) {
+      toast.error(err.message || "Bulk action failed");
+    } finally {
+      setBulkProcessing(false);
+    }
+  };
+
+  const handleBulkReassignSubmit = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || !assigneeAddress.trim()) return;
+    setBulkProcessing(true);
+
+    try {
+      const res = await fetch("/api/admin/loans/reassign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          applicationIds: ids,
+          assigneeAddress: assigneeAddress.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      const resultsMap: BulkResultItem[] = [];
+
+      if (data.results && Array.isArray(data.results)) {
+        for (const item of data.results) {
+          resultsMap.push({
+            applicationId: item.applicationId,
+            status: "SUCCESS",
+            message: `Reassigned to ${assigneeAddress.slice(0, 8)}...`,
+          });
+        }
+      }
+      if (data.failures && Array.isArray(data.failures)) {
+        for (const fail of data.failures) {
+          resultsMap.push({
+            applicationId: fail.applicationId,
+            status: "FAILED",
+            message: fail.error || "Reassignment failed",
+          });
+        }
+      }
+
+      setSummaryItems(resultsMap);
+      setSelectedIds(new Set());
+      setReassignModalOpen(false);
+      setAssigneeAddress("");
+      onRefresh();
+    } catch (err: any) {
+      toast.error(err.message || "Bulk reassign failed");
+    } finally {
+      setBulkProcessing(false);
+    }
+  };
 
   return (
-    <div className="space-y-3">
-      {loans.map((loan) => (
-        <div
-          key={loan.id}
-          className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]"
-        >
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
-            <div>
-              <p className="text-xs text-[var(--text-muted)]">Borrower</p>
-              <p className="text-sm font-mono">{shortenAddress(loan.borrower)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-[var(--text-muted)]">Principal</p>
-              <p className="text-sm font-semibold">{formatUsdc(loan.principal)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-[var(--text-muted)]">Verification Score</p>
-              <p className="text-sm font-semibold">
-                <ScoreBadge score={loan.verificationScore} />
-              </p>
-            </div>
-          </div>
-          <div className="flex gap-2 shrink-0">
+    <div className="space-y-3 relative pb-20">
+      <div className="flex items-center justify-between p-3 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]">
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-3 cursor-pointer text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleSelectAll}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500"
+            />
+            <span>Select All ({loans.length} loans)</span>
+          </label>
+          <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
             <button
-              onClick={() => onApprove(loan)}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
+              onClick={() => setViewMode("kanban")}
+              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${viewMode === "kanban" ? "bg-cyan-500 text-slate-900" : "text-slate-400 hover:text-slate-200"}`}
             >
-              Approve
+              Kanban
             </button>
             <button
-              onClick={() => onReject(loan)}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
+              onClick={() => setViewMode("list")}
+              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${viewMode === "list" ? "bg-cyan-500 text-slate-900" : "text-slate-400 hover:text-slate-200"}`}
             >
-              Reject
+              List
             </button>
           </div>
         </div>
-      ))}
+        {selectedIds.size > 0 && (
+          <span className="text-xs text-[var(--accent-primary)] font-semibold">
+            {selectedIds.size} selected
+          </span>
+        )}
+      </div>
+
+      {viewMode === "kanban" ? (
+        <LoanKanbanBoard 
+          loans={loans} 
+          onStatusChange={async (loanId, newStatus) => {
+            const loan = loans.find(l => l.id === loanId);
+            if (!loan) return;
+            // Respect existing status-change API rules by calling the bulk-review or approve/reject handles
+            if (newStatus === "approved") {
+              onApprove(loan);
+            } else if (newStatus === "rejected") {
+              onReject(loan);
+            } else {
+              // Other status changes like "underwriting" would ideally call an API
+              // Currently we'll just trigger a refresh
+              onRefresh();
+            }
+          }} 
+        />
+      ) : (
+        <>
+          {loans.map((loan) => {
+            const isSelected = selectedIds.has(loan.id);
+        return (
+          <div
+            key={loan.id}
+            className={`p-4 bg-[var(--bg-card)] rounded-lg border transition-colors ${
+              isSelected ? "border-[var(--accent-primary)] bg-[var(--accent-primary)]/5" : "border-[var(--border-color)]"
+            }`}
+          >
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+                <input
+                  type="checkbox"
+                  id={`select-loan-${loan.id}`}
+                  checked={isSelected}
+                  onChange={() => toggleSelectLoan(loan.id)}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500 mr-2"
+                />
+                <div>
+                  <p className="text-xs text-[var(--text-muted)]">Borrower</p>
+                  <p className="text-sm font-mono">{shortenAddress(loan.borrower)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-[var(--text-muted)]">Principal</p>
+                  <p className="text-sm font-semibold">{formatUsdc(loan.principal)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-[var(--text-muted)]">Verification Score</p>
+                  <p className="text-sm font-semibold">
+                    <ScoreBadge score={loan.verificationScore} />
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={() => setExpandedLoanId(expandedLoanId === loan.id ? null : loan.id)}
+                  className="px-3 py-2 rounded-lg text-sm font-medium bg-sky-500/10 text-sky-400 border border-sky-500/30 hover:bg-sky-500/20 transition-colors"
+                >
+                  {expandedLoanId === loan.id ? "Hide Discussion" : "Discuss"}
+                </button>
+                <button
+                  data-testid={`admin-approve-${loan.id}`}
+                  onClick={() => onApprove(loan)}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => onReject(loan)}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+            {expandedLoanId === loan.id && publicKey && (
+              <LoanCommentsPanel loanApplicationId={loan.id} currentUserAddress={publicKey} />
+            )}
+          </div>
+        );
+      })}
+
+      {/* Sticky Bulk Action Toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-[var(--bg-card)] border border-[var(--border-color)] shadow-2xl rounded-xl px-6 py-3.5 flex items-center gap-4 backdrop-blur-md">
+          <span className="text-sm font-semibold text-white">
+            {selectedIds.size} loan{selectedIds.size > 1 ? "s" : ""} selected
+          </span>
+          <div className="h-4 w-px bg-gray-700" />
+          <button
+            onClick={() => handleBulkAction("APPROVED")}
+            disabled={bulkProcessing}
+            className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 transition-colors disabled:opacity-50"
+          >
+            {bulkProcessing ? "Processing..." : "Bulk Approve"}
+          </button>
+          <button
+            onClick={() => handleBulkAction("REJECTED")}
+            disabled={bulkProcessing}
+            className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-50"
+          >
+            {bulkProcessing ? "Processing..." : "Bulk Reject"}
+          </button>
+          <button
+            onClick={() => setReassignModalOpen(true)}
+            disabled={bulkProcessing}
+            className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600 transition-colors disabled:opacity-50"
+          >
+            Bulk Reassign
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="text-xs text-gray-400 hover:text-white transition-colors"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* Reassign Modal */}
+      {reassignModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-6 max-w-md w-full space-y-4">
+            <h3 className="text-lg font-bold text-white">Bulk Reassign Loans</h3>
+            <p className="text-xs text-[var(--text-muted)]">
+              Enter the reviewer wallet or address to assign the selected {selectedIds.size} loan application(s) to:
+            </p>
+            <input
+              type="text"
+              placeholder="e.g. G..."
+              value={assigneeAddress}
+              onChange={(e) => setAssigneeAddress(e.target.value)}
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-sky-500"
+            />
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setReassignModalOpen(false)}
+                className="px-4 py-2 rounded-lg text-xs font-medium text-gray-400 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkReassignSubmit}
+                disabled={!assigneeAddress.trim() || bulkProcessing}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600 disabled:opacity-50"
+              >
+                Confirm Reassignment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Per-item Bulk Summary Result Modal */}
+      {summaryItems && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-6 max-w-lg w-full space-y-4 max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">Bulk Action Per-Item Summary</h3>
+              <span className="text-xs text-[var(--text-muted)]">
+                {summaryItems.filter((s) => s.status === "SUCCESS").length} succeeded,{" "}
+                {summaryItems.filter((s) => s.status === "FAILED").length} failed
+              </span>
+            </div>
+            <div className="space-y-2">
+              {summaryItems.map((item) => (
+                <div
+                  key={item.applicationId}
+                  className={`p-3 rounded-lg text-xs border flex items-center justify-between ${
+                    item.status === "SUCCESS"
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+                      : "bg-red-500/10 border-red-500/30 text-red-300"
+                  }`}
+                >
+                  <span className="font-mono font-medium">App ID: {item.applicationId.slice(0, 12)}...</span>
+                  <div className="text-right">
+                    <span className="font-bold block">{item.status}</span>
+                    <span className="opacity-80 text-[11px]">{item.message}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setSummaryItems(null)}
+                className="px-5 py-2 rounded-lg text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -380,14 +863,25 @@ function ScoreBadge({ score }: { score: number }) {
 function MilestoneReviewsTab({
   milestones,
   loading,
+  isReadOnly,
   onApprove,
 }: {
   milestones: MilestoneReview[];
   loading: boolean;
+  isReadOnly: boolean;
   onApprove: (milestone: MilestoneReview) => void;
 }) {
   if (loading) return <EmptyRow text="Loading milestone reviews…" />;
-  if (milestones.length === 0) return <EmptyRow text="No milestones awaiting disbursement." />;
+  if (milestones.length === 0) {
+    return (
+      <EmptyState
+        icon={<Hammer className="h-5 w-5" />}
+        title="No milestones awaiting disbursement"
+        message="Contractor milestone submissions will appear here once evidence is uploaded."
+        action={{ label: "View pool overview", href: "/stats" }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-3">
@@ -420,7 +914,9 @@ function MilestoneReviewsTab({
           <div className="shrink-0">
             <button
               onClick={() => onApprove(milestone)}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
+              disabled={isReadOnly}
+              title={isReadOnly ? "Disabled while viewing read-only" : undefined}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-500/15"
             >
               Approve Disbursement
             </button>
@@ -453,6 +949,9 @@ function ConfirmationModal({
   onCancel: () => void;
 }) {
   const details = describeAction(action);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, true, { onEscape: onCancel });
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
@@ -462,6 +961,8 @@ function ConfirmationModal({
       onClick={onCancel}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="w-full max-w-md rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)] p-6"
         style={{ animation: "modal-pop 0.2s ease-out" }}
         onClick={(event) => event.stopPropagation()}
@@ -487,6 +988,7 @@ function ConfirmationModal({
             Cancel
           </button>
           <button
+            data-testid="admin-confirm-approval"
             onClick={onConfirm}
             disabled={submitting}
             className="btn-primary flex-1 !py-2.5"

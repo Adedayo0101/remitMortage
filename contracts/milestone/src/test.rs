@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 #![cfg(test)]
 
 use super::*;
@@ -100,7 +103,7 @@ mod mockpool {
             env.storage().instance().get(&MKey::Refunded).unwrap_or(0)
         }
 
-        pub fn set_loan_borrower(env: Env, loan_id: BytesN<32>, borrower: Address) {
+            pub fn set_loan_borrower(env: Env, loan_id: BytesN<32>, borrower: Address) {
             env.storage()
                 .instance()
                 .set(&MKey::LoanBorrower(loan_id), &borrower);
@@ -108,6 +111,25 @@ mod mockpool {
 
         pub fn get_loan_borrower(env: Env, loan_id: BytesN<32>) -> Option<Address> {
             env.storage().instance().get(&MKey::LoanBorrower(loan_id))
+        }
+
+        /// Optional check called by the milestone contract at budget-change
+        /// proposal time. Traps if the new budget exceeds the total pool cap
+        /// (i.e. the loan principal). The milestone contract uses
+        /// `try_invoke_contract` and ignores the outcome — the hard check is
+        /// at disbursal time — so a trap here merely provides early feedback.
+        pub fn chk_bgt(env: Env, _loan_id: BytesN<32>, new_budget: i128) {
+            let cap: i128 = env.storage().instance().get(&MKey::Cap).unwrap();
+            let disbursed: i128 = env.storage().instance().get(&MKey::Disbursed).unwrap_or(0);
+            if new_budget > cap.saturating_sub(disbursed) {
+                panic!("budget exceeds remaining allotment");
+            }
+        }
+
+        pub fn remaining_cap(env: Env) -> i128 {
+            let cap: i128 = env.storage().instance().get(&MKey::Cap).unwrap();
+            let disbursed: i128 = env.storage().instance().get(&MKey::Disbursed).unwrap_or(0);
+            cap.saturating_sub(disbursed)
         }
     }
 }
@@ -179,7 +201,7 @@ fn evidence(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[9u8; 32])
 }
 
-fn cidv0(env: &Env) -> Bytes {
+pub fn cidv0(env: &Env) -> Bytes {
     let mut raw = [b'x'; 46];
     raw[0] = b'Q';
     raw[1] = b'm';
@@ -832,4 +854,860 @@ fn test_disputed_milestone_prevents_release() {
     env.ledger().set_sequence_number(100);
     let res = h.milestone.try_release_milestone(&pid);
     assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
+}
+
+// ── Budget Change ─────────────────────────────────────────────────────
+
+fn milestone_symbol(env: &Env) -> Symbol {
+    Symbol::new(env, "ms1")
+}
+
+#[test]
+fn test_propose_budget_change_creates_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 3, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    let ms_id = milestone_symbol(&env);
+    h.milestone
+        .propose_milestone_budget_change(&ms_id, &pid, &2_000i128);
+
+    let record = h.milestone.get_milestone(&pid);
+    // Amount unchanged until threshold voted.
+    assert_eq!(record.amount, 1_000i128);
+}
+
+#[test]
+fn test_vote_budget_change_reaches_threshold_updates_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 3, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    let ms_id = milestone_symbol(&env);
+    h.milestone
+        .propose_milestone_budget_change(&ms_id, &pid, &3_000i128);
+
+    // First vote: still not executed, amount unchanged.
+    h.milestone
+        .vote_budget_change(&h.approvers.get(0).unwrap(), &ms_id);
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.amount, 1_000i128);
+
+    // Second vote reaches threshold (2): amount updated.
+    h.milestone
+        .vote_budget_change(&h.approvers.get(1).unwrap(), &ms_id);
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.amount, 3_000i128);
+}
+
+#[test]
+fn test_vote_budget_change_by_non_approver_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    let ms_id = milestone_symbol(&env);
+    h.milestone
+        .propose_milestone_budget_change(&ms_id, &pid, &2_000i128);
+
+    let outsider = Address::generate(&env);
+    let res = h
+        .milestone
+        .try_vote_budget_change(&outsider, &ms_id);
+    assert_eq!(res, Err(Ok(MilestoneError::Unauthorized)));
+}
+
+#[test]
+fn test_vote_budget_change_twice_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 3, 3, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    let ms_id = milestone_symbol(&env);
+    h.milestone
+        .propose_milestone_budget_change(&ms_id, &pid, &2_000i128);
+
+    let approver = h.approvers.get(0).unwrap();
+    h.milestone.vote_budget_change(&approver, &ms_id);
+
+    let res = h.milestone.try_vote_budget_change(&approver, &ms_id);
+    assert_eq!(res, Err(Ok(MilestoneError::AlreadyVoted)));
+}
+
+#[test]
+fn test_propose_budget_change_unknown_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let unknown_id = BytesN::from_array(&env, &[0x99u8; 32]);
+    let ms_id = milestone_symbol(&env);
+    let res = h.milestone.try_propose_milestone_budget_change(
+        &ms_id,
+        &unknown_id,
+        &2_000i128,
+    );
+    assert_eq!(res, Err(Ok(MilestoneError::MilestoneNotFound)));
+}
+
+#[test]
+fn test_propose_budget_change_zero_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    let ms_id = milestone_symbol(&env);
+    let res = h.milestone.try_propose_milestone_budget_change(
+        &ms_id,
+        &pid,
+        &0i128,
+    );
+    assert_eq!(res, Err(Ok(MilestoneError::InvalidAmount)));
+}
+
+#[test]
+fn test_propose_budget_change_duplicate_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    let ms_id = milestone_symbol(&env);
+    h.milestone
+        .propose_milestone_budget_change(&ms_id, &pid, &2_000i128);
+
+    let res = h.milestone.try_propose_milestone_budget_change(
+        &ms_id,
+        &pid,
+        &3_000i128,
+    );
+    assert_eq!(res, Err(Ok(MilestoneError::MilestoneExists)));
+}
+
+#[test]
+fn test_propose_budget_change_on_approved_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    // Approve the milestone first
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+
+    let ms_id = milestone_symbol(&env);
+    let res = h.milestone.try_propose_milestone_budget_change(
+        &ms_id,
+        &pid,
+        &2_000i128,
+    );
+    assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
+}
+
+#[test]
+fn test_vote_budget_change_on_executed_proposal_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    let ms_id = milestone_symbol(&env);
+    h.milestone
+        .propose_milestone_budget_change(&ms_id, &pid, &3_000i128);
+
+    // Both votes — threshold reached, proposal executed.
+    h.milestone
+        .vote_budget_change(&h.approvers.get(0).unwrap(), &ms_id);
+    h.milestone
+        .vote_budget_change(&h.approvers.get(1).unwrap(), &ms_id);
+
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.amount, 3_000i128);
+
+    // Voting again on the same proposal should fail.
+    let third_approver = h.approvers.get(0).unwrap();
+    let res = h.milestone.try_vote_budget_change(&third_approver, &ms_id);
+    assert_eq!(res, Err(Ok(MilestoneError::BudgetChangeAlreadyExecuted)));
+}
+
+#[test]
+fn test_budget_change_then_approve_and_release_uses_new_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 3, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    // Change budget from 1_000 to 4_500.
+    let ms_id = milestone_symbol(&env);
+    h.milestone
+        .propose_milestone_budget_change(&ms_id, &pid, &4_500i128);
+    h.milestone
+        .vote_budget_change(&h.approvers.get(0).unwrap(), &ms_id);
+    h.milestone
+        .vote_budget_change(&h.approvers.get(1).unwrap(), &ms_id);
+
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.amount, 4_500i128);
+
+    // Now approve and release using the updated budget.
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(2).unwrap(), &pid);
+
+    env.ledger().set_sequence_number(100);
+    h.milestone.release_milestone(&pid);
+
+    let token = soroban_sdk::token::Client::new(&env, &h.token);
+    assert_eq!(token.balance(&h.contractor), 4_500i128);
+    assert_eq!(h.pool.total_disbursed(), 4_500i128);
+
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.status, MilestoneStatus::Disbursed);
+}
+
+#[test]
+fn test_vote_budget_change_unknown_proposal_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let unknown_ms = Symbol::new(&env, "nonexistent");
+    let res = h
+        .milestone
+        .try_vote_budget_change(&h.approvers.get(0).unwrap(), &unknown_ms);
+    assert_eq!(res, Err(Ok(MilestoneError::BudgetChangeNotFound)));
+}
+
+// ── Reentrancy guard ──────────────────────────────────────────────────
+
+#[test]
+fn test_release_milestone_blocked_when_reentrant_flag_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &500i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+
+    // Manually set the reentrancy guard flag.
+    env.as_contract(&h.milestone.address, || {
+        env.storage().instance().set(&DataKey::Reentrant, &true);
+    });
+
+    let res = h.milestone.try_release_milestone(&pid);
+    assert_eq!(res, Err(Ok(MilestoneError::ReentrancyGuard)));
+}
+
+// ── Concurrency / race-condition regression tests ───────────────────────
+//
+// Soroban executes transactions serially per contract, but these tests
+// simulate overlapping approval submissions by exercising every quorum-
+// reaching permutation and asserting vote-count / disbursement invariants
+// that must hold regardless of submission order.
+
+/// Submit approvals with rotated starting signers and assert the milestone
+/// always ends Approved with exactly `threshold` votes and a single disbursement.
+fn assert_all_approval_permutations_reach_consistent_quorum(
+    approver_count: u32,
+    threshold: u32,
+) {
+    for start in 0..approver_count {
+        let env = Env::default();
+        env.mock_all_auths();
+        let h = setup(&env, approver_count, threshold, 5_000, 10_000);
+        let pid = proposal_id(&env);
+
+        h.milestone.propose_milestone(
+            &h.contractor,
+            &pid,
+            &loan_id(&env),
+            &1_000i128,
+            &evidence(&env),
+            &cidv0(&env),
+        );
+
+        for offset in 0..threshold {
+            let idx = (start + offset) % approver_count;
+            h.milestone
+                .approve_milestone(&h.approvers.get(idx).unwrap(), &pid);
+        }
+
+        let record = h.milestone.get_milestone(&pid);
+        assert_eq!(record.status, MilestoneStatus::Approved);
+        assert_eq!(record.votes, threshold);
+
+        env.ledger().set_sequence_number(200);
+        h.milestone.release_milestone(&pid);
+        assert_eq!(h.pool.total_disbursed(), 1_000i128);
+        let after = h.milestone.get_milestone(&pid);
+        assert_eq!(after.status, MilestoneStatus::Disbursed);
+    }
+}
+
+#[test]
+fn test_concurrent_quorum_approvals_disburse_exactly_once() {
+    assert_all_approval_permutations_reach_consistent_quorum(5, 3);
+}
+
+#[test]
+fn test_simultaneous_threshold_vote_does_not_overcount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 4, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &750i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    // Two votes submitted back-to-back to simulate simultaneous quorum.
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.votes, 2);
+    assert_eq!(record.status, MilestoneStatus::Approved);
+
+    // A third overlapping approval must not inflate the tally.
+    let res = h.milestone.try_approve_milestone(&h.approvers.get(2).unwrap(), &pid);
+    assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
+
+    let unchanged = h.milestone.get_milestone(&pid);
+    assert_eq!(unchanged.votes, 2);
+    assert_eq!(unchanged.status, MilestoneStatus::Approved);
+}
+
+#[test]
+fn test_interleaved_approve_sequences_from_different_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 3, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &500i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    // Signer 2 votes first, then signer 0 — order should not matter.
+    h.milestone
+        .approve_milestone(&h.approvers.get(2).unwrap(), &pid);
+    let mid = h.milestone.get_milestone(&pid);
+    assert_eq!(mid.votes, 1);
+    assert_eq!(mid.status, MilestoneStatus::Proposed);
+
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.votes, 2);
+    assert_eq!(record.status, MilestoneStatus::Approved);
+
+    // Signer 1's late vote is rejected — no double-count.
+    let res = h.milestone.try_approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+    assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
+}
+
+#[test]
+fn test_interleaved_approve_then_dispute_blocks_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &1_000i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+
+    // Governance "reject" path: dispute after quorum blocks disbursement.
+    h.milestone
+        .dispute_milestone(&h.approvers.get(0).unwrap(), &pid);
+
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.status, MilestoneStatus::Refunded);
+
+    env.ledger().set_sequence_number(500);
+    let res = h.milestone.try_release_milestone(&pid);
+    assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
+    assert_eq!(h.pool.total_disbursed(), 0);
+}
+
+#[test]
+fn test_double_release_after_concurrent_quorum_is_idempotent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amount = 2_000i128;
+    let h = setup(&env, 3, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &amount,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+
+    env.ledger().set_sequence_number(300);
+    h.milestone.release_milestone(&pid);
+
+    let res = h.milestone.try_release_milestone(&pid);
+    assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
+    assert_eq!(h.pool.total_disbursed(), amount);
+}
+
+#[test]
+fn test_release_milestone_succeeds_when_flag_is_clear() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 2, 2, 5_000, 10_000);
+
+    let pid = proposal_id(&env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(&env),
+        &500i128,
+        &evidence(&env),
+        &cidv0(&env),
+    );
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+    h.milestone
+        .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+
+    // Flag is false by default — release should not be blocked by the guard.
+    // (It may fail for other reasons like the timelock, so we check
+    // the error is NOT ReentrancyGuard.)
+    let res = h.milestone.try_release_milestone(&pid);
+    if let Err(e) = res {
+        assert_ne!(e, Ok(MilestoneError::ReentrancyGuard));
+    }
+}
+
+// ── Dispute Arbitration Timeout ──────────────────────────────────────────
+
+use crate::types::DisputeOutcome;
+use soroban_sdk::testutils::Events;
+use soroban_sdk::TryFromVal;
+
+const ARBITRATION_WINDOW: u32 = 1_000;
+
+/// Approved milestone with a configured arbitration panel and a borrower on
+/// the loan. Returns the harness, arbitrators, and borrower.
+fn setup_arbitration(
+    env: &Env,
+    arbitrator_count: u32,
+    threshold: u32,
+) -> (Harness<'_>, Vec<Address>, Address) {
+    let h = setup(env, 1, 1, 5_000, 10_000);
+    let pid = proposal_id(env);
+    h.milestone.propose_milestone(
+        &h.contractor,
+        &pid,
+        &loan_id(env),
+        &1_000i128,
+        &evidence(env),
+        &cidv0(env),
+    );
+    h.milestone
+        .approve_milestone(&h.approvers.get(0).unwrap(), &pid);
+
+    let borrower = Address::generate(env);
+    h.pool.set_loan_borrower(&loan_id(env), &borrower);
+
+    let mut arbitrators = Vec::new(env);
+    for _ in 0..arbitrator_count {
+        arbitrators.push_back(Address::generate(env));
+    }
+    h.milestone
+        .set_arbitration_config(&h.admin, &arbitrators, &threshold, &ARBITRATION_WINDOW);
+
+    (h, arbitrators, borrower)
+}
+
+fn advance_ledger(env: &Env, ledgers: u32) {
+    env.ledger().with_mut(|li| li.sequence_number += ledgers);
+}
+
+/// Second topic of the most recent event published by the milestone contract.
+fn last_dispute_event(env: &Env) -> Symbol {
+    let (_, topics, _) = env.events().all().last().unwrap();
+    Symbol::try_from_val(env, &topics.get(1).unwrap()).unwrap()
+}
+
+#[test]
+fn test_arbitration_config_validation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let h = setup(&env, 1, 1, 5_000, 10_000);
+    let arbitrators = Vec::from_array(&env, [Address::generate(&env)]);
+
+    assert_eq!(
+        h.milestone
+            .try_set_arbitration_config(&h.admin, &arbitrators, &2, &100),
+        Err(Ok(MilestoneError::InvalidThreshold))
+    );
+    assert_eq!(
+        h.milestone
+            .try_set_arbitration_config(&h.admin, &arbitrators, &1, &0),
+        Err(Ok(MilestoneError::InvalidArbitrationWindow))
+    );
+    assert_eq!(
+        h.milestone
+            .try_set_arbitration_config(&h.contractor, &arbitrators, &1, &100),
+        Err(Ok(MilestoneError::Unauthorized))
+    );
+
+    h.milestone
+        .set_arbitration_config(&h.admin, &arbitrators, &1, &100);
+    assert_eq!(h.milestone.get_arbitration_config().window_ledgers, 100);
+}
+
+#[test]
+fn test_raise_dispute_requires_config_and_borrower_or_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (h, _, borrower) = setup_arbitration(&env, 1, 1);
+    let pid = proposal_id(&env);
+
+    assert_eq!(
+        h.milestone.try_raise_dispute(&h.contractor, &pid),
+        Err(Ok(MilestoneError::Unauthorized))
+    );
+
+    h.milestone.raise_dispute(&borrower, &pid);
+    assert_eq!(last_dispute_event(&env), symbol_short!("raised"));
+    assert_eq!(
+        h.milestone.get_milestone(&pid).status,
+        MilestoneStatus::Disputed
+    );
+
+    let dispute = h.milestone.get_dispute(&pid);
+    assert_eq!(
+        dispute.deadline_ledger,
+        dispute.raised_ledger + ARBITRATION_WINDOW
+    );
+    assert_eq!(dispute.outcome, DisputeOutcome::Pending);
+
+    assert_eq!(
+        h.milestone.try_raise_dispute(&h.admin, &pid),
+        Err(Ok(MilestoneError::AlreadyDisputed))
+    );
+
+    let fresh = setup(&env, 1, 1, 5_000, 10_000);
+    assert_eq!(
+        fresh.milestone.try_raise_dispute(&fresh.admin, &pid),
+        Err(Ok(MilestoneError::ArbitrationNotConfigured))
+    );
+}
+
+#[test]
+fn test_disputed_milestone_cannot_be_released() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (h, _, _) = setup_arbitration(&env, 1, 1);
+    let pid = proposal_id(&env);
+
+    h.milestone.raise_dispute(&h.admin, &pid);
+    advance_ledger(&env, 200);
+
+    assert_eq!(
+        h.milestone.try_release_milestone(&pid),
+        Err(Ok(MilestoneError::InvalidStatus))
+    );
+}
+
+#[test]
+fn test_arbitrator_rejects_dispute_within_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (h, arbitrators, borrower) = setup_arbitration(&env, 1, 1);
+    let pid = proposal_id(&env);
+
+    h.milestone.raise_dispute(&borrower, &pid);
+    advance_ledger(&env, ARBITRATION_WINDOW);
+    h.milestone
+        .vote_dispute(&arbitrators.get(0).unwrap(), &pid, &false);
+    assert_eq!(last_dispute_event(&env), symbol_short!("resolved"));
+
+    assert_eq!(
+        h.milestone.get_dispute(&pid).outcome,
+        DisputeOutcome::Rejected
+    );
+    assert_eq!(
+        h.milestone.get_milestone(&pid).status,
+        MilestoneStatus::Approved
+    );
+
+    h.milestone.release_milestone(&pid);
+    assert_eq!(h.pool.total_disbursed(), 1_000);
+    assert_eq!(
+        h.milestone.try_resolve_expired_dispute(&pid),
+        Err(Ok(MilestoneError::DisputeAlreadyResolved))
+    );
+}
+
+#[test]
+fn test_arbitrator_upholds_dispute_within_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (h, arbitrators, _) = setup_arbitration(&env, 1, 1);
+    let pid = proposal_id(&env);
+
+    h.milestone.raise_dispute(&h.admin, &pid);
+    h.milestone
+        .vote_dispute(&arbitrators.get(0).unwrap(), &pid, &true);
+
+    assert_eq!(
+        h.milestone.get_dispute(&pid).outcome,
+        DisputeOutcome::Upheld
+    );
+    assert_eq!(
+        h.milestone.get_milestone(&pid).status,
+        MilestoneStatus::Refunded
+    );
+
+    advance_ledger(&env, 200);
+    assert_eq!(
+        h.milestone.try_release_milestone(&pid),
+        Err(Ok(MilestoneError::InvalidStatus))
+    );
+}
+
+#[test]
+fn test_vote_by_non_arbitrator_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (h, _, _) = setup_arbitration(&env, 1, 1);
+    let pid = proposal_id(&env);
+
+    h.milestone.raise_dispute(&h.admin, &pid);
+    assert_eq!(
+        h.milestone.try_vote_dispute(&h.admin, &pid, &true),
+        Err(Ok(MilestoneError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_window_elapses_with_no_decision_auto_resolves() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (h, arbitrators, borrower) = setup_arbitration(&env, 1, 1);
+    let pid = proposal_id(&env);
+    let approved_ledger = h.milestone.get_milestone(&pid).approved_ledger;
+
+    h.milestone.raise_dispute(&borrower, &pid);
+
+    // Still inside the window: nothing to auto-resolve yet.
+    advance_ledger(&env, ARBITRATION_WINDOW);
+    assert_eq!(
+        h.milestone.try_resolve_expired_dispute(&pid),
+        Err(Ok(MilestoneError::ArbitrationWindowOpen))
+    );
+
+    advance_ledger(&env, 1);
+    assert_eq!(
+        h.milestone
+            .try_vote_dispute(&arbitrators.get(0).unwrap(), &pid, &true),
+        Err(Ok(MilestoneError::ArbitrationWindowElapsed))
+    );
+
+    h.milestone.resolve_expired_dispute(&pid);
+    assert_eq!(last_dispute_event(&env), symbol_short!("timeout"));
+
+    let record = h.milestone.get_milestone(&pid);
+    assert_eq!(record.status, MilestoneStatus::Approved);
+    assert_eq!(record.approved_ledger, approved_ledger);
+    assert_eq!(
+        h.milestone.get_dispute(&pid).outcome,
+        DisputeOutcome::TimedOut
+    );
+
+    h.milestone.release_milestone(&pid);
+    assert_eq!(h.pool.total_disbursed(), 1_000);
+}
+
+#[test]
+fn test_window_elapses_mid_partial_resolution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (h, arbitrators, _) = setup_arbitration(&env, 3, 2);
+    let pid = proposal_id(&env);
+
+    h.milestone.raise_dispute(&h.admin, &pid);
+    h.milestone
+        .vote_dispute(&arbitrators.get(0).unwrap(), &pid, &true);
+    assert_eq!(
+        h.milestone.get_milestone(&pid).status,
+        MilestoneStatus::Disputed
+    );
+
+    advance_ledger(&env, ARBITRATION_WINDOW + 1);
+    assert_eq!(
+        h.milestone
+            .try_vote_dispute(&arbitrators.get(1).unwrap(), &pid, &true),
+        Err(Ok(MilestoneError::ArbitrationWindowElapsed))
+    );
+
+    h.milestone.resolve_expired_dispute(&pid);
+
+    let (_, topics, data) = env.events().all().last().unwrap();
+    assert_eq!(
+        Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap(),
+        symbol_short!("timeout")
+    );
+    let (_, uphold, reject): (BytesN<32>, u32, u32) =
+        TryFromVal::try_from_val(&env, &data).unwrap();
+    assert_eq!((uphold, reject), (1, 0));
+
+    // The lone uphold vote is discarded; the release schedule is restored.
+    let dispute = h.milestone.get_dispute(&pid);
+    assert_eq!(dispute.outcome, DisputeOutcome::TimedOut);
+    assert_eq!(dispute.uphold_votes, 1);
+    assert_eq!(
+        h.milestone.get_milestone(&pid).status,
+        MilestoneStatus::Approved
+    );
+}
+
+#[test]
+fn test_config_change_does_not_move_open_dispute_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (h, arbitrators, _) = setup_arbitration(&env, 1, 1);
+    let pid = proposal_id(&env);
+
+    h.milestone.raise_dispute(&h.admin, &pid);
+    let deadline = h.milestone.get_dispute(&pid).deadline_ledger;
+
+    h.milestone
+        .set_arbitration_config(&h.admin, &arbitrators, &1, &(ARBITRATION_WINDOW * 10));
+    assert_eq!(h.milestone.get_dispute(&pid).deadline_ledger, deadline);
 }

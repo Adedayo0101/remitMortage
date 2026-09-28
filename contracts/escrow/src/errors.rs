@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 use soroban_sdk::contracterror;
 
 #[contracterror]
@@ -46,4 +49,42 @@ pub enum EscrowError {
     ReentrancyGuard = 20,
     /// TTL bump amounts and lifetime thresholds must be greater than zero.
     InvalidTtlConfig = 21,
+    /// Penalty proposal is not pending.
+    PenaltyProposalNotPending = 22,
+    /// Escrow goal does not exist or has no deposits.
+    EscrowGoalNotFound = 23,
+    /// Address is not whitelisted when permissioned mode is enabled.
+    AddressNotWhitelisted = 24,
+    /// No auto-deposit schedule is configured for this borrower/goal escrow.
+    AutoDepositNotConfigured = 34,
+    /// The auto-deposit interval has not elapsed since the last scheduled draw.
+    AutoDepositNotDue = 35,
+    /// The borrower's token allowance to the escrow is below the scheduled amount.
+    InsufficientAllowance = 36,
+    /// The borrower's token balance is below the scheduled amount.
+    InsufficientBalance = 37,
+    /// Auto-deposit interval must be greater than zero ledgers.
+    InvalidAutoDepositInterval = 38,
+    /// Beneficiary has not been configured for this goal.
+    BeneficiaryNotConfigured = 25,
+    /// Caller is not the designated beneficiary for this goal.
+    UnauthorizedBeneficiary = 26,
+    /// The owner-inactivity period has not yet elapsed.
+    BeneficiaryInactivityNotElapsed = 27,
+    /// Not enough valid attestations to satisfy the configured quorum.
+    InsufficientAttestationQuorum = 28,
+    /// One or more attestations were invalid or from unknown signers.
+    InvalidAttestation = 29,
+    /// The beneficiary has already claimed this goal.
+    BeneficiaryAlreadyClaimed = 30,
+    /// There are no funds available to claim.
+    NoClaimableFunds = 31,
+    /// The inactivity period must be greater than zero ledgers.
+    InvalidInactivityPeriod = 32,
+    /// Attestor configuration must have a non-empty signer set and a valid threshold.
+    InvalidAttestorConfig = 33,
+    /// Beneficiary split shares do not sum to exactly 10 000 basis points (100 %).
+    InvalidBeneficiaryShares = 39,
+    /// Beneficiary list exceeds the maximum allowed number of recipients.
+    BeneficiaryListTooLarge = 40,
 }

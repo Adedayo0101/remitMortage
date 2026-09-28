@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 /* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
@@ -17,6 +20,10 @@ import {
 } from "recharts";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
+const RateBenchmarkWidget = dynamic(
+  () => import("../../components/RateBenchmarkWidget"),
+  { ssr: false }
+);
 
 // ── Animated Counter Component ──────────────────────────────────────────
 function AnimatedCounter({
@@ -430,6 +437,11 @@ export default function AnalyticsPage() {
                   ))}
                 </div>
               </div>
+            </div>
+
+            {/* Rate Benchmark Widget */}
+            <div className="mb-10">
+              <RateBenchmarkWidget />
             </div>
 
             {/* Bottom Row - Activity Feed */}

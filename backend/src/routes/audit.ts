@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { prisma } from "../services/db.js";
@@ -78,7 +81,7 @@ auditRouter.get("/", requireAdmin, async (req, res) => {
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit + 1,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      ...(cursor ? ({ cursor: ({ id: cursor } as any), skip: 1 } as any) : {}),
     });
 
     const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;

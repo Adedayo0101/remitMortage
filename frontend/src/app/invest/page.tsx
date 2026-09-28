@@ -1,11 +1,20 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 import React, { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { useWallet, WalletProvider } from "../../context/WalletContext";
+import { useWallet, OptionalWalletProvider } from "../../context/WalletContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 import ROIProjectionWidget from "../../components/ROIProjectionWidget";
+import { AutoReinvestModal } from "../../components/AutoReinvestModal";
+import { useGovernanceProposals, type GovernanceProposal } from "../../hooks/useGovernanceProposals";
+import { GovernanceVotingModal } from "../../components/governance/GovernanceVotingModal";
+import { SubmitProposalModal } from "../../components/governance/SubmitProposalModal";
+import { QuorumProgressBar } from "../../components/governance/QuorumProgressBar";
+import { track } from "../../lib/analytics";
+import InvestorWatchlist from "../../components/InvestorWatchlist";
 
 type Tranche = "Senior" | "Junior";
 
@@ -89,14 +98,20 @@ function UtilizationGauge({ rate }: { rate: number }) {
 
 export default function InvestPage() {
   return (
-    <WalletProvider>
+    <OptionalWalletProvider>
       <InvestPageInner />
-    </WalletProvider>
+    </OptionalWalletProvider>
   );
 }
 
 function InvestPageInner() {
   const { publicKey, isConnected, connect } = useWallet();
+  const { status: impersonationStatus } = useImpersonation();
+  const isReadOnly = impersonationStatus.active;
+
+  useEffect(() => {
+    if (isConnected) track("portfolio_viewed");
+  }, [isConnected]);
 
   const [metrics, setMetrics] = useState<PoolMetrics | null>(null);
   const [position, setPosition] = useState<InvestorPosition | null>(null);
@@ -114,6 +129,13 @@ function InvestPageInner() {
 
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
+
+  const [autoReinvest, setAutoReinvest] = useState(false);
+  const [showAutoReinvestModal, setShowAutoReinvestModal] = useState(false);
+
+  const { proposals, loading: loadingProposals, error: proposalsError, submitVote, createProposal } = useGovernanceProposals();
+  const [selectedProposal, setSelectedProposal] = useState<GovernanceProposal | null>(null);
+  const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
 
   const loadMetrics = useCallback(async () => {
     setLoadingMetrics(true);
@@ -158,10 +180,23 @@ function InvestPageInner() {
     loadMetrics();
   }, [loadMetrics]);
 
+  useEffect(() => {
+    try {
+      setAutoReinvest(localStorage.getItem("investor_auto_reinvest") === "true");
+    } catch {
+      // localStorage may be unavailable in certain environments
+    }
+  }, []);
+
   async function handleDeposit(e: React.FormEvent) {
     e.preventDefault();
     setDepositError(null);
     setDepositSuccess(false);
+
+    if (isReadOnly) {
+      setDepositError("Deposits are disabled while viewing this account read-only.");
+      return;
+    }
 
     const amount = parseFloat(depositAmount);
     if (isNaN(amount) || amount <= 0) {
@@ -179,6 +214,7 @@ function InvestPageInner() {
     );
     if (!confirmed) return;
 
+    track("investment_started", { tranche: selectedTranche });
     setDepositing(true);
     try {
       await new Promise((r) => setTimeout(r, 1000));
@@ -192,6 +228,7 @@ function InvestPageInner() {
 
       setDepositAmount("");
       setDepositSuccess(true);
+      track("investment_completed", { tranche: selectedTranche });
       setTimeout(() => setDepositSuccess(false), 5000);
     } catch (err: any) {
       setDepositError(err?.message || "Deposit transaction failed.");
@@ -200,8 +237,28 @@ function InvestPageInner() {
     }
   }
 
+  function handleAutoReinvestToggle() {
+    if (!autoReinvest) {
+      setShowAutoReinvestModal(true);
+    } else {
+      setAutoReinvest(false);
+      try { localStorage.setItem("investor_auto_reinvest", "false"); } catch {}
+    }
+  }
+
+  function confirmAutoReinvest() {
+    setAutoReinvest(true);
+    try { localStorage.setItem("investor_auto_reinvest", "true"); } catch {}
+    setShowAutoReinvestModal(false);
+  }
+
   async function handleWithdraw() {
     setWithdrawError(null);
+
+    if (isReadOnly) {
+      setWithdrawError("Withdrawals are disabled while viewing this account read-only.");
+      return;
+    }
 
     if (!position || parseFloat(position.deposited) <= 0) {
       setWithdrawError("No balance to withdraw.");
@@ -228,6 +285,7 @@ function InvestPageInner() {
     try {
       await new Promise((r) => setTimeout(r, 800));
       setPosition({ deposited: "0", tranche: null, accruedYield: "0", startLedger: 0 });
+      track("investment_withdrawal_completed");
     } catch (err: any) {
       setWithdrawError(err?.message || "Withdrawal failed.");
     } finally {
@@ -241,8 +299,19 @@ function InvestPageInner() {
     poolRates?.juniorApyBps ??
     (metrics ? Math.max(0, Math.round(metrics.estimatedApyBps * 2 - seniorApyBps)) : 0);
 
+  const userHoldings: TrancheHolding[] =
+    position && position.tranche && parseFloat(position.deposited) > 0
+      ? [{ tranche: position.tranche, amount: parseFloat(position.deposited) }]
+      : [];
+
+  const concentrationAnalysis = computeConcentrationMetrics(
+    userHoldings,
+    0.7,
+    { seniorApyBps, juniorApyBps }
+  );
+
   return (
-    <div className="min-h-screen bg-[#060913] text-slate-100 pb-20">
+    <div className="rm-app-page rm-invest-page min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
 
       <main className="max-w-6xl mx-auto px-6 pt-32">
@@ -348,6 +417,17 @@ function InvestPageInner() {
           )}
         </section>
 
+        {/* Auto-Diversification Rebalancing Suggestion */}
+        <InvestorRebalancingSuggestions
+          analysis={concentrationAnalysis}
+          onSelectTranche={(t, amt) => {
+            setSelectedTranche(t);
+            if (amt) {
+              setDepositAmount(String(amt));
+            }
+          }}
+        />
+
         <div className="grid md:grid-cols-2 gap-6">
           {/* Deposit Form */}
           <section>
@@ -365,15 +445,15 @@ function InvestPageInner() {
                 </div>
               ) : (
                 <form onSubmit={handleDeposit} className="space-y-4">
-                  <div>
-                    <label className="text-xs font-bold uppercase text-slate-400 block mb-2">
+                  <fieldset>
+                    <legend className="text-xs font-bold uppercase text-slate-400 block mb-2">
                       Select Capital Tranche
-                    </label>
+                    </legend>
                     <div className="grid grid-cols-2 gap-3">
                       {(["Senior", "Junior"] as Tranche[]).map((t) => (
                         <label
                           key={t}
-                          className={`cursor-pointer rounded-xl border p-4 text-xs transition-all ${
+                          className={`cursor-pointer rounded-xl border p-4 text-xs transition-all focus-within:ring-2 focus-within:ring-cyan-300 focus-within:ring-offset-2 focus-within:ring-offset-slate-900 ${
                             selectedTranche === t
                               ? "border-cyan-400 bg-cyan-500/10 text-white"
                               : "border-slate-800 text-slate-400 hover:border-slate-700"
@@ -410,7 +490,7 @@ function InvestPageInner() {
                         </label>
                       ))}
                     </div>
-                  </div>
+                  </fieldset>
 
                   <div>
                     <label
@@ -431,15 +511,26 @@ function InvestPageInner() {
                     />
                   </div>
 
-                  {depositError && <p className="text-xs text-red-400">{depositError}</p>}
+                  {depositError && (
+                    <p role="alert" className="text-xs text-red-400">
+                      {depositError}
+                    </p>
+                  )}
                   {depositSuccess && (
-                    <p className="text-xs text-emerald-400">Deposit submitted successfully.</p>
+                    <p role="status" className="text-xs text-emerald-400">
+                      Deposit submitted successfully.
+                    </p>
+                  )}
+                  {isReadOnly && (
+                    <p className="text-xs text-rose-400">
+                      Deposits are disabled while viewing this account read-only.
+                    </p>
                   )}
 
                   <button
                     type="submit"
-                    disabled={depositing}
-                    className="btn-cta w-full justify-center py-3"
+                    disabled={depositing || isReadOnly}
+                    className="btn-cta w-full justify-center py-3 disabled:opacity-40"
                   >
                     {depositing
                       ? "Signing Transaction..."
@@ -467,13 +558,33 @@ function InvestPageInner() {
                           ${formatUSDC(position.deposited)}
                         </p>
                       </div>
-                      <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
-                        <p className="text-[10px] text-slate-500 font-bold uppercase">
-                          Earned Yield
-                        </p>
-                        <p className="text-xl font-extrabold text-emerald-400 font-mono mt-1">
+                      <div
+                        className={`bg-slate-950/60 border rounded-xl p-4 transition-colors ${
+                          autoReinvest ? "border-cyan-500/30" : "border-slate-800"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <p className="text-[10px] text-slate-500 font-bold uppercase">
+                            Earned Yield
+                          </p>
+                          {autoReinvest && (
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-1.5 py-0.5 rounded-full">
+                              Auto-Reinvesting
+                            </span>
+                          )}
+                        </div>
+                        <p
+                          className={`text-xl font-extrabold font-mono mt-1 ${
+                            autoReinvest ? "text-cyan-400" : "text-emerald-400"
+                          }`}
+                        >
                           ${formatUSDC(position.accruedYield)}
                         </p>
+                        {autoReinvest && (
+                          <p className="text-[10px] text-cyan-500/70 mt-0.5">
+                            rolling into principal
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -485,6 +596,31 @@ function InvestPageInner() {
                         </span>
                       </div>
                     )}
+
+                    <div className="flex items-center justify-between py-2 border-t border-slate-800/60">
+                      <div>
+                        <span className="text-xs text-slate-300 font-medium">Auto-Reinvest Yield</span>
+                        <p className="text-[10px] text-slate-500">
+                          {autoReinvest
+                            ? "Yield compounds into principal"
+                            : "Yield held as claimable cash"}
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleAutoReinvestToggle}
+                        aria-pressed={autoReinvest}
+                        aria-label="Toggle auto-reinvest yield"
+                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500/50 ${
+                          autoReinvest ? "bg-cyan-500" : "bg-slate-700"
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                            autoReinvest ? "translate-x-4" : "translate-x-0.5"
+                          }`}
+                        />
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-xs text-slate-500">Loading position…</p>
@@ -494,9 +630,14 @@ function InvestPageInner() {
               {isConnected && position && (
                 <div className="pt-4 border-t border-slate-800 mt-6">
                   {withdrawError && <p className="text-xs text-red-400 mb-2">{withdrawError}</p>}
+                  {isReadOnly && (
+                    <p className="text-xs text-rose-400 mb-2">
+                      Withdrawals are disabled while viewing this account read-only.
+                    </p>
+                  )}
                   <button
                     onClick={handleWithdraw}
-                    disabled={withdrawing || parseFloat(position.deposited) <= 0}
+                    disabled={withdrawing || isReadOnly || parseFloat(position.deposited) <= 0}
                     className="btn-outline w-full justify-center text-xs py-2.5 disabled:opacity-40"
                   >
                     {withdrawing ? "Processing…" : "Withdraw Liquidity"}
@@ -506,6 +647,96 @@ function InvestPageInner() {
             </div>
           </section>
         </div>
+
+        {/* Watchlist: upcoming offerings, distinct from active holdings */}
+        <InvestorWatchlist />
+
+        {/* Governance Section */}
+        <section className="mb-10 mt-10">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-white">Active Protocol Proposals</h2>
+            <button 
+              onClick={() => setIsSubmitModalOpen(true)}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition-colors"
+            >
+              + New Proposal
+            </button>
+          </div>
+          
+          {loadingProposals ? (
+            <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400 animate-pulse">
+              Loading active proposals...
+            </div>
+          ) : proposalsError ? (
+            <div className="p-4 bg-red-500/10 text-red-300 border border-red-500/20 rounded-2xl text-sm">
+              Failed to load proposals.
+            </div>
+          ) : proposals.length === 0 ? (
+             <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400 text-center">
+               No active proposals at this time.
+             </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {proposals.map((p) => (
+                <div key={p.id} className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 hover:border-slate-700 transition-colors flex flex-col justify-between">
+                  <div>
+                    <div className="flex justify-between items-start mb-2">
+                      <h3 className="font-bold text-white line-clamp-1 pr-4">{p.title}</h3>
+                      <span className={`shrink-0 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
+                        p.status === "approved"
+                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                          : "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
+                      }`}>
+                        {p.status}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-400 mb-4 line-clamp-2">{p.description}</p>
+                    <QuorumProgressBar 
+                      currentVotes={p.currentVotes}
+                      requiredVotes={p.requiredVotes}
+                      quorumThresholdPercent={p.quorumPercent}
+                    />
+                  </div>
+                  <button 
+                    onClick={() => setSelectedProposal(p)}
+                    className="mt-4 w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-bold rounded-xl border border-slate-700 transition-colors"
+                  >
+                    View & Vote
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Modals */}
+        <GovernanceVotingModal
+          isOpen={!!selectedProposal}
+          onClose={() => setSelectedProposal(null)}
+          proposal={selectedProposal}
+          onVote={submitVote}
+        />
+        <SubmitProposalModal
+          isOpen={isSubmitModalOpen}
+          onClose={() => setIsSubmitModalOpen(false)}
+          onSubmit={createProposal}
+        />
+
+        <AutoReinvestModal
+          isOpen={showAutoReinvestModal}
+          onConfirm={confirmAutoReinvest}
+          onCancel={() => setShowAutoReinvestModal(false)}
+        />
+
+
+        {isConnected && publicKey && position && parseFloat(position.deposited) > 0 && (
+          <section className="mt-10">
+            <PortfolioBreakdownChart
+              wallet={publicKey}
+              totalDeposited={parseFloat(position.deposited)}
+            />
+          </section>
+        )}
 
         {isConnected && publicKey && position && parseFloat(position.deposited) > 0 && (
           <ROIProjectionWidget

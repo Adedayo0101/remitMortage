@@ -1,18 +1,397 @@
-import { Router, Request, Response } from "express";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
+import { Router, Response } from "express";
 import { prisma } from "../services/db.js";
 import { sendWebhook } from "../services/webhook.js";
+import { runEscrowReconciliation } from "../jobs/escrowReconciliation.js";
 import logger from "../utils/logger.js";
+import { requireAdmin, type AuthenticatedRequest } from "../middleware/auth.js";
+import { bulkReviewApplications, type BulkReviewDecision } from "../services/loanStore.js";
+import { mergeApplicants, MergeValidationError } from "../services/applicantMerge.js";
+import { promoteWaitlistBatch } from "../services/inviteCode.js";
+import { runSuspiciousActivityScan } from "../services/suspiciousActivity.js";
+import { getTaxIdMatchesForApplication } from "../services/taxIdDedup.js";
+import {
+  initiateServicingTransfer,
+  getServicingHistory,
+  ServicingTransferError,
+} from "../services/loanServicing.js";
+import { listAutoRejectionRules, createAutoRejectionRule, updateAutoRejectionRule } from "../services/autoRejectionRuleStore.js";
+import {
+  getWebhookLatencyReport,
+  DEFAULT_LATENCY_SLA_MS,
+  DEFAULT_LATENCY_WINDOW_MINUTES,
+  MAX_LATENCY_WINDOW_MINUTES,
+} from "../services/webhookLatency.js";
+import { listSuppressedApplicants } from "../services/emailSuppression.js";
+import { runUnusedIndexAuditJob } from "../jobs/unusedIndexAudit.js";
+import {
+  ForensicsReviewError,
+  listFlaggedDocuments,
+  reviewFlaggedDocument,
+} from "../services/kycDocumentForensics.js";
+import { loadConfig } from "../config.js";
 
 export const adminRouter = Router();
 
-// Trigger manual retry of a DLQ job
-adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) => {
-  const { id } = req.params;
+adminRouter.get("/compliance/suspicious-activity", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const status = typeof req.query.status === "string" ? req.query.status : "OPEN";
+  try {
+    const alerts = await prisma.suspiciousActivityAlert.findMany({
+      where: { status: status as any },
+      include: { borrower: { select: { stellarAddress: true } } },
+      orderBy: { detectedAt: "desc" },
+      take: 200,
+    });
+    return res.json({ alerts });
+  } catch (error) {
+    logger.error("List suspicious activity alerts error", { error });
+    return res.status(500).json({ error: "failed_to_list_suspicious_activity" });
+  }
+});
+
+adminRouter.post("/compliance/suspicious-activity/scan", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json(await runSuspiciousActivityScan());
+  } catch (error) {
+    logger.error("Suspicious activity scan error", { error });
+    return res.status(500).json({ error: "suspicious_activity_scan_failed" });
+  }
+});
+
+adminRouter.patch("/compliance/suspicious-activity/:id", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { status, reviewNotes } = req.body ?? {};
+  if (!["OPEN", "CLEARED", "CONFIRMED"].includes(status)) {
+    return res.status(400).json({ error: "invalid_status" });
+  }
+  try {
+    const alert = await prisma.suspiciousActivityAlert.update({
+      where: { id: req.params.id },
+      data: { status, reviewNotes: reviewNotes ? String(reviewNotes) : null, reviewedAt: new Date(), reviewedBy: req.user?.walletAddress ?? "admin" },
+    });
+    return res.json(alert);
+  } catch (error) {
+    logger.error("Update suspicious activity alert error", { error });
+    return res.status(404).json({ error: "alert_not_found" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/loans/bulk-review:
+ *   post:
+ *     summary: Approve or reject multiple pending loan applications
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ */
+/**
+ * @openapi
+ * /api/admin/applicants/merge:
+ *   post:
+ *     summary: Merge a duplicate applicant into a primary applicant
+ *     description: Re-points loan applications, verification results, KYC documents and credentials to the primary. Soft-deletes the duplicate.
+ *     tags: [Admin]
+ *     security: [bearerAuth: []]
+ */
+adminRouter.post("/applicants/merge", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { primaryApplicantId, duplicateApplicantId, reason } = req.body ?? {};
+  try {
+    const result = await mergeApplicants(primaryApplicantId, duplicateApplicantId, {
+      actorAddress: req.user?.walletAddress ?? null,
+      ipAddress: req.ip ?? null,
+      reason: typeof reason === "string" ? reason : undefined,
+    });
+    return res.status(200).json(result);
+  } catch (err: any) {
+    if (err instanceof MergeValidationError || (typeof err?.status === "number" && typeof err?.code === "string")) {
+      const status = typeof err.status === "number" ? err.status : 400;
+      const code = typeof err.code === "string" ? err.code : "invalid_request";
+      return res.status(status).json({ error: code, message: err.message });
+    }
+    logger.error("Applicant merge error", { error: err });
+    return res.status(500).json({ error: "merge_failed", message: err?.message ?? "merge failed" });
+  }
+});
+
+adminRouter.post("/loans/bulk-review", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  const rawItems = Array.isArray(body.reviews)
+    ? body.reviews
+    : Array.isArray(body.applicationIds) && typeof body.decision === "string"
+      ? body.applicationIds.map((applicationId: unknown) => ({ applicationId, decision: body.decision, reason: body.reason }))
+      : null;
+
+  if (!rawItems || rawItems.length === 0 || rawItems.length > 100) {
+    return res.status(400).json({ error: "invalid_request", message: "reviews must contain between 1 and 100 applications" });
+  }
+
+  const items = rawItems.map((item: any) => ({
+    applicationId: typeof item?.applicationId === "string" ? item.applicationId : item?.id,
+    decision: item?.decision,
+    reason: item?.reason,
+  }));
+  if (items.some((item: any) => !item.applicationId || !["approve", "reject"].includes(item.decision))) {
+    return res.status(400).json({ error: "invalid_request", message: "Each review requires an applicationId and an approve or reject decision" });
+  }
+
+  const reviewerAddress = req.user?.walletAddress;
+  if (!reviewerAddress) {
+    return res.status(403).json({ error: "forbidden", message: "Reviewer identity is required" });
+  }
 
   try {
-    const dlqRecord = await prisma.webhookDLQ.findUnique({
-      where: { id },
+    const review = await bulkReviewApplications(
+      items as Array<{ applicationId: string; decision: BulkReviewDecision; reason?: string }>,
+      reviewerAddress,
+      req.ip,
+    );
+    return res.status(200).json({
+      processed: review.results.length,
+      failed: review.failures.length,
+      results: review.results,
+      failures: review.failures,
     });
+  } catch (error) {
+    logger.error("Bulk loan review error", { error });
+    return res.status(500).json({ error: "bulk_review_failed" });
+  }
+});
+
+// Reviewer context for applications held with DUPLICATE_TAX_ID: the other
+// applicants sharing the tax ID and their applications. The tax ID itself is
+// never returned.
+adminRouter.get("/loans/:id/tax-id-matches", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const result = await getTaxIdMatchesForApplication(String(req.params.id));
+    if (!result) {
+      return res.status(404).json({ error: "not_found", message: "Loan application not found" });
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error("Tax ID match lookup error", { error });
+    return res.status(500).json({ error: "failed_to_load_tax_id_matches" });
+  }
+});
+
+// ── Loan servicing transfer ──────────────────────────────────────────────
+
+adminRouter.post("/loans/:id/servicing-transfer", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  try {
+    const transfer = await initiateServicingTransfer({
+      loanId: String(req.params.id),
+      toServicer: body.toServicer,
+      toServicerContact: body.toServicerContact,
+      effectiveDate: body.effectiveDate,
+      reason: body.reason,
+      investorAddresses: body.investorAddresses,
+      initiatedBy: req.user?.walletAddress ?? "admin-api-key",
+      ipAddress: req.ip,
+    });
+    return res.status(201).json(transfer);
+  } catch (error) {
+    if (error instanceof ServicingTransferError) {
+      return res.status(error.httpStatus).json({ error: error.code, message: error.message });
+    }
+    logger.error("Loan servicing transfer error", { error });
+    return res.status(500).json({ error: "servicing_transfer_failed" });
+  }
+});
+
+adminRouter.get("/loans/:id/servicing-history", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const history = await getServicingHistory(String(req.params.id));
+    if (!history) {
+      return res.status(404).json({ error: "not_found", message: "Loan application not found" });
+    }
+    return res.json(history);
+  } catch (error) {
+    logger.error("Loan servicing history error", { error });
+    return res.status(500).json({ error: "failed_to_load_servicing_history" });
+  }
+});
+
+// ── Auto-rejection rules (configurable without redeploy) ─────────────────
+
+adminRouter.get("/auto-rejection-rules", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const rules = await listAutoRejectionRules(true);
+    return res.json(rules);
+  } catch (error) {
+    logger.error("List auto-rejection rules error", { error });
+    return res.status(500).json({ error: "failed_to_list_rules" });
+  }
+});
+
+adminRouter.post("/auto-rejection-rules", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { name, ruleType, config, active, priority } = req.body ?? {};
+  if (!name || !ruleType || !config) {
+    return res.status(400).json({
+      error: "invalid_request",
+      message: "name, ruleType, and config are required",
+    });
+  }
+
+  try {
+    const rule = await createAutoRejectionRule({
+      name: String(name),
+      ruleType,
+      config,
+      active,
+      priority,
+    });
+    return res.status(201).json(rule);
+  } catch (error) {
+    logger.error("Create auto-rejection rule error", { error });
+    return res.status(500).json({ error: "failed_to_create_rule" });
+  }
+});
+
+adminRouter.patch("/auto-rejection-rules/:id", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { name, config, active, priority } = req.body ?? {};
+
+  try {
+    const rule = await updateAutoRejectionRule(String(id), {
+      ...(name !== undefined ? { name: String(name) } : {}),
+      ...(config !== undefined ? { config } : {}),
+      ...(active !== undefined ? { active: Boolean(active) } : {}),
+      ...(priority !== undefined ? { priority: Number(priority) } : {}),
+    });
+    return res.json(rule);
+  } catch (error) {
+    logger.error("Update auto-rejection rule error", { error });
+    return res.status(404).json({ error: "rule_not_found" });
+  }
+});
+
+function positiveIntParam(raw: unknown, fallback: number): number | null {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * @openapi
+ * /api/admin/webhooks/latency:
+ *   get:
+ *     summary: Webhook delivery latency percentiles per endpoint
+ *     description: >-
+ *       Returns p50/p95/p99 dispatch-to-delivery latency for each subscriber
+ *       endpoint over a rolling window, with retry and DLQ counts. Endpoints
+ *       whose p95 exceeds the SLA threshold, or that only dead-lettered in the
+ *       window, are flagged with slaBreached.
+ *     tags:
+ *       - Admin
+ *     parameters:
+ *       - in: query
+ *         name: windowMinutes
+ *         schema: { type: integer, minimum: 1, maximum: 10080 }
+ *       - in: query
+ *         name: slaMs
+ *         schema: { type: integer, minimum: 1 }
+ *     responses:
+ *       200:
+ *         description: Latency report.
+ *       400:
+ *         description: Invalid windowMinutes or slaMs.
+ */
+/**
+ * Applicants whose notification email is on the suppression list (hard bounce,
+ * spam complaint, or inside a soft-bounce backoff window), so staff can prompt
+ * them to update their contact details.
+ */
+adminRouter.get("/email-suppressions", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ suppressions: await listSuppressedApplicants() });
+  } catch (error) {
+    logger.error("List email suppressions error", { error });
+    return res.status(500).json({ error: "failed_to_list_email_suppressions" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/db/unused-indexes:
+ *   get:
+ *     summary: Manually trigger the unused-index candidate report
+ *     description: >-
+ *       Report-only (issue #758). Scans pg_stat_user_indexes for indexes with
+ *       sustained near-zero usage, excludes constraint-backing indexes, and
+ *       returns candidates with table/columns/size context for human review.
+ *       Never drops an index — see docs/UNUSED_INDEX_REVIEW.md.
+ *     tags:
+ *       - Admin
+ *     responses:
+ *       200:
+ *         description: Unused-index report.
+ */
+adminRouter.get("/db/unused-indexes", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { report } = await runUnusedIndexAuditJob();
+    return res.json(report);
+  } catch (error) {
+    logger.error("Unused index audit error", { error });
+    return res.status(500).json({ error: "unused_index_audit_failed" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/db/query-killer:
+ *   post:
+ *     summary: Manually trigger the long-running query killer sweep
+ *     description: >-
+ *       Ops-only (issue #736). Terminates backends running past
+ *       QUERY_KILLER_THRESHOLD_MS, never touching the documented
+ *       maintenance allowlist. Every termination is logged/alerted with
+ *       query text and origin context.
+ *     tags:
+ *       - Admin
+ */
+adminRouter.post("/db/query-killer", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { runQueryKillerJob } = await import("../jobs/queryKiller.js");
+    return res.json(await runQueryKillerJob());
+  } catch (error) {
+    logger.error("Query killer error", { error });
+    return res.status(500).json({ error: "query_killer_failed" });
+  }
+});
+
+adminRouter.get("/webhooks/latency", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const config = loadConfig();
+  const windowMinutes = positiveIntParam(
+    req.query.windowMinutes,
+    config.webhookLatencyWindowMinutes || DEFAULT_LATENCY_WINDOW_MINUTES
+  );
+  const slaMs = positiveIntParam(req.query.slaMs, config.webhookLatencySlaMs || DEFAULT_LATENCY_SLA_MS);
+
+  if (windowMinutes === null || windowMinutes > MAX_LATENCY_WINDOW_MINUTES) {
+    return res.status(400).json({ error: "invalid_window_minutes" });
+  }
+  if (slaMs === null) {
+    return res.status(400).json({ error: "invalid_sla_ms" });
+  }
+
+  try {
+    return res.json(await getWebhookLatencyReport({ windowMinutes, slaMs }));
+  } catch (error) {
+    logger.error("Webhook latency report error", { error });
+    return res.status(500).json({ error: "webhook_latency_report_failed" });
+  }
+});
+
+// Trigger manual retry of a DLQ job
+adminRouter.post("/webhooks/dlq/:id/retry", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const rawId = req.params.id;
+  const id = Array.isArray(rawId) ? rawId[0] : rawId;
+
+  try {
+      const dlqRecord = await prisma.webhookDLQ.findUnique({ where: { id } });
 
     if (!dlqRecord) {
       res.status(404).json({ error: "DLQ record not found" });
@@ -27,20 +406,11 @@ adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) 
 
     if (webhookResult.success) {
       // If success, remove from DLQ
-      await prisma.webhookDLQ.delete({
-        where: { id },
-      });
+      await prisma.webhookDLQ.delete({ where: { id } });
       res.json({ success: true, message: "Webhook retry succeeded and removed from DLQ" });
     } else {
       // If still fails, update DLQ record with new error/status
-      await prisma.webhookDLQ.update({
-        where: { id },
-        data: {
-          statusCode: webhookResult.status,
-          responsePayload: webhookResult.responsePayload,
-          error: webhookResult.error,
-        },
-      });
+      await prisma.webhookDLQ.update({ where: { id }, data: { statusCode: webhookResult.status, responsePayload: webhookResult.responsePayload, error: webhookResult.error } });
       res.status(500).json({ 
         success: false, 
         error: "Webhook retry failed", 
@@ -52,3 +422,186 @@ adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) 
     res.status(500).json({ error: "Internal server error during retry" });
   }
 });
+
+/**
+ * @openapi
+ * /api/admin/escrow/reconcile:
+ *   post:
+ *     summary: Trigger manual escrow balance reconciliation
+ *     description: >-
+ *       Ops-only. Fetches current on-chain USDC balances for all borrower
+ *       accounts from Horizon, compares them against the Postgres cache, and
+ *       overwrites any mismatched cached values with the on-chain truth.
+ *       Also clears outstanding mismatch alerts once corrected.
+ *     tags:
+ *       - Admin
+ *     responses:
+ *       200:
+ *         description: Reconciliation complete. Returns counts of scanned, mismatches, corrected, and errors.
+ *       500:
+ *         description: Reconciliation job threw an unexpected error.
+ */
+adminRouter.post("/escrow/reconcile", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    logger.info("[AdminRouter] Manual escrow reconciliation triggered", {
+      ip: req.ip,
+    });
+
+    // autoCorrect=true: fix cached values and clear the alert
+    const result = await runEscrowReconciliation(true);
+
+    res.json({
+      success: true,
+      scanned: result.scanned,
+      mismatches: result.mismatches.length,
+      corrected: result.corrected,
+      errors: result.errors,
+      details: result.mismatches,
+    });
+  } catch (err: any) {
+    logger.error("[AdminRouter] Escrow reconciliation failed", { err });
+    res.status(500).json({ error: "Reconciliation job failed", message: err.message });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/waitlist/promote:
+ *   post:
+ *     summary: Generate and email invite codes to waitlisted users in batches
+ *     description: >-
+ *       Admin-only. Picks oldest pending waitlist entries, generates a unique
+ *       invite code per user, updates entry to invited, and emails the code.
+ *       Codes are single-use and validated at registration when gating is enabled.
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               count:
+ *                 type: integer
+ *                 description: Number of waitlisted users to promote (1-100, default 10)
+ *               limit:
+ *                 type: integer
+ *                 description: Alias for count
+ *     responses:
+ *       200:
+ *         description: Batch promotion complete
+ *       400:
+ *         description: Invalid count
+ */
+adminRouter.post("/waitlist/promote", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  const rawCount = body.count ?? body.limit ?? body.batchSize ?? 10;
+  const count = typeof rawCount === "string" ? parseInt(rawCount, 10) : Number(rawCount);
+  if (!Number.isFinite(count) || count < 1 || count > 100) {
+    return res.status(400).json({ error: "invalid_request", message: "count must be between 1 and 100" });
+  }
+  try {
+    const results = await promoteWaitlistBatch(count);
+    return res.json({ promoted: results.length, results });
+  } catch (err) {
+    logger.error("[AdminRouter] waitlist promote failed", { err });
+    return res.status(500).json({ error: "waitlist_promote_failed" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/scoring/models:
+ *   get:
+ *     summary: Retrieve active risk scoring model configuration and shadow mode evaluation metrics
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ */
+adminRouter.get("/scoring/models", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const config = getModelConfig();
+    const metrics = getShadowMetrics();
+    const shadowEvaluations = getShadowEvaluations();
+    return res.json({
+      config,
+      metrics,
+      recentShadowEvaluations: shadowEvaluations.slice(-20),
+    });
+  } catch (error) {
+    logger.error("Failed to fetch scoring model configuration", { error });
+    return res.status(500).json({ error: "failed_to_fetch_scoring_models" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/scoring/models:
+ *   post:
+ *     summary: Update active or shadow model version and toggle shadow mode
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ */
+adminRouter.post("/scoring/models", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  const { activeVersion, shadowVersion, shadowModeEnabled } = body;
+
+  if (activeVersion !== undefined && (typeof activeVersion !== "string" || !activeVersion.trim())) {
+    return res.status(400).json({ error: "invalid_request", message: "activeVersion must be a non-empty string" });
+  }
+
+  try {
+    const updated = updateModelConfig({
+      ...(activeVersion ? { activeVersion: activeVersion.trim() } : {}),
+      ...(shadowVersion !== undefined ? { shadowVersion: typeof shadowVersion === "string" ? shadowVersion.trim() : undefined } : {}),
+      ...(shadowModeEnabled !== undefined ? { shadowModeEnabled: Boolean(shadowModeEnabled) } : {}),
+    });
+    logger.info("Scoring model configuration updated by admin", { config: updated });
+    return res.json(updated);
+  } catch (error) {
+    logger.error("Failed to update scoring model configuration", { error });
+    return res.status(500).json({ error: "failed_to_update_scoring_models" });
+  }
+});
+
+// ── KYC document forgery review (issue #813) ─────────────────────────────
+// Documents whose metadata looked tampered with are queued here for a human;
+// each entry carries the specific signals that triggered the flag.
+
+adminRouter.get("/kyc/flagged-documents", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ documents: await listFlaggedDocuments() });
+  } catch (error) {
+    logger.error("List flagged KYC documents error", { error });
+    return res.status(500).json({ error: "failed_to_list_flagged_documents" });
+  }
+});
+
+adminRouter.post(
+  "/kyc/flagged-documents/:documentId/review",
+  requireAdmin,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const reviewed = await reviewFlaggedDocument({
+        documentId: String(req.params.documentId),
+        reviewedBy: req.user?.walletAddress ?? "admin-api-key",
+        outcome: req.body?.outcome,
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+      return res.json({ document: reviewed });
+    } catch (error) {
+      if (error instanceof ForensicsReviewError) {
+        const status = error.code === "not_found" ? 404 : error.code === "invalid_outcome" ? 400 : 409;
+        return res.status(status).json({ error: error.code, message: error.message });
+      }
+      logger.error("Review flagged KYC document error", { error });
+      return res.status(500).json({ error: "failed_to_review_document" });
+    }
+  }
+);

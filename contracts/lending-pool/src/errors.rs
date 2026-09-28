@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 use soroban_sdk::contracterror;
 
 #[contracterror]
@@ -72,11 +75,55 @@ pub enum PoolError {
     /// Loan has missed payments, so is ineligible for the maturity rebate.
     MissedPaymentsPreventRebate = 33,
     /// Loan must be in Approved state for this operation.
-    LoanNotActive = 32,
+    LoanNotActive = 37,
     /// A restructure proposal already exists for this loan.
-    RestructureProposalExists = 33,
+    RestructureProposalExists = 38,
+    /// Proposed fee switch exceeds the hard protocol cap.
+    FeeSwitchTooHigh = 39,
     /// No pending restructure proposal for this loan.
     NoRestructureProposal = 34,
     /// MultisigValidator contract address has not been configured.
     MultisigValidatorNotSet = 35,
+    /// Investor withdrawal is blocked because the lockup period has not elapsed.
+    LockupPeriodActive = 36,
+    /// Deposit is below the pool's configured minimum deposit amount.
+    DepositBelowMinimum = 40,
+    /// Collateral release would breach the minimum collateralization ratio.
+    CollateralRatioBreached = 41,
+    /// No collateral available for release.
+    NoCollateralToRelease = 42,
+    /// Collateral has already been seized.
+    CollateralAlreadySeized = 43,
+    /// Invalid collateral ratio configuration.
+    InvalidCollateralRatio = 44,
+    /// Origination fee exceeds the full-disbursement ceiling.
+    OriginationFeeTooHigh = 45,
+    /// Borrower already holds the maximum number of active loans permitted by
+    /// `max_active_loans_per_borrower`.
+    BorrowerLoanCapExceeded = 46,
+    /// Refinancing request was submitted before the cooldown window elapsed.
+    RefinanceCooldownActive = 47,
+    /// Application fee exceeds the ceiling permitted on a single application.
+    ApplicationFeeTooHigh = 48,
+    /// Withdrawal amount exceeds the pool's configured per-transaction limit.
+    WithdrawalExceedsMaxSingleLimit = 50,
+    /// No payoff quote exists for this loan.
+    PayoffQuoteNotFound = 51,
+    /// The payoff quote has expired; request a fresh quote.
+    PayoffQuoteExpired = 52,
+    /// Payoff quotes are disabled (window is zero) or the window is invalid.
+    InvalidQuoteWindow = 53,
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum LoanAssumptionError {
+    ContractPaused = 1,
+    LoanNotFound = 2,
+    LoanNotActive = 3,
+    AssumptionNotAuthorized = 4,
+    ApplicantNotVerified = 5,
+    AssumptionNotFound = 6,
+    AssumptionAlreadyRequested = 7,
 }

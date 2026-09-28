@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 use soroban_sdk::contracterror;
 
 /// Errors returned by the multisig validator contract.
@@ -43,4 +46,10 @@ pub enum ValidatorError {
     AdminConfigNotSet = 18,
     /// The proposal has expired (current ledger past expiration_ledger).
     ProposalExpired = 19,
+    /// Signer is penalized for repeated missed votes (weight reduced).
+    SignerPenalized = 20,
+    /// A signer-set change was attempted before the rotation cooldown elapsed.
+    RotationCooldownActive = 21,
+    /// Invalid rotation cooldown configuration.
+    InvalidRotationCooldown = 22,
 }

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 /**
  * Webhook Subscription Management API
  *
@@ -11,6 +14,7 @@
  * GET    /api/webhooks/subscriptions/:id        — get one subscription
  * PATCH  /api/webhooks/subscriptions/:id/status — pause / revoke / reactivate
  * POST   /api/webhooks/subscriptions/:id/rotate — rotate HMAC secret
+ * POST   /api/webhooks/subscriptions/:id/rotate/confirm — confirm cutover, expire the old secret now
  * GET    /api/webhooks/subscriptions/:id/deliveries — delivery history
  * POST   /api/webhooks/deliveries/:deliveryId/replay — manual replay
  * POST   /api/webhooks/verify                   — test signature verification (public)
@@ -25,6 +29,7 @@ import {
   getSubscription,
   updateSubscriptionStatus,
   rotateSecret,
+  confirmSecretRotation,
   replayDelivery,
   verifySignature,
   verifySubscriptionSignature,
@@ -96,7 +101,7 @@ webhooksRouter.post(
   "/subscriptions",
   requireAdmin,
   async (req: Request, res: Response): Promise<void> => {
-    const { label, url, topics, ownerAddress } = req.body ?? {};
+    const { label, url, topics, ownerAddress, webhookSchemaVersion } = req.body ?? {};
 
     if (!label || typeof label !== "string" || label.trim() === "") {
       res.status(400).json({ error: "validation", message: "`label` is required" });
@@ -118,12 +123,21 @@ webhooksRouter.post(
       }
     }
 
+    if (webhookSchemaVersion !== undefined && ![1, 2].includes(webhookSchemaVersion)) {
+      res.status(400).json({
+        error: "validation",
+        message: "`webhookSchemaVersion` must be 1 or 2",
+      });
+      return;
+    }
+
     try {
       const { subscription, plaintextSecret } = await createSubscription({
         label: label.trim(),
         url: url.trim(),
         topics: topics as EventTopic[] | undefined,
         ownerAddress: ownerAddress ?? undefined,
+        webhookSchemaVersion,
       });
 
       res.status(201).json({
@@ -204,7 +218,8 @@ webhooksRouter.get(
   requireAdmin,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const sub = await getSubscription(req.params.id);
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const sub = await getSubscription(id);
       if (!sub) {
         res.status(404).json({ error: "not_found", message: "Subscription not found" });
         return;
@@ -267,16 +282,14 @@ webhooksRouter.patch(
     }
 
     try {
-      const existing = await getSubscription(req.params.id);
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const existing = await getSubscription(id);
       if (!existing) {
         res.status(404).json({ error: "not_found", message: "Subscription not found" });
         return;
       }
 
-      const updated = await updateSubscriptionStatus(
-        req.params.id,
-        status as "active" | "paused" | "revoked"
-      );
+      const updated = await updateSubscriptionStatus(id, status as "active" | "paused" | "revoked");
       res.json({ subscription: updated });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to update status";
@@ -319,13 +332,14 @@ webhooksRouter.post(
   requireAdmin,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const existing = await getSubscription(req.params.id);
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const existing = await getSubscription(id);
       if (!existing) {
         res.status(404).json({ error: "not_found", message: "Subscription not found" });
         return;
       }
 
-      const { plaintextSecret } = await rotateSecret(req.params.id);
+      const { plaintextSecret } = await rotateSecret(id);
       res.json({
         secret: plaintextSecret,
         _warning:
@@ -333,6 +347,67 @@ webhooksRouter.post(
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to rotate secret";
+      res.status(500).json({ error: "server_error", message });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/webhooks/subscriptions/:id/rotate/confirm
+// ---------------------------------------------------------------------------
+
+/**
+ * @openapi
+ * /api/webhooks/subscriptions/{id}/rotate/confirm:
+ *   post:
+ *     summary: Confirm cutover to the new secret, expiring the old one immediately
+ *     description: >
+ *       Once the subscriber has updated their receiver and verified the new
+ *       secret, this ends the rotation grace period early — the previous
+ *       secret stops being accepted right away instead of after 7 days.
+ *       Safe to call speculatively: returns confirmed:false if there is no
+ *       rotation awaiting cutover.
+ *     tags: [Webhooks]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Cutover confirmed or nothing to confirm
+ *       404:
+ *         description: Not found
+ */
+webhooksRouter.post(
+  "/subscriptions/:id/rotate/confirm",
+  requireAdmin,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const existing = await getSubscription(id);
+      if (!existing) {
+        res.status(404).json({ error: "not_found", message: "Subscription not found" });
+        return;
+      }
+
+      const { confirmed } = await confirmSecretRotation(id);
+      if (!confirmed) {
+        res.status(409).json({
+          error: "no_rotation_in_progress",
+          message: "This subscription has no rotation awaiting cutover confirmation.",
+        });
+        return;
+      }
+
+      res.json({
+        confirmed: true,
+        message: "Cutover confirmed — the previous secret has been invalidated immediately.",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to confirm rotation";
       res.status(500).json({ error: "server_error", message });
     }
   }
@@ -376,7 +451,8 @@ webhooksRouter.get(
   requireAdmin,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const existing = await getSubscription(req.params.id);
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const existing = await getSubscription(id);
       if (!existing) {
         res.status(404).json({ error: "not_found", message: "Subscription not found" });
         return;
@@ -386,7 +462,8 @@ webhooksRouter.get(
       const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
       const skip = (page - 1) * limit;
 
-      const where: Record<string, unknown> = { subscriptionId: req.params.id };
+      const subscriptionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const where: Record<string, unknown> = { subscriptionId };
       if (req.query.success !== undefined) {
         where.success = req.query.success === "true";
       }
@@ -464,7 +541,9 @@ webhooksRouter.post(
   requireAdmin,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const result = await replayDelivery(req.params.deliveryId);
+      const rawDeliveryId = req.params.deliveryId;
+      const deliveryId = Array.isArray(rawDeliveryId) ? rawDeliveryId[0] : rawDeliveryId;
+      const result = await replayDelivery(deliveryId);
       res.json({ result });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Replay failed";

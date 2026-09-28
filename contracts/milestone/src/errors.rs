@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 use soroban_sdk::contracterror;
 
 #[contracterror]
@@ -38,4 +41,26 @@ pub enum MilestoneError {
     SelfDealingNotAllowed = 16,
     /// Reentrancy guard is already set.
     ReentrancyGuard = 17,
+    /// Budget change proposal not found.
+    BudgetChangeNotFound = 18,
+    /// Budget change proposal has already been executed.
+    BudgetChangeAlreadyExecuted = 19,
+    /// New budget exceeds the available loan allotment.
+    BudgetChangeExceedsAllotment = 20,
+    /// Arbitrators and window have not been configured by the admin.
+    ArbitrationNotConfigured = 21,
+    /// Arbitration window must be greater than zero ledgers.
+    InvalidArbitrationWindow = 22,
+    /// No arbitration dispute exists for this milestone.
+    DisputeNotFound = 23,
+    /// The dispute has already been resolved.
+    DisputeAlreadyResolved = 24,
+    /// The arbitration window has elapsed; only the timeout resolution applies.
+    ArbitrationWindowElapsed = 25,
+    /// The arbitration window is still open.
+    ArbitrationWindowOpen = 26,
+    /// Partial release amount must be greater than zero.
+    InvalidPartialAmount = 27,
+    /// Partial release amount exceeds the milestone's remaining unreleased amount.
+    ExceedsRemainingAmount = 28,
 }

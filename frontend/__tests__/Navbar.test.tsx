@@ -1,6 +1,29 @@
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 
+// Mock next-intl
+const NAV_TRANSLATIONS: Record<string, string> = {
+  connectWallet: "Connect Wallet",
+  disconnect: "Disconnect",
+};
+jest.mock("next-intl", () => ({
+  useTranslations: () => (key: string) => NAV_TRANSLATIONS[key] ?? key,
+  useLocale: () => "en",
+}));
+
+// Mock next/navigation
+jest.mock("next/navigation", () => ({
+  usePathname: () => "/",
+  useRouter: () => ({ replace: jest.fn(), push: jest.fn() }),
+}));
+
+// Mock KeyboardShortcutsContext
+jest.mock("../src/context/KeyboardShortcutsContext", () => ({
+  useKeyboardShortcuts: () => ({
+    openCheatSheet: jest.fn(),
+  }),
+}));
+
 type WalletState = ReturnType<typeof baseWalletState>;
 
 function baseWalletState() {
@@ -40,6 +63,17 @@ jest.mock("next/font/google", () => ({
 
 import Navbar from "../src/components/Navbar";
 
+// The tablet (lg-only) and mobile tiers both render a hamburger button with
+// the same "Open menu"/"Close menu" label — jsdom has no real viewport, so
+// both are present in the tree regardless of their responsive CSS classes.
+// Only the mobile one controls the drawer under test, identified by
+// aria-controls="mobile-menu".
+function getMobileMenuButton(): HTMLElement {
+  const btn = document.querySelector('button[aria-controls="mobile-menu"]');
+  if (!btn) throw new Error("mobile menu button not found");
+  return btn as HTMLElement;
+}
+
 describe("Navbar – mobile menu", () => {
   beforeEach(() => {
     walletState = baseWalletState();
@@ -58,27 +92,26 @@ describe("Navbar – mobile menu", () => {
 
   it("opens the mobile drawer when hamburger is clicked", () => {
     render(<Navbar />);
-    const btn = screen.getByRole("button", { name: /open menu/i });
-    fireEvent.click(btn);
+    fireEvent.click(getMobileMenuButton());
     const drawer = document.getElementById("mobile-menu");
     expect(drawer).toHaveClass("translate-x-0");
     // button label changes to close
-    expect(screen.getByRole("button", { name: /close menu/i })).toBeInTheDocument();
+    expect(getMobileMenuButton()).toHaveAttribute("aria-label", "Close menu");
   });
 
   it("closes the mobile drawer when close button is clicked", () => {
     render(<Navbar />);
     // open first
-    fireEvent.click(screen.getByRole("button", { name: /open menu/i }));
+    fireEvent.click(getMobileMenuButton());
     // then close
-    fireEvent.click(screen.getByRole("button", { name: /close menu/i }));
+    fireEvent.click(getMobileMenuButton());
     const drawer = document.getElementById("mobile-menu");
     expect(drawer).toHaveClass("translate-x-full");
   });
 
   it("closes the drawer when the overlay is clicked", () => {
     render(<Navbar />);
-    fireEvent.click(screen.getByRole("button", { name: /open menu/i }));
+    fireEvent.click(getMobileMenuButton());
     // overlay has aria-hidden and no role — select by class
     const overlay = document.querySelector(".bg-black\\/50");
     expect(overlay).toBeInTheDocument();
@@ -89,12 +122,12 @@ describe("Navbar – mobile menu", () => {
 
   it("closes the drawer when a nav link is clicked", () => {
     render(<Navbar />);
-    fireEvent.click(screen.getByRole("button", { name: /open menu/i }));
-    // Click "Dashboard" link inside the drawer
-    const links = screen.getAllByRole("link", { name: "Dashboard" });
-    // The drawer one is the second (desktop is first, or there may only be one in mobile)
-    fireEvent.click(links[links.length - 1]);
+    fireEvent.click(getMobileMenuButton());
+    // Click the first nav link inside the drawer itself.
     const drawer = document.getElementById("mobile-menu");
+    const link = drawer!.querySelector("nav a");
+    expect(link).toBeInTheDocument();
+    fireEvent.click(link!);
     expect(drawer).toHaveClass("translate-x-full");
   });
 

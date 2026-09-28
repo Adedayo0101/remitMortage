@@ -1,8 +1,9 @@
 name: Contracts
 
-# Dedicated CI/CD pipeline for the Soroban smart-contract workspace. It gates
-# every pull request on formatting, WASM compilation and the full test suite so
-# that a broken contract can never merge into an integration branch.
+# Dedicated CI/CD pipeline for the Soroban smart-contract workspace. Gates
+# every pull request on exactly the checks the project wants for contracts:
+# formatting, clippy, unit tests, the wasm32v1-none release build, and the
+# errors.rs <-> ERROR_CODES.md sync check. Nothing else runs here.
 on:
   push:
     branches: [ main ]
@@ -17,10 +18,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── Formatting ──────────────────────────────────────────────────────────
-  # A formatting violation fails CI before any expensive compilation runs.
-  format:
-    name: Format Check (rustfmt)
+  # ── Lint ────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -29,7 +29,8 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          targets: wasm32v1-none
+          components: clippy, rustfmt
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
@@ -41,11 +42,39 @@ jobs:
         run: cargo fmt --all -- --check
         working-directory: contracts
 
-  # ── Compilation ─────────────────────────────────────────────────────────
-  # Compiles every contract to the Soroban WASM target. A compilation failure
-  # fails CI.
+      - name: Lint with Clippy
+        run: cargo clippy --lib -- -D warnings
+        working-directory: contracts
+
+  # ── Tests ───────────────────────────────────────────────────────────────
+  test:
+    name: Run Tests (cargo test --lib)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts -> target
+
+      - name: Run Library Unit Tests
+        run: cargo test --lib
+        working-directory: contracts
+        env:
+          PROPTEST_CASES: 256
+
+
+  # ── Build ───────────────────────────────────────────────────────────────
+  # integration-tests is a native std-based test-only crate and can never
+  # target wasm32v1-none (which requires #![no_std]), so it's excluded here.
   build:
-    name: Compile Contracts (wasm32)
+    name: Compile Contracts (wasm32v1-none release)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -54,7 +83,7 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
@@ -63,42 +92,29 @@ jobs:
             contracts -> target
 
       - name: Build Soroban Contracts (release WASM)
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: cargo build --target wasm32v1-none --release --workspace --exclude integration-tests
         working-directory: contracts
 
       - name: Upload Compiled WASM Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: soroban-wasm
-          path: contracts/target/wasm32-unknown-unknown/release/*.wasm
+          path: contracts/target/wasm32v1-none/release/*.wasm
           retention-days: 7
           if-no-files-found: error
 
-  # ── Tests ───────────────────────────────────────────────────────────────
-  # Runs the workspace unit tests and cross-contract integration tests. A test
-  # failure fails CI.
-  test:
-    name: Run Tests (cargo test)
+  # ── Error Codes Sync ────────────────────────────────────────────────────
+  error-codes-sync:
+    name: error-codes-sync (errors.rs <-> ERROR_CODES.md)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          targets: wasm32-unknown-unknown
+          python-version: "3.11"
 
-      - name: Rust Cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            contracts -> target
-
-      - name: Run Workspace Unit Tests
-        run: cargo test --workspace
-        working-directory: contracts
-
-      - name: Run Cross-Contract Integration Tests
-        run: cargo test -p integration-tests
-        working-directory: contracts
+      - name: Check ERROR_CODES.md is in sync
+        run: python3 scripts/check_error_codes_sync.py

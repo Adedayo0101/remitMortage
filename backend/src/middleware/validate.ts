@@ -1,9 +1,12 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { Request, Response, NextFunction } from "express";
 import { StrKey } from "@stellar/stellar-sdk";
 
 export type Network = "stellar" | "ethereum" | "solana";
 
-function isValidGAddress(addr: unknown): boolean {
+export function isValidGAddress(addr: unknown): boolean {
   if (typeof addr !== "string") return false;
   if (addr.length !== 56) return false;
   if (!addr.startsWith("G")) return false;
@@ -120,4 +123,31 @@ export function validatePositiveNumber(fieldName: string) {
     }
     return next();
   };
+}
+
+/**
+ * When the request body contains a `guarantorAddress` field, validates that it
+ * is a syntactically correct Stellar G-address.  Requests without the field
+ * pass through unchanged so existing borrower-only loans are unaffected.
+ *
+ * Does NOT verify the guarantor signature — that is done in the route handler
+ * after the address is known to be syntactically valid.
+ */
+export function validateOptionalGuarantorAddress(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  const { guarantorAddress } = req.body ?? {};
+  if (guarantorAddress === undefined || guarantorAddress === null) {
+    return next(); // no guarantor — allowed
+  }
+  if (!isValidGAddress(guarantorAddress)) {
+    return res.status(400).json({
+      error: "invalid_address",
+      field: "guarantorAddress",
+      message: "guarantorAddress must be a valid Stellar G-address",
+    });
+  }
+  return next();
 }

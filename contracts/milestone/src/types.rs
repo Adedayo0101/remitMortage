@@ -1,4 +1,7 @@
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, Vec};
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Symbol, Vec};
 
 /// Configuration for the milestone disbursement contract.
 #[contracttype]
@@ -16,6 +19,10 @@ pub struct MilestoneConfig {
     pub threshold: u32,
     /// Minimum number of ledgers that must elapse between approval and release.
     pub min_delay_ledgers: u32,
+    /// Basis points of a milestone's amount paid as a performance bonus from
+    /// the bonus pool when it qualifies (approved on first submission and
+    /// on or before its deadline). Zero disables bonuses entirely.
+    pub performance_bonus_bps: u32,
 }
 
 /// Milestone status lifecycle.
@@ -28,6 +35,10 @@ pub enum MilestoneStatus {
     Disbursed = 2,
     Disputed = 3,
     Refunded = 4,
+    /// A portion of the milestone amount has been released via
+    /// `partially_approve_milestone`; the remainder is still pending and
+    /// can be completed by further partial or full releases.
+    PartiallyDisbursed = 5,
 }
 
 /// Milestone record stored on-chain.
@@ -54,6 +65,71 @@ pub struct MilestoneRecord {
     pub approved_ledger: u32,
     /// Ledger sequence at which the milestone was disputed (0 if not disputed).
     pub disputed_ledger: u32,
+    /// Amount already released via partial approvals (0 until the first
+    /// partial or full release). `amount - released_amount` is the
+    /// remaining unreleased portion still pending.
+    pub released_amount: i128,
+}
+
+/// A proposal to change the budget for an existing (pending) milestone.
+/// Keyed by `Symbol` (human-readable milestone id) in storage.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BudgetChangeProposal {
+    /// Links to the actual `MilestoneRecord` (keyed by BytesN<32>).
+    pub proposal_id: BytesN<32>,
+    /// The new requested budget amount.
+    pub new_amount: i128,
+    /// Number of governance votes received so far.
+    pub votes: u32,
+    /// Whether the change has been applied to the milestone record.
+    pub executed: bool,
+}
+
+/// Arbitration settings for milestone disputes, set by the admin per deployment.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArbitrationConfig {
+    /// Addresses allowed to rule on a dispute.
+    pub arbitrators: Vec<Address>,
+    /// Matching votes (uphold or reject) needed to decide a dispute.
+    pub threshold: u32,
+    /// Ledgers the arbitrators have to decide once a dispute is raised.
+    pub window_ledgers: u32,
+}
+
+/// How a milestone dispute ended.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+#[repr(u32)]
+pub enum DisputeOutcome {
+    /// Waiting for an arbitrator decision.
+    Pending = 0,
+    /// Arbitrators found the milestone was not met; it is refunded.
+    Upheld = 1,
+    /// Arbitrators found the milestone was met; the release schedule resumes.
+    Rejected = 2,
+    /// The window elapsed without a decision; the default resolution applied.
+    TimedOut = 3,
+}
+
+/// An arbitration dispute over whether a milestone was met.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisputeRecord {
+    /// Borrower or admin who raised the dispute.
+    pub raised_by: Address,
+    /// Milestone status before the dispute, restored if the dispute is rejected or times out.
+    pub prior_status: MilestoneStatus,
+    /// Ledger at which the dispute was raised.
+    pub raised_ledger: u32,
+    /// Last ledger on which arbitrators can still decide. Fixed at raise time.
+    pub deadline_ledger: u32,
+    /// Arbitrator votes to uphold the dispute so far.
+    pub uphold_votes: u32,
+    /// Arbitrator votes to reject the dispute so far.
+    pub reject_votes: u32,
+    pub outcome: DisputeOutcome,
 }
 
 /// Storage keys for the milestone contract.
@@ -70,4 +146,14 @@ pub enum DataKey {
     MilestoneCount,
     /// Reentrancy guard flag — true while a mutating function is executing.
     Reentrant,
+    /// Budget change proposal keyed by milestone Symbol.
+    BudgetChange(Symbol),
+    /// Tracks whether an approver has voted on a budget change.
+    BudgetChangeVoted(Symbol, Address),
+    /// Arbitration settings for milestone disputes.
+    ArbitrationConfig,
+    /// Arbitration dispute keyed by milestone proposal ID.
+    Dispute(BytesN<32>),
+    /// Tracks whether an arbitrator has voted on a dispute.
+    DisputeVoted(BytesN<32>, Address),
 }

@@ -8,6 +8,9 @@ jest.mock("next/navigation", () => ({
   useRouter() {
     return { push: jest.fn() };
   },
+  useSearchParams() {
+    return new URLSearchParams();
+  },
 }));
 
 // Wallet is connected so the wizard can advance past step 1.
@@ -25,6 +28,10 @@ const setStep = (step: number) => {
 
 describe("Onboarding wizard – form validation", () => {
   beforeEach(() => {
+    // Clear any autosaved draft so useFormAutosave's on-mount restore can't
+    // silently override the step set up below (it reads localStorage and
+    // calls setStep() as soon as the wizard mounts).
+    localStorage.clear();
     // Reset persisted store to a known baseline before each test.
     getOnboardingStore().setState({
       step: 1,
