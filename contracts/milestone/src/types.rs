@@ -19,6 +19,10 @@ pub struct MilestoneConfig {
     pub threshold: u32,
     /// Minimum number of ledgers that must elapse between approval and release.
     pub min_delay_ledgers: u32,
+    /// Basis points of a milestone's amount paid as a performance bonus from
+    /// the bonus pool when it qualifies (approved on first submission and
+    /// on or before its deadline). Zero disables bonuses entirely.
+    pub performance_bonus_bps: u32,
 }
 
 /// Milestone status lifecycle.

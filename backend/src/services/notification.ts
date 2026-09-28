@@ -8,7 +8,7 @@ import { sendWebhook } from "./webhook.js";
 import { queueService } from "./queueService.js";
 import { getCurrentTenant } from "./tenant.js";
 
-export type NotificationType = "EMAIL" | "WEBHOOK" | "SMS";
+export type NotificationType = "EMAIL" | "WEBHOOK" | "SMS" | "PUSH";
 
 const MAX_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 60 * 1000; // 1 minute base backoff
@@ -212,6 +212,8 @@ export async function dispatchNotification(id: string): Promise<boolean> {
       success = await handleEmailDispatch(notification.recipient, notification.content);
     } else if (notification.type === "SMS") {
       success = await handleSmsDispatch(notification.recipient, notification.content);
+    } else if (notification.type === "PUSH") {
+      success = await handlePushDispatch(notification.recipient, notification.content);
     } else if (notification.type === "WEBHOOK") {
       let payload = {};
       try {
@@ -302,6 +304,22 @@ export async function dispatchNotification(id: string): Promise<boolean> {
 async function handleSmsDispatch(recipient: string, content: string): Promise<boolean> {
   logger.info(`[SMS Dispatcher] Sending SMS to ${recipient}: "${content}"`);
   // Simulated SMS provider integration (e.g. Twilio / MessageBird)
+  return true;
+}
+
+/**
+ * Internal helper to dispatch browser/mobile push notifications.
+ *
+ * There is no push subscription registry on the backend yet (see
+ * lib/webPush.ts on the frontend, which manages subscriptions client-side
+ * without a corresponding backend delivery service) — `recipient` here is
+ * the applicant's wallet address rather than a real push endpoint. This
+ * stays a simulated dispatch, same honesty level as handleSmsDispatch above,
+ * until that registry exists.
+ */
+async function handlePushDispatch(recipient: string, content: string): Promise<boolean> {
+  logger.info(`[Push Dispatcher] Sending push notification for ${recipient}: "${content}"`);
+  // Simulated push provider integration (e.g. web-push / FCM / APNs)
   return true;
 }
 
@@ -461,12 +479,19 @@ export async function dispatchMaturityAlerts(
   // user has that delivery channel switched on at all.
   const dispatches: Promise<any>[] = [];
 
-  if (emailAlerts && email) {
+  if (email && channelEnabled("EMAIL", Boolean(emailAlerts))) {
     dispatches.push(queueNotification(email, "EMAIL", `${subject}: ${text}`, delayMs));
   }
 
-  if (smsAlerts && phone) {
+  if (phone && channelEnabled("SMS", Boolean(smsAlerts))) {
     dispatches.push(queueNotification(phone, "SMS", `${subject}: ${text}`, delayMs));
+  }
+
+  // Push has no legacy toggle to fall back to (it didn't exist as a channel
+  // before this matrix), so an uncategorized event type (PAYMENT_MISSED)
+  // simply never sends push.
+  if (channelEnabled("PUSH", false)) {
+    dispatches.push(queueNotification(applicantAddress, "PUSH", `${subject}: ${text}`, delayMs));
   }
 
   if (webhookUrl) {
