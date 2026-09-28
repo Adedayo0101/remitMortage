@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 /** Environment configuration with validation. */
 
 export type StellarNetwork = "testnet" | "mainnet" | "futurenet" | "standalone";
@@ -21,6 +24,10 @@ export interface Config {
   usdcTokenId: string;
   pinataApiKey: string;
   pinataSecretApiKey: string;
+  /** Secondary IPFS provider API key for redundancy (e.g., NFT.storage or Web3.storage). */
+  secondaryIpfsProvider: "nft.storage" | "web3.storage" | null;
+  /** Secondary IPFS provider API key. */
+  secondaryIpfsApiKey: string | null;
   smtpHost: string;
   smtpPort: number;
   smtpUser: string;
@@ -30,6 +37,12 @@ export interface Config {
   sendgridApiKey: string;
   /** Verified sender address for SendGrid alert emails. */
   sendgridFrom: string;
+  /**
+   * Shared secret the email provider's bounce/complaint webhook must present
+   * (`x-webhook-token` header or `token` query param). The webhook rejects
+   * every request while this is empty.
+   */
+  emailWebhookSecret: string;
   /** Map of on-chain borrower address -> alert recipient email address. */
   alertRecipients: Record<string, string>;
   /** Fallback recipient used when a borrower address has no mapped email. */
@@ -49,6 +62,12 @@ export interface Config {
   kmsActiveKeyVersion: string;
   /** Signing secret for temporary IAM-style KYC document decryption tokens. */
   kycOperatorSecret: string;
+  /** Secret used to sign output verification proofs. */
+  backendSigningSecret: string;
+  /** Private key for the Irys bundler node to pay for Arweave uploads. */
+  irysPrivateKey: string;
+  /** Network token used for Irys payments (e.g. "matic", "ethereum"). */
+  irysNetworkToken: string;
   /** Lifetime (seconds) of a temporary KYC decryption access token. */
   kycAccessTokenTtlSeconds: number;
   /** Maximum base fee for Stellar transactions (in stroops). */
@@ -74,6 +93,78 @@ export interface Config {
   rpcMinLedgerRetention: number;
   /** Interval (ms) between background Soroban RPC health probes. */
   rpcHealthCheckIntervalMs: number;
+  /** Per-status SLA window in hours for loan applications. */
+  applicationSlaHours: Record<string, number>;
+  /** Fallback recipient email for ops SLA alerts. */
+  opsFallbackAlertEmail: string;
+  /** Incoming Slack webhook URL for ops SLA alerts. */
+  opsSlackWebhookUrl: string | null;
+  /** Recipient email for compliance and referential integrity audit alerts. */
+  complianceAlertEmail: string;
+  /** Incoming Slack webhook URL for compliance and referential integrity audit alerts. */
+  complianceSlackWebhookUrl: string | null;
+  /** Number of days expired session/refresh tokens are retained before being purged. */
+  sessionTokenRetentionDays: number;
+  /** Compliance-reviewed retention window for soft-deleted borrower profiles. */
+  borrowerRecordRetentionDays: number;
+  /** Compliance-reviewed retention window for soft-deleted loan applications. */
+  loanRecordRetentionDays: number;
+  /** Days of inactivity before a Draft loan application is flagged as stale and the applicant notified. */
+  draftStaleThresholdDays: number;
+  /** Days after a stale notice before an unresumed Draft is soft-deleted (expired). */
+  draftStaleExpiryGraceDays: number;
+  /** When true, registration requires a valid unused invite code (soft-launch gating). */
+  inviteCodeRequired: boolean;
+  /** When true, new applications are auto-assigned to an active reviewer (issue #621). */
+  assignmentQueueEnabled: boolean;
+  /** Duration (ms) above which a database operation is captured as a slow query (issue #583). */
+  slowQueryThresholdMs: number;
+  /**
+   * Payroll/income verification provider endpoint (issue #802). Null leaves
+   * the Null provider active — every employer is reported not covered and
+   * applicants fall back to manual document review.
+   */
+  payrollVerificationApiUrl: string | null;
+  /** Bearer token sent to the payroll verification provider. */
+  payrollVerificationApiKey: string | null;
+  /** Backup KYC provider endpoint. Null leaves failover disabled. */
+  kycBackupProviderUrl: string | null;
+  /** Bearer token sent to the backup KYC provider. */
+  kycBackupProviderApiKey: string | null;
+  /** Consecutive primary KYC provider failures before failover activates. */
+  kycFailoverThreshold: number;
+  /** Per-call timeout (ms) for each KYC provider. */
+  kycProviderTimeoutMs: number;
+  /** How long (ms) to stay on the backup before probing the primary again. */
+  kycFailoverCooldownMs: number;
+  /** Alert again when failover is still active after this long (ms). */
+  kycFailoverAlertAfterMs: number;
+  /** HMAC key for applicant tax ID hashes used in duplicate detection. */
+  taxIdHashSecret: string;
+  /** Webhook delivery p95 latency (ms) above which an endpoint is flagged (issue #619). */
+  webhookLatencySlaMs: number;
+  /** Default rolling window (minutes) for the webhook latency report. */
+  webhookLatencyWindowMinutes: number;
+  /** Raw white-label tenant records from TENANT_BRANDING (validated in services/tenant.ts). */
+  tenantBranding: unknown[];
+}
+
+/** Parses APPLICATION_SLA_HOURS (a JSON map of status -> SLA hours). */
+function parseApplicationSlaHours(raw: string | undefined): Record<string, number> {
+  const defaults: Record<string, number> = {
+    Pending: 48,
+    Disbursing: 24,
+  };
+  if (!raw) return defaults;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...defaults, ...parsed };
+    }
+  } catch {
+    // fallback
+  }
+  return defaults;
 }
 
 /** Parses KMS_KEY_VERSIONS (a JSON map of version -> 64-hex-char key) with a dev-safe fallback. */
@@ -89,6 +180,18 @@ function parseKmsKeyVersions(raw: string | undefined): Record<string, string> {
     // fall through to the dev default below
   }
   return devDefault;
+}
+
+/** Parses TENANT_BRANDING (a JSON array of tenant branding records). */
+function parseTenantBranding(raw: string | undefined): unknown[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // malformed input falls back to no extra tenants
+  }
+  return [];
 }
 
 /** Parses ALERT_RECIPIENTS (a JSON map of borrower address -> email address). */
@@ -126,6 +229,8 @@ export function loadConfig(): Config {
     usdcTokenId: process.env.USDC_TOKEN_ID || "",
     pinataApiKey: process.env.PINATA_API_KEY || "",
     pinataSecretApiKey: process.env.PINATA_SECRET_API_KEY || "",
+    secondaryIpfsProvider: (process.env.SECONDARY_IPFS_PROVIDER as "nft.storage" | "web3.storage") || null,
+    secondaryIpfsApiKey: process.env.SECONDARY_IPFS_API_KEY || null,
     smtpHost: process.env.SMTP_HOST || "localhost",
     smtpPort: parseInt(process.env.SMTP_PORT || "587", 10),
     smtpUser: process.env.SMTP_USER || "",
@@ -136,6 +241,7 @@ export function loadConfig(): Config {
       process.env.SENDGRID_FROM ||
       process.env.SMTP_FROM ||
       "no-reply@remitmortgage.com",
+    emailWebhookSecret: process.env.EMAIL_WEBHOOK_SECRET || "",
     alertRecipients: parseAlertRecipients(process.env.ALERT_RECIPIENTS),
     alertDefaultRecipient: process.env.ALERT_DEFAULT_RECIPIENT || "",
     webhookSecret: process.env.WEBHOOK_SECRET || "default_signing_secret_key",
@@ -153,6 +259,9 @@ export function loadConfig(): Config {
     kmsKeyVersions: parseKmsKeyVersions(process.env.KMS_KEY_VERSIONS),
     kmsActiveKeyVersion: process.env.KMS_ACTIVE_KEY_VERSION || "v1",
     kycOperatorSecret: process.env.KYC_OPERATOR_SECRET || "default_kyc_operator_secret",
+    backendSigningSecret: process.env.BACKEND_SIGNING_SECRET || "default_backend_signing_secret",
+    irysPrivateKey: process.env.IRYS_PRIVATE_KEY || "",
+    irysNetworkToken: process.env.IRYS_NETWORK_TOKEN || "matic",
     kycAccessTokenTtlSeconds: parseInt(process.env.KYC_ACCESS_TOKEN_TTL || "300", 10),
     maxStellarBaseFee: parseInt(process.env.MAX_STELLAR_BASE_FEE || "100000", 10),
     maxEvmBaseFee: parseInt(process.env.MAX_EVM_BASE_FEE || "100000000000", 10),
@@ -164,5 +273,53 @@ export function loadConfig(): Config {
       process.env.RPC_HEALTH_CHECK_INTERVAL_MS || "60000",
       10
     ),
+    applicationSlaHours: parseApplicationSlaHours(process.env.APPLICATION_SLA_HOURS),
+    opsFallbackAlertEmail:
+      process.env.OPS_FALLBACK_ALERT_EMAIL ||
+      process.env.ALERT_DEFAULT_RECIPIENT ||
+      "ops@remitmortgage.com",
+    opsSlackWebhookUrl:
+      process.env.OPS_SLACK_WEBHOOK_URL ||
+      process.env.SLACK_WEBHOOK_URL ||
+      process.env.ALERT_WEBHOOK_URL ||
+      null,
+    sessionTokenRetentionDays: parseInt(
+      process.env.SESSION_TOKEN_RETENTION_DAYS ||
+        process.env.RETENTION_DAYS ||
+        "7",
+      10
+    ),
+    borrowerRecordRetentionDays: parseInt(
+      process.env.BORROWER_RECORD_RETENTION_DAYS || "2555",
+      10
+    ),
+    loanRecordRetentionDays: parseInt(
+      process.env.LOAN_RECORD_RETENTION_DAYS || "2555",
+      10
+    ),
+    draftStaleThresholdDays: parseInt(
+      process.env.DRAFT_STALE_THRESHOLD_DAYS || "90",
+      10
+    ),
+    draftStaleExpiryGraceDays: parseInt(
+      process.env.DRAFT_STALE_EXPIRY_GRACE_DAYS || "7",
+      10
+    ),
+    inviteCodeRequired: process.env.INVITE_CODE_REQUIRED === "true",
+    // Default on: the assignment queue is additive and best-effort.
+    assignmentQueueEnabled: process.env.ASSIGNMENT_QUEUE_ENABLED !== "false",
+    slowQueryThresholdMs: parseInt(process.env.SLOW_QUERY_THRESHOLD_MS || "200", 10),
+    payrollVerificationApiUrl: process.env.PAYROLL_VERIFICATION_API_URL || null,
+    payrollVerificationApiKey: process.env.PAYROLL_VERIFICATION_API_KEY || null,
+    kycBackupProviderUrl: process.env.KYC_BACKUP_PROVIDER_URL || null,
+    kycBackupProviderApiKey: process.env.KYC_BACKUP_PROVIDER_API_KEY || null,
+    kycFailoverThreshold: parseInt(process.env.KYC_FAILOVER_THRESHOLD || "3", 10),
+    kycProviderTimeoutMs: parseInt(process.env.KYC_PROVIDER_TIMEOUT_MS || "10000", 10),
+    kycFailoverCooldownMs: parseInt(process.env.KYC_FAILOVER_COOLDOWN_MS || "60000", 10),
+    kycFailoverAlertAfterMs: parseInt(process.env.KYC_FAILOVER_ALERT_AFTER_MS || "900000", 10),
+    taxIdHashSecret: process.env.TAX_ID_HASH_SECRET || "default_tax_id_hash_secret",
+    webhookLatencySlaMs: parseInt(process.env.WEBHOOK_LATENCY_SLA_MS || "5000", 10),
+    webhookLatencyWindowMinutes: parseInt(process.env.WEBHOOK_LATENCY_WINDOW_MINUTES || "60", 10),
+    tenantBranding: parseTenantBranding(process.env.TENANT_BRANDING),
   };
 }

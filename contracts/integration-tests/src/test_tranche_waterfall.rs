@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 //! Tranche First-Loss and Default Stress Tests
 //!
 //! This module exercises the dual-tranche (Senior/Junior) lending pool under
@@ -29,10 +32,32 @@ use lending_pool::{
     LendingPoolContract, LendingPoolContractClient, LoanStatus, Tranche, TrancheInfo,
 };
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
     Address, BytesN, Env,
 };
+
+// ── Mock Escrow ──────────────────────────────────────────────────────────────
+
+/// `mark_default` performs a real cross-contract call to
+/// `<escrow>.seize_collateral(borrower, lending_pool_address) -> i128` to
+/// recover any collateral before the loss is charged to the tranches. The
+/// production Escrow contract does not implement this entrypoint yet (see
+/// `lending_pool`'s own `MockEscrow` test double for the same reason), so any
+/// test that drives `mark_default` needs a real registered contract at the
+/// configured escrow address, not a bare generated `Address`. This mock
+/// reports zero recovered collateral, matching this module's assertions,
+/// which assume the full loan loss lands on the tranches.
+#[contract]
+pub struct MockEscrow;
+
+#[contractimpl]
+impl MockEscrow {
+    pub fn seize_collateral(_env: Env, _borrower: Address, _lending_pool_address: Address) -> i128 {
+        0
+    }
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -55,23 +80,26 @@ fn deploy_pool(env: &Env) -> (Address, Address, LendingPoolContractClient<'_>) {
     // Large TTLs so ledger time-jumps do not archive persistent storage.
     env.ledger().with_mut(|li| {
         li.min_persistent_entry_ttl = 4_000_000;
-        li.min_temp_entry_ttl      = 4_000_000;
-        li.max_entry_ttl           = 6_000_000;
+        li.min_temp_entry_ttl = 4_000_000;
+        li.max_entry_ttl = 6_000_000;
     });
 
-    let admin    = Address::generate(env);
+    let admin = Address::generate(env);
     let treasury = Address::generate(env);
-    // Stub escrow — seize_collateral is mocked by mock_all_auths.
-    let escrow   = Address::generate(env);
+    // mark_default calls <escrow>.seize_collateral(...) for real — needs an
+    // actual registered contract, not a bare stub address. See MockEscrow.
+    let escrow = env.register(MockEscrow, ());
 
     let token_admin = Address::generate(env);
-    let token_id    = env.register_stellar_asset_contract_v2(token_admin);
-    let token       = token_id.address();
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let token = token_id.address();
 
     let pool_id = env.register(LendingPoolContract, ());
-    let pool    = LendingPoolContractClient::new(env, &pool_id);
+    let pool = LendingPoolContractClient::new(env, &pool_id);
     // 0% interest and 0% senior yield keeps the maths simple.
-    pool.initialize(&admin, &token, &escrow, &0u32, &0u32, &treasury);
+    pool.initialize(
+        &admin, &token, &escrow, &0u32, &0u32, &treasury, &0u32, &0u32,
+    );
 
     (admin, token, pool)
 }
@@ -80,8 +108,8 @@ fn deploy_pool(env: &Env) -> (Address, Address, LendingPoolContractClient<'_>) {
 ///
 /// Returns `(senior_investor, junior_investor)`.
 fn seed_pool_70_30<'a>(
-    env:   &Env,
-    pool:  &LendingPoolContractClient<'a>,
+    env: &Env,
+    pool: &LendingPoolContractClient<'a>,
     token: &Address,
 ) -> (Address, Address) {
     let sac = StellarAssetClient::new(env, token);
@@ -102,11 +130,11 @@ fn seed_pool_70_30<'a>(
 ///
 /// Returns the unique `loan_id` used for this loan.
 fn create_and_disburse_loan(
-    env:      &Env,
-    pool:     &LendingPoolContractClient<'_>,
+    env: &Env,
+    pool: &LendingPoolContractClient<'_>,
     borrower: &Address,
-    amount:   i128,
-    seed:     u8,
+    amount: i128,
+    seed: u8,
 ) -> BytesN<32> {
     let loan_id = BytesN::from_array(env, &[seed; 32]);
     pool.request_loan(borrower, &loan_id, &amount);
@@ -131,13 +159,13 @@ fn advance_past_due(env: &Env, pool: &LendingPoolContractClient<'_>, loan_id: &B
 ///
 /// Returns `(borrowers, loan_ids)`.
 fn setup_ten_borrowers(
-    env:   &Env,
-    pool:  &LendingPoolContractClient<'_>,
+    env: &Env,
+    pool: &LendingPoolContractClient<'_>,
     token: &Address,
 ) -> (Vec<Address>, Vec<BytesN<32>>) {
     let sac = StellarAssetClient::new(env, token);
     let mut borrowers = Vec::new();
-    let mut loan_ids  = Vec::new();
+    let mut loan_ids = Vec::new();
 
     for i in 0u8..10 {
         let b = Address::generate(env);
@@ -178,7 +206,7 @@ fn stress_30pct_default_junior_absorbs_all() {
     let senior_info: TrancheInfo = pool.get_tranche_info(&Tranche::Senior);
 
     // Each defaulting loan loses 5 000 USDC.  Junior (30 000) covers all 15 000.
-    let expected_junior_loss = 3 * 5_000 * USDC;   // 15 000 USDC
+    let expected_junior_loss = 3 * 5_000 * USDC; // 15 000 USDC
 
     assert_eq!(
         junior_info.total_loss_absorbed, expected_junior_loss,
@@ -196,7 +224,8 @@ fn stress_30pct_default_junior_absorbs_all() {
         "senior tranche must absorb zero loss under 30% default rate"
     );
     assert_eq!(
-        senior_info.total_deposited, 70_000 * USDC,
+        senior_info.total_deposited,
+        70_000 * USDC,
         "senior deposited capital must be unchanged"
     );
 
@@ -239,7 +268,7 @@ fn stress_60pct_default_junior_fully_exhausted() {
     let junior_info: TrancheInfo = pool.get_tranche_info(&Tranche::Junior);
     let senior_info: TrancheInfo = pool.get_tranche_info(&Tranche::Senior);
 
-    let expected_junior_loss = 6 * 5_000 * USDC;   // 30 000 USDC
+    let expected_junior_loss = 6 * 5_000 * USDC; // 30 000 USDC
 
     // Junior is fully exhausted.
     assert_eq!(
@@ -257,7 +286,8 @@ fn stress_60pct_default_junior_fully_exhausted() {
         "senior must absorb zero when junior capital exactly equals loss"
     );
     assert_eq!(
-        senior_info.total_deposited, 70_000 * USDC,
+        senior_info.total_deposited,
+        70_000 * USDC,
         "senior deposited capital must remain unchanged"
     );
 
@@ -289,8 +319,8 @@ fn stress_super_threshold_senior_absorbs_overflow() {
         pool.mark_default(lid);
     }
 
-    let total_loss = 7 * 5_000 * USDC;          // 35 000
-    let junior_capacity = 30_000 * USDC;         // 30 000
+    let total_loss = 7 * 5_000 * USDC; // 35 000
+    let junior_capacity = 30_000 * USDC; // 30 000
     let expected_senior_loss = total_loss - junior_capacity; // 5 000
 
     let junior_info: TrancheInfo = pool.get_tranche_info(&Tranche::Junior);
@@ -337,23 +367,27 @@ fn yield_waterfall_prioritises_senior_under_30pct_default() {
     // Use 8% pool / 4% senior yield so yield distribution is non-trivial.
     env.ledger().with_mut(|li| {
         li.min_persistent_entry_ttl = 4_000_000;
-        li.min_temp_entry_ttl      = 4_000_000;
-        li.max_entry_ttl           = 6_000_000;
+        li.min_temp_entry_ttl = 4_000_000;
+        li.max_entry_ttl = 6_000_000;
     });
 
-    let admin    = Address::generate(&env);
+    let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
-    let escrow   = Address::generate(&env);
+    // mark_default calls <escrow>.seize_collateral(...) for real — needs an
+    // actual registered contract, not a bare stub address. See MockEscrow.
+    let escrow = env.register(MockEscrow, ());
 
     let token_admin = Address::generate(&env);
-    let token_id    = env.register_stellar_asset_contract_v2(token_admin);
-    let token       = token_id.address();
-    let sac         = StellarAssetClient::new(&env, &token);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let token = token_id.address();
+    let sac = StellarAssetClient::new(&env, &token);
 
     let pool_id = env.register(LendingPoolContract, ());
-    let pool    = LendingPoolContractClient::new(&env, &pool_id);
+    let pool = LendingPoolContractClient::new(&env, &pool_id);
     // 8% pool interest, 4% fixed senior yield.
-    pool.initialize(&admin, &token, &escrow, &800u32, &400u32, &treasury);
+    pool.initialize(
+        &admin, &token, &escrow, &800u32, &400u32, &treasury, &0u32, &0u32,
+    );
 
     // Fund with 70 / 30 split.
     let senior = Address::generate(&env);
@@ -364,8 +398,8 @@ fn yield_waterfall_prioritises_senior_under_30pct_default() {
     pool.deposit(&junior, &(30_000 * USDC), &Tranche::Junior);
 
     // Set up 10 borrowers, 5 000 USDC each.
-    let mut borrowers  = Vec::new();
-    let mut loan_ids   = Vec::new();
+    let mut borrowers = Vec::new();
+    let mut loan_ids = Vec::new();
     for i in 0u8..10 {
         let b = Address::generate(&env);
         sac.mint(&b, &(6_000 * USDC));
@@ -379,11 +413,18 @@ fn yield_waterfall_prioritises_senior_under_30pct_default() {
     }
 
     // Advance ledger by one compound period to accrue interest.
-    env.ledger().set_sequence_number(env.ledger().sequence() + 518_400);
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 518_400);
 
-    // 7 non-defaulting borrowers repay principal + ~8% interest.
+    // 7 non-defaulting borrowers repay principal + one month of 8% annual
+    // interest, computed with the exact same fixed-point arithmetic (and
+    // truncation order) as `LendingPoolContract::accrue_interest`, so the
+    // repayment amount matches the contract's own accrued debt exactly.
+    const INTEREST_SCALE: i128 = 1_000_000_000;
+    const PERIODS_PER_YEAR: i128 = 12;
+    let one_period_factor = INTEREST_SCALE + (800 * INTEREST_SCALE) / (10_000 * PERIODS_PER_YEAR);
     for idx in 3..10usize {
-        let repay_amount = 5_000 * USDC + (5_000 * USDC * 800 / 10_000);
+        let repay_amount = (5_000 * USDC).saturating_mul(one_period_factor) / INTEREST_SCALE;
         pool.repay(&borrowers[idx], &loan_ids[idx], &repay_amount);
     }
 
@@ -397,6 +438,7 @@ fn yield_waterfall_prioritises_senior_under_30pct_default() {
 
     let senior_info: TrancheInfo = pool.get_tranche_info(&Tranche::Senior);
     let junior_info: TrancheInfo = pool.get_tranche_info(&Tranche::Junior);
+    let health = pool.get_pool_health();
 
     // 1. Senior tranche fixed yield must have been distributed (7 performing loans × 8% rate).
     assert!(
@@ -404,11 +446,19 @@ fn yield_waterfall_prioritises_senior_under_30pct_default() {
         "senior tranche must receive yield from performing loans"
     );
 
-    // 2. Junior tranche absorbs the 3 × 5 000 = 15 000 loss.
+    // 2. Junior tranche absorbs the entire default loss — at least the 3 ×
+    // 5 000 = 15 000 principal, plus whatever interest had accrued on each
+    // defaulting loan by the time it was marked (mark_default accrues
+    // interest before computing the loss, so the exact figure depends on
+    // ledgers elapsed since disbursement — assert the invariant, not a
+    // hardcoded interest-inflated number).
+    assert!(
+        junior_info.total_loss_absorbed >= 3 * 5_000 * USDC,
+        "junior tranche must absorb at least the 15 000 USDC principal lost to 30% default"
+    );
     assert_eq!(
-        junior_info.total_loss_absorbed,
-        3 * 5_000 * USDC,
-        "junior tranche must absorb all 15 000 loss from 30% default"
+        junior_info.total_loss_absorbed, health.total_defaulted_loss,
+        "junior alone must absorb the pool's entire recorded default loss"
     );
 
     // 3. Senior tranche must not absorb any loss (junior had sufficient capital).
@@ -417,8 +467,7 @@ fn yield_waterfall_prioritises_senior_under_30pct_default() {
         "senior tranche must not absorb any loss under 30% default"
     );
 
-    // 4. Pool health: 3 defaulted, 3 preserved defaulted loss.
-    let health = pool.get_pool_health();
+    // 4. Pool health: 3 defaulted, positive recorded loss.
     assert_eq!(health.defaulted_loans, 3);
     assert!(health.total_defaulted_loss > 0);
 }
@@ -456,9 +505,9 @@ fn waterfall_junior_exhausted_exactly_at_boundary() {
 
     // Junior fully exhausted — deposited reaches 0.
     assert_eq!(junior_info.total_loss_absorbed, 30_000 * USDC);
-    assert_eq!(junior_info.total_deposited,     0);
+    assert_eq!(junior_info.total_deposited, 0);
 
     // Senior unaffected — loss == Junior capacity exactly.
     assert_eq!(senior_info.total_loss_absorbed, 0);
-    assert_eq!(senior_info.total_deposited,     70_000 * USDC);
+    assert_eq!(senior_info.total_deposited, 70_000 * USDC);
 }

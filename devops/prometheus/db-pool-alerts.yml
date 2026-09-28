@@ -1,0 +1,122 @@
+# Prometheus alerting rules for database connection pool saturation.
+#
+# Load alongside the existing rule files, e.g.:
+#
+#   # prometheus.yml
+#   rule_files:
+#     - /etc/prometheus/rules/db-pool-alerts.yml
+#
+# Or, under the Prometheus Operator, wrap `groups` below in a PrometheusRule
+# custom resource.
+#
+# Thresholds are expressed against a ratio gauge
+# (`remitmortgage_db_pool_utilization_ratio`, 0..1) so they read the same at any
+# pool size. The two numbers to tune per environment are the 0.8 and 0.95 in
+# the first two rules below; everything else is derived. Under Helm or the
+# Prometheus Operator, template those literals from values.
+# See docs/DB_CONNECTION_POOL_TUNING.md for how to pick them.
+
+groups:
+  - name: remitmortgage-db-pool
+    interval: 30s
+    rules:
+      # ── Approaching capacity ──────────────────────────────────────────────
+      # The point of the whole alert: fire while there are still connections
+      # left, not once requests are already failing. 15m of sustained load
+      # above 80% is long enough to rule out a burst and short enough to leave
+      # room to act.
+      - alert: DbPoolUtilizationHigh
+        expr: |
+          avg_over_time(remitmortgage_db_pool_utilization_ratio[15m]) > 0.8
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+          component: database
+        annotations:
+          summary: >-
+            DB connection pool on {{ $labels.instance }} has averaged
+            {{ $value | humanizePercentage }} utilization for 15 minutes.
+          description: >-
+            Sustained demand is approaching the configured connection_limit.
+            Connections are not exhausted yet. Check whether this is a real
+            traffic increase or a slow-query regression holding connections
+            open, then raise DB_CONNECTION_LIMIT or scale out.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/DB_CONNECTION_POOL_TUNING.md
+
+      # ── Effectively saturated ─────────────────────────────────────────────
+      - alert: DbPoolUtilizationCritical
+        expr: |
+          avg_over_time(remitmortgage_db_pool_utilization_ratio[5m]) > 0.95
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+          component: database
+        annotations:
+          summary: >-
+            DB connection pool on {{ $labels.instance }} is effectively
+            saturated ({{ $value | humanizePercentage }}).
+          description: >-
+            Nearly every connection is in use. Request latency will already be
+            rising and P2024 timeouts are imminent.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/DB_CONNECTION_POOL_TUNING.md
+
+      # ── Queueing ──────────────────────────────────────────────────────────
+      # Demand beyond the pool limit means operations are waiting for a
+      # connection. This can fire before the ratio alert when load arrives as
+      # a sharp spike rather than a sustained climb.
+      - alert: DbPoolQueueBuilding
+        expr: min_over_time(remitmortgage_db_pool_queued_queries[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+          component: database
+        annotations:
+          summary: >-
+            DB operations have been queued for a connection on
+            {{ $labels.instance }} continuously for 5 minutes.
+          description: >-
+            In-flight demand has exceeded connection_limit without dropping to
+            zero for the whole window, so requests are being delayed waiting on
+            the pool.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/DB_CONNECTION_POOL_TUNING.md
+
+      # ── Already exhausted ─────────────────────────────────────────────────
+      # P2024 means a user-facing request failed because no connection could be
+      # acquired. This is the failure the other rules exist to pre-empt, so any
+      # occurrence pages.
+      - alert: DbPoolConnectionTimeouts
+        expr: increase(remitmortgage_db_pool_timeouts_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: ops
+          component: database
+        annotations:
+          summary: >-
+            {{ $value | printf "%.0f" }} DB pool acquisition timeouts (P2024)
+            on {{ $labels.instance }} in the last 5 minutes.
+          description: >-
+            The connection pool is exhausted and requests are failing. Raise
+            DB_CONNECTION_LIMIT or reduce concurrency now.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/DB_CONNECTION_POOL_TUNING.md
+
+      # ── Instrumentation health ────────────────────────────────────────────
+      # A pool limit of 0 means the gauge denominator is wrong and every
+      # utilization alert above is silently disabled.
+      - alert: DbPoolMetricsNotReporting
+        expr: remitmortgage_db_pool_max_connections == 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+          component: database
+        annotations:
+          summary: >-
+            DB pool metrics on {{ $labels.instance }} report a maximum of zero
+            connections.
+          description: >-
+            initDbPoolMetrics did not resolve a connection limit, so pool
+            utilization alerting is not functioning.

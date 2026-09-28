@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import type { Metadata, Viewport } from "next";
 import { WalletProvider } from "../context/WalletContext";
 import "./globals.css";
@@ -7,9 +10,16 @@ import { AuthProvider } from "@/context/AuthContext";
 import { NotificationProvider } from "@/context/NotificationContext";
 import { NotificationLayer } from "@/components/NotificationLayer";
 import { ToastProvider } from "@/context/ToastContext";
+import { IdleSessionProvider } from "@/context/IdleSessionContext";
+import { KeyboardShortcutsProvider } from "@/context/KeyboardShortcutsContext";
+import { NarrationProvider } from "@/context/NarrationContext";
 import { ToastContainer } from "@/components/ToastContainer";
 import { HotToaster } from "@/components/HotToaster";
+import WalletBanner from "@/components/WalletBanner";
+import SkipToContent from "@/components/SkipToContent";
 import Footer from "@/components/Footer";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getMessages } from "next-intl/server";
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? "https://remitmortgage.com";
 
@@ -81,31 +91,67 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const locale = await getLocale();
+  const messages = await getMessages();
+
   return (
-    <html lang="en">
+    <html lang={locale} dir={locale === "ar" ? "rtl" : "ltr"} suppressHydrationWarning>
+      <head>
+        {/* SRI: This inline theme script is same-origin and not a CDN load, so Subresource Integrity does not apply.
+            It is intentionally inline to avoid FOUC and is protected by CSP script-src 'self'.
+            For any future third-party CDN <script src="https://..."> or <link rel="stylesheet" href="https://...">,
+            use `import { sriProps } from "@/lib/sri"` and spread `{...sriProps(url)}` to enforce
+            integrity="sha384-..." + crossorigin="anonymous". See frontend/src/lib/sri.ts and docs/SRI_AUDIT.md. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var theme = localStorage.getItem("remitmortgage-theme");
+                  if (theme === "light" || theme === "dark") {
+                    document.documentElement.setAttribute("data-theme", theme);
+                  }
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
+      </head>
       <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
-        <ThemeProvider>
-          <WalletProvider>
-            <ContractRegistryProvider>
-            <AuthProvider>
-            <NotificationProvider>
-              <ToastProvider>
-                <div className="flex-1">{children}</div>
-                <Footer />
-                <NotificationLayer />
-                <ToastContainer />
-                <HotToaster />
-              </ToastProvider>
-              </NotificationProvider>
-            </AuthProvider>
-            </ContractRegistryProvider>
-          </WalletProvider>
-        </ThemeProvider>
+        <SkipToContent />
+        <NextIntlClientProvider messages={messages} locale={locale}>
+          <WalletBanner />
+          <ThemeProvider>
+            <WalletProvider>
+              <ContractRegistryProvider>
+              <AuthProvider>
+              <NotificationProvider>
+                <ToastProvider>
+                  <IdleSessionProvider>
+                    <KeyboardShortcutsProvider>
+                      <NarrationProvider>
+                        <main id="main-content" role="main" tabIndex={-1} className="flex-1 focus:outline-none">
+                          {children}
+                        </main>
+                        <Footer />
+                        <NotificationLayer />
+                        <ToastContainer />
+                        <HotToaster />
+                      </NarrationProvider>
+                    </KeyboardShortcutsProvider>
+                  </IdleSessionProvider>
+                </ToastProvider>
+                </NotificationProvider>
+              </AuthProvider>
+              </ContractRegistryProvider>
+            </WalletProvider>
+          </ThemeProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );

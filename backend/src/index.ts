@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import "dotenv/config";
 // Must load before any other module — OpenTelemetry auto-instrumentation
 // patches libraries (express, http, pg, etc.) at require-time.
@@ -19,23 +22,49 @@ import { swaggerSpec } from "./docs/swagger.js";
 import { healthRouter } from "./routes/health.js";
 import { rpcHealthRouter } from "./routes/rpcHealth.js";
 import { verificationRouter } from "./routes/verification.js";
+import { verifyRouter } from "./routes/verify.js";
 import { borrowerRouter } from "./routes/borrower.js";
 import { loanRouter } from "./routes/loan.js";
 import { milestoneRouter } from "./routes/milestone.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
+import { watchlistRouter } from "./routes/watchlist.js";
+import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
+import { adminAuthRouter } from "./routes/adminAuth.js";
 import { workspaceRouter } from "./routes/workspace.js";
+import { userRouter } from "./routes/user.js";
 import { metricsRouter } from "./routes/metrics.js";
+import { referralRouter } from "./routes/referral.js";
+import { tenantRouter } from "./routes/tenant.js";
+import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
+import { incidentWebhookRouter } from "./routes/incidentWebhooks.js";
+import { emailEventsRouter } from "./routes/emailEvents.js";
+import { apiKeysRouter } from "./routes/apiKeys.js";
+import { waitlistRouter } from "./routes/waitlist.js";
+import { loanImportRouter } from "./routes/loanImport.js";
+import { exportsRouter } from "./routes/exports.js";
+import { authRouter } from "./routes/auth.js";
+import {
+  feeWaiverLoanRouter,
+  feeWaiverAdminRouter,
+  feeWaiverBorrowerRouter,
+} from "./routes/feeWaiver.js";
+import { rateSheetAdminRouter } from "./routes/rateSheet.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { logMasker } from "./middleware/logMasker.js";
 import { correlationId } from "./middleware/correlationId.js";
+import { tenantContext } from "./services/tenant.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { credentialStuffingGuard } from "./middleware/credentialStuffing.js";
+import { rlsMiddleware } from "./middleware/rls.js";
+import { startEventIndexer } from "./services/eventIndexer.js";
 import {
   globalRateLimiter,
   sensitiveRateLimiter,
@@ -45,22 +74,99 @@ import { issueCsrfToken, csrfProtection, CSRF_COOKIE } from "./middleware/csrf.j
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
-import { startBackupScheduler } from "./jobs/backupScheduler.js";
+import { startBackupScheduler, startBackupCleanupScheduler } from "./jobs/backupScheduler.js";
 import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
+import { startSecretsRotationScheduler } from "./jobs/secretsRotation.js";
+import { startJwtKeyRotationScheduler } from "./jobs/jwtKeyRotation.js";
 import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
+import { getOcrProvider, setOcrProvider } from "./services/ocrService.js";
+import {
+  FailoverKycProvider,
+  HttpKycProvider,
+  sendKycFailoverAlert,
+} from "./services/kycProviderFailover.js";
+import {
+  HttpPayrollVerificationProvider,
+  setPayrollVerificationProvider,
+} from "./services/payrollVerificationProvider.js";
 import logger from "./utils/logger.js";
+import { feeEstimator } from "./services/feeEstimator.js";
 import { initializeRedis } from "./services/redis.js";
+import { checkPrismaMigrations } from "./utils/prismaCheck.js";
 import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js";
 import { queueService } from "./services/queueService.js";
 import { startNotificationWorker, stopNotificationWorker } from "./workers/notificationWorker.js";
 import { startWebhookWorker, stopWebhookWorker } from "./workers/webhookWorker.js";
+import { startAnalyticsWorker, stopAnalyticsWorker } from "./workers/analyticsWorker.js";
 
 const app = express();
 const config = loadConfig();
 const PORT = config.port;
 
+// Serve KYC document verification from a backup provider when the primary
+// keeps failing. Disabled unless a backup provider URL is configured.
+if (config.kycBackupProviderUrl) {
+  setOcrProvider(
+    new FailoverKycProvider(
+      getOcrProvider(),
+      new HttpKycProvider({
+        url: config.kycBackupProviderUrl,
+        apiKey: config.kycBackupProviderApiKey,
+        timeoutMs: config.kycProviderTimeoutMs,
+      }),
+      {
+        failureThreshold: config.kycFailoverThreshold,
+        timeoutMs: config.kycProviderTimeoutMs,
+        cooldownMs: config.kycFailoverCooldownMs,
+        persistAlertAfterMs: config.kycFailoverAlertAfterMs,
+        onAlert: sendKycFailoverAlert,
+      }
+    )
+  );
+}
+
+// Automated employment verification (issue #802). Disabled unless a provider
+// URL is configured — the Null provider stays active otherwise, so every
+// applicant falls back to manual document review.
+if (config.payrollVerificationApiUrl) {
+  setPayrollVerificationProvider(
+    new HttpPayrollVerificationProvider({
+      url: config.payrollVerificationApiUrl,
+      apiKey: config.payrollVerificationApiKey,
+      providerName: "payroll_provider",
+    })
+  );
+}
+
 void initializeRedis();
+
+// ── Prisma Schema Migration Check ───────────────────────────────────
+// Verifies the Postgres schema matches the Prisma definition before the
+// server starts accepting traffic.  In production, pending migrations are
+// fatal — the process aborts with a clear message.
+//
+// Override via:
+//   SKIP_PRISMA_CHECK=true   — skip the check entirely (CI, ephemeral envs)
+if (!process.env.SKIP_PRISMA_CHECK) {
+  const result = checkPrismaMigrations();
+  if (!result.ok) {
+    const isProduction = process.env.NODE_ENV === "production";
+    const fatal = isProduction && result.pending > 0;
+    if (fatal) {
+      logger.error(
+        `[prisma] ${result.message} ` +
+        `Aborting boot — run "npx prisma migrate deploy" or "npm run db:migrate" to sync, then restart.`
+      );
+      process.exit(1);
+    }
+    logger.warn(result.message, { pending: result.pending, applied: result.applied });
+  } else {
+    logger.info(result.message);
+  }
+} else {
+  logger.warn("[prisma] Schema check skipped via SKIP_PRISMA_CHECK");
+}
 
 // ── Background Queue Initialization ─────────────────────────────────
 void (async () => {
@@ -70,6 +176,7 @@ void (async () => {
     await Promise.all([
       startNotificationWorker(),
       startWebhookWorker(),
+      startAnalyticsWorker(),
     ]);
     logger.info("[queue] BullMQ workers started", {
       mode: config.redisClusterEnabled ? "cluster" : "single",
@@ -83,6 +190,7 @@ void (async () => {
 // Correlation ID must be first so every downstream middleware, handler and
 // log line for this request resolves the same trace ID.
 app.use(correlationId);
+app.use(tenantContext);
 // HTTP metrics must be first so the timer starts at the earliest possible point.
 app.use(httpMetricsMiddleware);
 app.use(tracingMiddleware);
@@ -104,6 +212,7 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
+app.use(logMasker);
 app.use(cookieParser());
 
 // Global rate limiter — caps naive request floods across the whole API before
@@ -123,6 +232,11 @@ app.get("/api/csrf-token", (req, res) => {
   res.json({ csrfToken, cookieName: CSRF_COOKIE });
 });
 
+// Row-Level Security: sets PostgreSQL session tenant context per-request.
+// Runs after cookie parsing so the auth token is available, but before any
+// route handlers execute database queries.
+app.use(rlsMiddleware);
+
 // Basic rate limiter for verification endpoints: 100 requests per minute per IP
 const verificationLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -141,18 +255,35 @@ app.use("/metrics", metricsRouter);
 app.use("/api/health/rpc", rpcHealthRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
+app.use("/api/verify", verificationLimiter, verifyRouter);
 app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
+app.use("/api/borrower", mutationRateLimiter, authMiddleware, feeWaiverBorrowerRouter);
 app.use("/api/loan", mutationRateLimiter, authMiddleware, loanRouter);
+app.use("/api/loan", mutationRateLimiter, authMiddleware, feeWaiverLoanRouter);
+app.use("/api/loan/import", mutationRateLimiter, authMiddleware, loanImportRouter);
 app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/did", sensitiveRateLimiter, didRouter);
 app.use("/api/audit-logs", auditRouter);
-app.use("/api/workspaces", workspaceRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
+app.use("/api/watchlist", authMiddleware, watchlistRouter);
+app.use("/api/notifications", notificationsRouter);
+app.use("/api/referral", referralRouter);
+app.use("/api/tenant", tenantRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
+app.use("/api/admin", authMiddleware, feeWaiverAdminRouter);
+app.use("/api/admin", authMiddleware, rateSheetAdminRouter);
+app.use("/api/admin", adminAuthRouter);
+app.use("/api/admin/api-keys", apiKeysRouter);
+app.use("/api/exports", exportsRouter);
+app.use("/api/webhooks/pagerduty", incidentWebhookRouter);
+app.use("/api/webhooks/email-events", emailEventsRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
+app.use("/api/user", userRouter);
+app.use("/api/waitlist", waitlistRouter);
+app.use("/api/auth", credentialStuffingGuard, authRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
@@ -165,19 +296,25 @@ app.listen(PORT, () => {
   logger.info("RemitMortgage API server started", {
     port: PORT,
     environment: process.env.NODE_ENV || "development",
+    // Logged so the pool ceiling the alerts are computed against is visible in
+    // startup logs, not only on /metrics.
+    dbConnectionLimit: getTrackedConnectionLimit(),
   });
 
-  // Start the Soroban contract event listener alongside the HTTP server. It
-  // runs in the background and self-heals via exponential backoff, so a failing
-  // RPC node never takes down the API process.
-  startEventListener();
+  // Start the Soroban contract event indexer alongside the HTTP server. It
+  // polls /getEvents and persists borrower activity into PostgreSQL.
+  startEventIndexer();
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();
+  startBackupCleanupScheduler();
   startWebhookKeyRotationScheduler();
+  startSecretsRotationScheduler();
+  startJwtKeyRotationScheduler();
   // Proactively monitor Soroban RPC node health and alert operators on
   // degradation, downtime or failover through the existing webhook mechanism.
   startRpcHealthMonitor();
+  feeEstimator.start();
 });
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────
@@ -186,6 +323,7 @@ async function shutdown(signal: string) {
   await Promise.allSettled([
     stopNotificationWorker(),
     stopWebhookWorker(),
+    stopAnalyticsWorker(),
     queueService.close(),
     closeCluster(),
   ]);

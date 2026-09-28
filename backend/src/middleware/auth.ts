@@ -1,5 +1,8 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
+import { verifySessionToken } from "../services/jwtKeyRing.js";
 import { loadConfig } from "../config.js";
 
 export interface AuthenticatedRequest extends Request {
@@ -26,7 +29,7 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "default_jwt_secret") as {
+    const decoded = verifySessionToken(token) as {
       walletAddress: string;
       network: string;
     };
@@ -42,36 +45,27 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
  * Gates admin-only routes (e.g. the audit log query endpoint) behind a static
  * API key, kept separate from the wallet-based JWT flow in {@link authMiddleware}.
  */
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    res
-      .status(401)
-      .json({ error: "missing_authorization", message: "Authorization header is required" });
-    return;
-  }
-
-  const token = authHeader.slice(7);
-  const { adminApiKey } = loadConfig();
-
-  if (token !== adminApiKey) {
-    res.status(403).json({ error: "forbidden", message: "Invalid admin credentials" });
-    return;
-  }
-
-  next();
-}
-
 export function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  const token = req.cookies?.token;
+  const authHeader = req.headers.authorization;
+  const { adminApiKey } = loadConfig();
+  const bearer = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+
+  // API-key callers remain supported for admin-only endpoints that do not
+  // require a wallet identity.
+  if (bearer && bearer === adminApiKey) {
+    next();
+    return;
+  }
+
+  const token = req.cookies?.token || bearer;
 
   if (!token) {
-    res.status(401).json({ error: "unauthorized", message: "Authentication token missing" });
+    res.status(401).json({ error: "missing_authorization", message: "Authorization header or admin session is required" });
     return;
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "default_jwt_secret") as {
+    const decoded = verifySessionToken(token) as {
       walletAddress: string;
       network: string;
     };
