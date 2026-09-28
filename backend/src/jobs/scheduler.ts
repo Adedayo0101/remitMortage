@@ -17,7 +17,7 @@ import { runSuspiciousActivityScan } from "../services/suspiciousActivity.js";
 import { runRateLimitAuditJob } from "./rateLimitAudit.js";
 import { runDeadlockDetectionJob } from "./deadlockDetection.js";
 import { runUnusedIndexAuditJob } from "./unusedIndexAudit.js";
-import { runStaleFeatureFlagAuditJob } from "./staleFeatureFlagAudit.js";
+import { runQueryKillerJob } from "./queryKiller.js";
 import { applyDueServicingTransfers } from "../services/loanServicing.js";
 import { prisma } from "../services/db.js";
 import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
@@ -37,6 +37,7 @@ let deadlockDetectionTask: ReturnType<typeof cron.schedule> | null = null;
 let unusedIndexAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let staleFlagAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let servicingTransferTask: ReturnType<typeof cron.schedule> | null = null;
+let queryKillerTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -137,15 +138,13 @@ export function startScheduler() {
     }
   }, { timezone: "UTC" });
 
-  // Weekly (Mon 11:00 UTC) by default: stale feature-flag cleanup candidates.
-  // Report-only — never deletes flags. See docs/STALE_FEATURE_FLAG_CLEANUP.md.
-  const staleFlagSchedule = process.env.STALE_FLAG_AUDIT_CRON_SCHEDULE || "0 11 * * 1";
-  staleFlagAuditTask = cron.schedule(staleFlagSchedule, async () => {
+  // Every minute: terminate runaway queries past the duration threshold (issue #736).
+  const queryKillerSchedule = process.env.QUERY_KILLER_CRON_SCHEDULE || "*/1 * * * *";
+  queryKillerTask = cron.schedule(queryKillerSchedule, async () => {
     try {
-      console.log("[Scheduler] Triggering stale feature flag audit job...");
-      await runStaleFeatureFlagAuditJob();
+      await runQueryKillerJob();
     } catch (error) {
-      logger.error("[Scheduler] Stale feature flag audit job failed", { error });
+      logger.error("[Scheduler] Query killer job failed", { error });
     }
   }, { timezone: "UTC" });
 
@@ -163,7 +162,7 @@ export function startScheduler() {
   startAnalyticsRefreshScheduler();
 
   console.log(
-    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, slow query digest, suspicious activity scan, rate limit audit, deadlock detection, unused index audit, stale feature flag audit, loan servicing transfer, and analytics refresh jobs scheduled."
+    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, slow query digest, suspicious activity scan, rate limit audit, deadlock detection, unused index audit, loan servicing transfer, query killer, and analytics refresh jobs scheduled."
   );
 }
 
@@ -223,6 +222,10 @@ export function stopScheduler() {
   if (servicingTransferTask) {
     servicingTransferTask.stop();
     servicingTransferTask = null;
+  }
+  if (queryKillerTask) {
+    queryKillerTask.stop();
+    queryKillerTask = null;
   }
   stopAnalyticsRefreshScheduler();
   console.log("[Scheduler] Stopped.");
