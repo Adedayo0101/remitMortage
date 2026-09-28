@@ -840,3 +840,57 @@ model EmailSuppression {
 
   @@index([permanent])
 }
+
+/// Hardship late-fee waiver request workflow (issue #749).
+///
+/// A borrower facing genuine hardship (job loss, medical emergency, etc.)
+/// submits a structured request against a loan with an outstanding
+/// `lateFeeBalance`. Requests sit in PENDING until an admin applies a
+/// documented decision: APPROVED (full waiver), PARTIAL (partial waiver) or
+/// DENIED. Every decision records the waived amount, the documented reason
+/// and the approving admin so the full request-to-decision trail is auditable
+/// against the loan.
+enum FeeWaiverStatus {
+  PENDING
+  APPROVED
+  PARTIAL
+  DENIED
+}
+
+/// Documented hardship categories accepted on waiver requests.
+enum HardshipReason {
+  JOB_LOSS
+  MEDICAL_EMERGENCY
+  NATURAL_DISASTER
+  REDUCED_INCOME
+  BEREAVEMENT
+  OTHER
+}
+
+model LateFeeWaiverRequest {
+  id                String         @id @default(uuid())
+  loanApplicationId String
+  /// Borrower wallet address that filed the request (denormalized for queue filtering).
+  borrowerAddress   String
+  hardshipReason    HardshipReason
+  /// Free-text supporting context supplied by the borrower.
+  context           String
+  /// Late-fee amount outstanding when the request was filed (audit snapshot).
+  requestedAmount   Float
+  /// Amount actually waived by the admin decision (0 for DENIED/PENDING).
+  waivedAmount      Float          @default(0)
+  status            FeeWaiverStatus @default(PENDING)
+  /// Admin wallet / API-key identity that decided the request.
+  decidedBy         String?
+  /// Documented approval-criteria reference + rationale recorded by the admin.
+  decisionReason    String?
+  /// Approval-criteria version evaluated (e.g. "waiver-policy-v1").
+  policyVersion     String         @default("waiver-policy-v1")
+  decidedAt         DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([loanApplicationId, status])
+  @@index([status, createdAt])
+  @@index([borrowerAddress])
+}
