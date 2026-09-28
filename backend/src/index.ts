@@ -52,6 +52,7 @@ import {
   feeWaiverAdminRouter,
   feeWaiverBorrowerRouter,
 } from "./routes/feeWaiver.js";
+import { rateSheetAdminRouter } from "./routes/rateSheet.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { logMasker } from "./middleware/logMasker.js";
@@ -271,6 +272,7 @@ app.use("/api/referral", referralRouter);
 app.use("/api/tenant", tenantRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
 app.use("/api/admin", authMiddleware, feeWaiverAdminRouter);
+app.use("/api/admin", authMiddleware, rateSheetAdminRouter);
 app.use("/api/admin", adminAuthRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/exports", exportsRouter);
