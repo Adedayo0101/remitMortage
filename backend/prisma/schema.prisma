@@ -258,6 +258,10 @@ model LoanApplication {
   loanId             String?
   principal          Float // DB CHECK: principal > 0 (enforced via migration LoanApplication_principal_check)
   interestRateBps    Int      @default(800) // DB CHECK: 200 <= interestRateBps <= 1800 (LoanApplication_interestRateBps_check) — protocol floor/cap 2%/18%
+  // Rate sheet version this application was priced from (issue #746). Null for
+  // applications created before rate sheets were versioned.
+  rateSheetVersionId String?
+  rateSheetVersion   InterestRateSheetVersion? @relation(fields: [rateSheetVersionId], references: [id])
   status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 
@@ -313,6 +317,32 @@ model LoanApplication {
   @@index([status, lastActivityAt])
   // Index backing reviewer workload queries (applications assigned to a reviewer)
   @@index([assignedReviewerId])
+  // Index backing "which loans were priced from rate sheet version N" audits
+  @@index([rateSheetVersionId])
+}
+
+/// Append-only history of interest rate sheets (issue #746). A rate change is
+/// always a new row with the next `version`; rows are never updated or deleted
+/// (enforced by a database trigger), so the sheet in effect at any past instant
+/// can be reconstructed exactly.
+model InterestRateSheetVersion {
+  id            String   @id @default(uuid())
+  /// Monotonic version number, 1-based. Unique so concurrent publishes cannot
+  /// both claim the same version.
+  version       Int      @unique
+  /// When this version starts pricing new offers.
+  effectiveAt   DateTime
+  /// The full rate sheet: { baseRateBps, creditScoreTiers? }.
+  rates         Json
+  /// Field-level diff against the previous version: [{ path, before, after }].
+  changedValues Json
+  /// Wallet address of the admin who published it, or "admin-api-key".
+  changedBy     String
+  changeReason  String?
+  createdAt     DateTime @default(now())
+  loanApplications LoanApplication[]
+
+  @@index([effectiveAt])
 }
 
 enum ServicingTransferStatus {
