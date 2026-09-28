@@ -26,6 +26,11 @@ import {
 } from "../services/webhookLatency.js";
 import { listSuppressedApplicants } from "../services/emailSuppression.js";
 import { runUnusedIndexAuditJob } from "../jobs/unusedIndexAudit.js";
+import {
+  ForensicsReviewError,
+  listFlaggedDocuments,
+  reviewFlaggedDocument,
+} from "../services/kycDocumentForensics.js";
 import { loadConfig } from "../config.js";
 
 export const adminRouter = Router();
@@ -334,6 +339,29 @@ adminRouter.get("/db/unused-indexes", requireAdmin, async (_req: AuthenticatedRe
   }
 });
 
+/**
+ * @openapi
+ * /api/admin/db/query-killer:
+ *   post:
+ *     summary: Manually trigger the long-running query killer sweep
+ *     description: >-
+ *       Ops-only (issue #736). Terminates backends running past
+ *       QUERY_KILLER_THRESHOLD_MS, never touching the documented
+ *       maintenance allowlist. Every termination is logged/alerted with
+ *       query text and origin context.
+ *     tags:
+ *       - Admin
+ */
+adminRouter.post("/db/query-killer", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { runQueryKillerJob } = await import("../jobs/queryKiller.js");
+    return res.json(await runQueryKillerJob());
+  } catch (error) {
+    logger.error("Query killer error", { error });
+    return res.status(500).json({ error: "query_killer_failed" });
+  }
+});
+
 adminRouter.get("/webhooks/latency", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   const config = loadConfig();
   const windowMinutes = positiveIntParam(
@@ -541,3 +569,39 @@ adminRouter.post("/scoring/models", requireAdmin, async (req: AuthenticatedReque
     return res.status(500).json({ error: "failed_to_update_scoring_models" });
   }
 });
+
+// ── KYC document forgery review (issue #813) ─────────────────────────────
+// Documents whose metadata looked tampered with are queued here for a human;
+// each entry carries the specific signals that triggered the flag.
+
+adminRouter.get("/kyc/flagged-documents", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ documents: await listFlaggedDocuments() });
+  } catch (error) {
+    logger.error("List flagged KYC documents error", { error });
+    return res.status(500).json({ error: "failed_to_list_flagged_documents" });
+  }
+});
+
+adminRouter.post(
+  "/kyc/flagged-documents/:documentId/review",
+  requireAdmin,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const reviewed = await reviewFlaggedDocument({
+        documentId: String(req.params.documentId),
+        reviewedBy: req.user?.walletAddress ?? "admin-api-key",
+        outcome: req.body?.outcome,
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+      return res.json({ document: reviewed });
+    } catch (error) {
+      if (error instanceof ForensicsReviewError) {
+        const status = error.code === "not_found" ? 404 : error.code === "invalid_outcome" ? 400 : 409;
+        return res.status(status).json({ error: error.code, message: error.message });
+      }
+      logger.error("Review flagged KYC document error", { error });
+      return res.status(500).json({ error: "failed_to_review_document" });
+    }
+  }
+);
