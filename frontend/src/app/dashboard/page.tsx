@@ -14,6 +14,7 @@ import LoanStatusCard from "../../components/LoanStatusCard";
 import DepositModal from "../../components/DepositModal";
 import WithdrawModal from "../../components/WithdrawModal";
 import MilestoneTimeline, { type MilestoneNode } from "../../components/MilestoneTimeline";
+import EscrowMilestoneProgressMap from "../../components/EscrowMilestoneProgressMap";
 import YieldEstimatorCalculator from "../../components/YieldEstimatorCalculator";
 import VerificationBadge from "../../components/VerificationBadge";
 import LoanPrintSummary from "../../components/LoanPrintSummary";
@@ -323,6 +324,11 @@ export default function DashboardPage() {
                   Contractor Portal &rarr;
                 </a>
               </div>
+              {status?.escrow && (
+                <div className="mb-8 pb-8 border-b border-slate-800">
+                  <EscrowMilestoneProgressMap milestones={milestones} escrow={status.escrow} />
+                </div>
+              )}
               <MilestoneTimeline milestones={milestones} title="" />
             </div>
           </SortableWidget>
