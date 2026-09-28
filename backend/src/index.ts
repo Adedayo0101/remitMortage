@@ -72,6 +72,8 @@ import {
   mutationRateLimiter,
 } from "./middleware/rateLimit.js";
 import { issueCsrfToken, csrfProtection, CSRF_COOKIE } from "./middleware/csrf.js";
+import { adminIpAllowlist, resolveTrustProxy } from "./middleware/adminIpAllowlist.js";
+import { notFoundHandler } from "./middleware/notFound.js";
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
@@ -265,7 +267,6 @@ app.use("/api/loan/import", mutationRateLimiter, authMiddleware, loanImportRoute
 app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/did", sensitiveRateLimiter, didRouter);
-app.use("/api/audit-logs", auditRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
@@ -294,6 +295,10 @@ app.use("/api/waitlist", waitlistRouter);
 app.use("/api/auth", credentialStuffingGuard, authRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// Unmatched routes — and, by design, admin requests blocked by the IP
+// allowlist — resolve to one identical 404 body. Must precede errorHandler.
+app.use(notFoundHandler);
 
 // Global error handler (must be after routes)
 Sentry.setupExpressErrorHandler(app);

@@ -245,6 +245,15 @@ pub struct LoanRecord {
     pub defaulted_ledger: u32,
     /// Optional escrow contract address that originated this loan via the bridge.
     pub escrow_origin: Option<Address>,
+    /// Age of the borrower's escrow savings relationship at the moment this
+    /// loan was originated, in ledgers. `0` means the borrower had no
+    /// recorded relationship.
+    ///
+    /// Latched at origination rather than read at repayment time so that the
+    /// early-prepayment penalty a borrower is assessed cannot be changed after
+    /// the fact by opening or closing an escrow account. See
+    /// `PoolConfig::prepay_waiver_ledgers` for how it is used.
+    pub escrow_relationship_ledgers: u32,
     /// Ledger sequence when the loan was refinanced.
     pub refinanced_at_ledger: Option<u32>,
     /// Previous interest rate before refinancing.

@@ -1444,6 +1444,16 @@ impl LendingPoolContract {
             outstanding_debt: 0,
             defaulted_ledger: 0,
             escrow_origin,
+            // Latch the borrower's escrow savings relationship age now, while
+            // the credit decision is still open. Reading it at repayment time
+            // instead would let a borrower open or extend an escrow account
+            // after origination and have the late-arriving relationship
+            // retroactively erase a penalty they had already been assessed.
+            escrow_relationship_ledgers: Self::escrow_relationship_ledgers(
+                env,
+                &borrower,
+                env.ledger().sequence(),
+            ),
             refinanced_at_ledger: None,
             previous_rate_bps: None,
         };
@@ -2455,6 +2465,24 @@ impl LendingPoolContract {
     /// between principal recovery and interest. Interest is distributed using the
     /// tranche yield waterfall: senior tranche receives its fixed rate first, and
     /// the junior tranche receives the remainder.
+    ///
+    /// # Early-Prepayment Penalty
+    ///
+    /// A payment that clears a loan while its schedule still has installments
+    /// outstanding is an early prepayment, and the borrower additionally owes
+    /// `PREPAYMENT_PENALTY_BPS` of the repaid amount. The penalty is collected
+    /// on top of `amount` and forwarded straight to the treasury, so the
+    /// borrower must hold the full debt plus the penalty. It is never booked as
+    /// pool liquidity and never reduces principal, interest, or investor yield
+    /// — only the fee is at stake.
+    ///
+    /// The penalty is waived in full for borrowers whose escrow savings
+    /// relationship had reached `prepay_waiver_ledgers` by the time
+    /// the loan was originated; that age is latched onto the loan, so the
+    /// waiver cannot be earned retroactively. Partial payments and payments
+    /// that finish the agreed term are never penalised. Waiving is disabled at
+    /// the default `0` threshold, where every early prepayment pays the full
+    /// penalty.
     pub fn repay(
         env: Env,
         borrower: Address,
@@ -2586,9 +2614,53 @@ impl LendingPoolContract {
                 .set(&DataKey::LoanSchedule(loan_id.clone()), &sched);
         }
 
-        // Transfer USDC from borrower to pool.
+        // ── Early-Prepayment Penalty & Loyalty Waiver ───────────────────
+        // Owed only when this payment clears the loan while the schedule still
+        // had installments outstanding, i.e. the borrower finished ahead of the
+        // agreed term. Read the schedule *after* the block above has persisted
+        // it, so `payments_made` reflects this payment: a loan paid off on its
+        // final installment has nothing left outstanding and is not penalised.
+        //
+        // The charge is assessed on `amount` and collected on top of it. Debt is
+        // extinguished by `amount` alone, so the penalty never touches
+        // principal, interest, or the yield waterfall below.
+        let is_early_close = amount == remaining && Self::is_early_closure(&env, &loan_id);
+        let waived = is_early_close && Self::is_prepayment_penalty_waived(&config, &loan);
+        let prepayment_penalty = if is_early_close && !waived {
+            Self::calculate_prepayment_penalty(amount)
+        } else {
+            0i128
+        };
+
+        // Transfer USDC from borrower to pool, plus any early-prepayment
+        // penalty owed on top of it.
         let token = Self::token_client(&env, &config.token);
-        token.transfer(&borrower, &env.current_contract_address(), &amount);
+        token.transfer(
+            &borrower,
+            &env.current_contract_address(),
+            &(amount + prepayment_penalty),
+        );
+
+        // Forward the penalty to the treasury immediately. It leaves the pool
+        // in the same transaction it arrives, so it nets out of the liquidity
+        // accounting at the end of this function without being counted as
+        // lendable capital.
+        if prepayment_penalty > 0 {
+            Self::collect_prepayment_penalty(
+                &env,
+                &config,
+                &loan_id,
+                &borrower,
+                prepayment_penalty,
+            );
+        }
+
+        if is_early_close {
+            env.events().publish(
+                (Symbol::new(&env, "prepay_closed"),),
+                (loan_id.clone(), waived, prepayment_penalty),
+            );
+        }
 
         let old_repaid = loan.repaid;
         loan.repaid += amount;
@@ -2733,7 +2805,10 @@ impl LendingPoolContract {
 
         // Increase available liquidity with the repayment, net of any
         // protocol fee already forwarded to the treasury — those tokens have
-        // left the pool and must not be counted as lendable.
+        // left the pool and must not be counted as lendable. An
+        // early-prepayment penalty needs no adjustment here: it came in
+        // alongside the repayment and was forwarded straight back out, so it
+        // nets to zero against the pool's balance.
         let liquidity = Self::read_total_liquidity(&env) + amount - protocol_fee;
         env.storage()
             .instance()
@@ -8902,6 +8977,11 @@ mod test {
         tracked_liquidity: i128,
         /// Pool contract's real token balance after the repayment.
         actual_balance: i128,
+        /// Early-prepayment penalty also paid to the treasury. This cycle
+        /// clears the whole debt in one payment, so it is always an early
+        /// close; the field is reported separately so the switch assertions
+        /// stay about interest rather than being polluted by an unrelated fee.
+        prepay_penalty: i128,
     }
 
     /// Runs a complete deposit → borrow → disburse → repay cycle in a fresh
@@ -8940,8 +9020,9 @@ mod test {
 
         // Clear the whole debt in one payment. Reading `outstanding_debt`
         // rather than assuming principal + interest keeps the test honest if
-        // interest has compounded.
-        sac.mint(&borrower, &principal);
+        // interest has compounded. The borrower funds the repayment plus the
+        // early-prepayment penalty this closing payment incurs.
+        sac.mint(&borrower, &(principal * 2));
         let owed = client.get_loan_info(&loan_id).outstanding_debt;
         client.repay(&borrower, &loan_id, &owed);
 
@@ -8954,6 +9035,7 @@ mod test {
             distributed_yield: senior.total_yield_distributed + junior.total_yield_distributed,
             tracked_liquidity: client.get_pool_health().total_liquidity,
             actual_balance: token.balance(&client.address),
+            prepay_penalty: client.get_total_prepayment_penalties(),
         }
     }
 
@@ -8973,8 +9055,11 @@ mod test {
     fn test_repay_routes_no_fee_while_switch_is_off() {
         let run = run_fee_switch_cycle(0);
 
-        assert_eq!(run.treasury_balance, 0i128);
+        // The switch contributes nothing, so the interest fee is zero. The
+        // treasury still sees the unrelated early-prepayment penalty, which is
+        // reported on its own counter and must not be read as interest fees.
         assert_eq!(run.reported_fees, 0i128);
+        assert_eq!(run.treasury_balance, run.prepay_penalty);
         // Every unit of interest reached the tranches.
         assert!(run.distributed_yield > 0);
     }
@@ -8984,9 +9069,10 @@ mod test {
         let run = run_fee_switch_cycle(1_000);
 
         // The treasury actually holds the tokens, and the pool's running
-        // total agrees with the on-chain balance.
+        // total agrees with the on-chain balance once the independently
+        // tracked prepayment penalty is accounted for.
         assert!(run.treasury_balance > 0);
-        assert_eq!(run.treasury_balance, run.reported_fees);
+        assert_eq!(run.treasury_balance, run.reported_fees + run.prepay_penalty);
 
         // The fee is 10% of the interest that flowed through the waterfall.
         let interest = run.reported_fees + run.distributed_yield;
@@ -9014,9 +9100,18 @@ mod test {
         let low = run_fee_switch_cycle(1_000);
         let high = run_fee_switch_cycle(2_500);
 
+        // Both cycles pay the identical prepayment penalty, so it cancels and
+        // the scale assertion is still about the interest fee alone.
+        assert_eq!(low.prepay_penalty, high.prepay_penalty);
         let interest = low.reported_fees + low.distributed_yield;
-        assert_eq!(low.treasury_balance, (interest * 1_000) / 10_000);
-        assert_eq!(high.treasury_balance, (interest * 2_500) / 10_000);
+        assert_eq!(
+            low.treasury_balance - low.prepay_penalty,
+            (interest * 1_000) / 10_000
+        );
+        assert_eq!(
+            high.treasury_balance - high.prepay_penalty,
+            (interest * 2_500) / 10_000
+        );
         assert!(high.treasury_balance > low.treasury_balance);
     }
 
@@ -9129,22 +9224,32 @@ mod test {
         client.approve_loan(&loan_id);
         client.add_contractor(&borrower);
         client.disburse(&loan_id, &borrower, &principal);
-        sac.mint(&borrower, &principal);
+        sac.mint(&borrower, &(principal * 2));
 
         let owed = client.get_loan_info(&loan_id).outstanding_debt;
         let half = owed / 2;
 
+        // The first payment is partial, so it is not an early close and carries
+        // no prepayment penalty.
         client.repay(&borrower, &loan_id, &half);
         let after_first = token.balance(&treasury);
         assert!(after_first > 0);
+        assert_eq!(client.get_total_prepayment_penalties(), 0i128);
 
+        // The second payment clears the loan with installments still
+        // outstanding, so this one is an early close and adds the penalty.
         client.repay(&borrower, &loan_id, &(owed - half));
 
         // Fees accumulate across payments rather than being overwritten, and
-        // the running total keeps matching what the treasury holds.
+        // the running total keeps matching what the treasury holds once the
+        // independently tracked prepayment penalty is set aside.
         let total = token.balance(&treasury);
         assert!(total > after_first);
-        assert_eq!(client.get_total_protocol_fees(), total);
+        assert!(client.get_total_prepayment_penalties() > 0);
+        assert_eq!(
+            client.get_total_protocol_fees(),
+            total - client.get_total_prepayment_penalties()
+        );
     }
 
     // ── Debt Restructuring Tests ──────────────────────────────────────────
