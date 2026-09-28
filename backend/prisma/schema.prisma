@@ -12,13 +12,36 @@ enum NotificationStatus {
   Failed
 }
 
+// How often a category's non-urgent alerts are delivered. Security-critical
+// alerts never use this — they are always sent immediately in code, and
+// there is deliberately no securityFrequency column to persist otherwise.
+enum NotificationFrequency {
+  IMMEDIATE
+  DAILY_DIGEST
+  WEEKLY_DIGEST
+}
+
 enum LoanStatus {
+  Draft
   Pending
   Approved
   Rejected
   Disbursing
   Repaying
   Completed
+}
+
+/// Authorization state of an attached co-signer/guarantor.
+///
+/// A loan submitted with a guarantor address starts in Pending until the
+/// guarantor's cryptographic signature over the loan commitment is verified.
+/// Only Accepted loans are eligible for admin approval; Rejected or absent
+/// authorization blocks the approval path.
+enum GuarantorStatus {
+  /// Signature provided and cryptographically verified.
+  Accepted
+  /// Signature missing, invalid, or explicitly rejected.
+  Rejected
 }
 
 model Notification {
@@ -32,6 +55,26 @@ model Notification {
   attempts    Int                @default(0)
   lastError   String?
   nextRetryAt DateTime?
+
+  // Index backing the notification scheduler's retry sweep: WHERE status = 'Pending'
+  @@index([status])
+  // Index for retry-at queries: WHERE status = 'Pending' AND nextRetryAt <= now()
+  @@index([status, nextRetryAt])
+}
+
+model InAppNotification {
+  id            String   @id @default(uuid())
+  walletAddress String
+  title         String
+  message       String?
+  variant       String   @default("info")
+  read          Boolean  @default(false)
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([walletAddress, createdAt(sort: Desc)])
+  @@index([walletAddress, read])
 }
 
 model UnpinnedCid {
@@ -44,39 +87,26 @@ model UnpinnedCid {
   createdAt    DateTime @default(now())
 }
 
-/// Registry of every CID pinned by this application.
-/// The orphan-cleanup job uses this table to identify objects that no longer
-/// have an active referencing record. A CID is considered referenced when its
-/// referenceType + referenceId still exists in the relevant store.
-model TrackedCid {
-  id            String   @id @default(uuid())
-  /// The IPFS CID (e.g. "QmXyz..." or a v1 bafy... CID).
-  cid           String   @unique
-  /// Human-readable category: "milestone_evidence", "kyc_document", etc.
-  referenceType String
-  /// ID of the record that references this CID (proposalId, documentId…).
-  referenceId   String
-  /// UTC timestamp when the CID was first pinned. Used for grace-period math.
-  pinnedAt      DateTime @default(now())
-  /// Set when the cleanup job successfully unpins this CID.
-  unpinnedAt    DateTime?
-  /// Set when the cleanup job determines this CID is orphaned (referenceId gone).
-  markedOrphanAt DateTime?
+/// A KYC document record tracking expiry and reminder state.
+model KycDocument {
+  id                String    @id @default(uuid())
+  applicantId       String
+  applicant         Applicant @relation(fields: [applicantId], references: [id])
+  documentId        String    @unique  // storage key in kycStorage
+  originalName      String
+  mimeType          String
+  uploadedAt        DateTime  @default(now())
+  /// When the document expires (set by operator or derived from document type)
+  expiresAt         DateTime?
+  /// Flags to prevent duplicate reminder emails
+  reminderSent30d   Boolean   @default(false)
+  reminderSent7d    Boolean   @default(false)
+  /// Whether this document is currently blocking loan submissions
+  expired           Boolean   @default(false)
 
-  @@index([referenceType, referenceId])
-  @@index([pinnedAt])
-  @@index([unpinnedAt])
-}
-
-/// Durable ownership records used to protect milestone evidence from cleanup.
-/// Multiple proposals may legitimately refer to the same content-addressed CID.
-model MilestoneEvidenceReference {
-  proposalId String
-  cid        String
-  createdAt  DateTime @default(now())
-
-  @@id([proposalId, cid])
-  @@index([cid])
+  @@index([applicantId])
+  @@index([expiresAt])
+  @@index([expired])
 }
 
 enum VerificationStatus {
@@ -146,16 +176,46 @@ model Applicant {
   verificationStatus VerificationStatus @default(PENDING)
   creditScore        Int?
   taxId              String?
+  /// Keyed HMAC of the normalized tax ID, used for duplicate detection. The
+  /// plaintext value is never stored; `taxId` holds the encrypted copy.
+  taxIdHash          String?
   monthlyIncome      String?
-  /// BCP-47 locale tag for this applicant (e.g. "en", "es", "pt", "fr", "zh").
-  /// Used to select the language for transactional emails.
-  /// Defaults to "en" when null — callers should treat null as "en".
-  preferredLocale    String?
+  displayCurrency    String             @default("USD")
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   verificationResults VerificationResult[]
   loanApplications    LoanApplication[]
   borrowerCredentials BorrowerCredential[]
+  kycDocuments        KycDocument[]
+  employmentVerifications EmploymentVerification[]
+  notificationPreference NotificationPreference?
+  deletedAt          DateTime?
+
+  @@index([deletedAt])
+  @@index([taxIdHash])
+}
+
+// Employment/income verification attempts (issue #802), automated via a
+// payroll provider or falling back to manual document review. Only the
+// result and the confirmed income figure are stored — never a payroll
+// credential or pay history. verifiedMonthlyIncome is encrypted at rest
+// (services/employmentVerificationStore.ts), matching Applicant.monthlyIncome.
+model EmploymentVerification {
+  id                    String    @id @default(uuid())
+  applicantId           String
+  applicant             Applicant @relation(fields: [applicantId], references: [id])
+  method                String    // "AUTOMATED_PAYROLL" | "MANUAL_DOCUMENT"
+  status                String    // "VERIFIED" | "NOT_COVERED" | "FAILED"
+  employerName          String?
+  verifiedMonthlyIncome String?
+  providerReference     String?
+  providerName          String?
+  failureReason         String?
+  verifiedAt            DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([applicantId, createdAt])
 }
 
 model VerificationResult {
@@ -168,39 +228,431 @@ model VerificationResult {
   spanMonths     Float
   eligible       Boolean
   analyzedAt     DateTime  @default(now())
+
+  // Index backing getApplicant() which orders verificationResults by analyzedAt desc
+  @@index([applicantId, analyzedAt])
+  // Supports eligibility-filtered queries and analytics scans
+  @@index([eligible])
+}
+
+// ---------------------------------------------------------------------------
+// KYC OCR auto-fill
+// ---------------------------------------------------------------------------
+//
+// When a borrower uploads a KYC document the backend runs OCR extraction
+// on the plaintext buffer (before encryption) and stores any extracted
+// values here.  Each field carries an "unconfirmed" flag that the applicant
+// must explicitly clear before the onboarding submission is accepted.
+//
+// Confirmation endpoint: POST /api/kyc/:documentId/confirm
+//   Body: { confirmName?: true, confirmIdNumber?: true, confirmAddress?: true }
+//
+// The three extracted fields mirror the three onboarding fields that OCR
+// is allowed to pre-fill: full legal name, government ID number, and
+// residential address.
+model KycOcrResult {
+  id               String   @id @default(uuid())
+  /// The KYC document this result was extracted from.
+  documentId       String   @unique
+  /// Wallet address of the applicant who uploaded the document.
+  applicantAddress String
+
+  /// Extracted full legal name, or null when OCR could not find it.
+  extractedName     String?
+  /// Whether the applicant has explicitly confirmed the extracted name.
+  nameConfirmed     Boolean  @default(false)
+
+  /// Extracted government-issued ID number (passport, national ID, etc.).
+  extractedIdNumber String?
+  /// Whether the applicant has explicitly confirmed the extracted ID number.
+  idNumberConfirmed Boolean  @default(false)
+
+  /// Extracted residential address.
+  extractedAddress  String?
+  /// Whether the applicant has explicitly confirmed the extracted address.
+  addressConfirmed  Boolean  @default(false)
+
+  /// True when OCR ran but could not extract any usable fields.
+  ocrFailed  Boolean  @default(false)
+  /// Raw OCR engine error message, if any.
+  ocrError   String?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([applicantAddress])
+}
+
+// Metadata forgery analysis of an uploaded ID document (issue #813). One row
+// per document. `flagged` means it needs manual review — never an automatic
+// rejection, since legitimate scans can also lack rich metadata. `signals`
+// holds every signal the analysis produced (code, severity, description,
+// evidence) so a reviewer knows exactly what to look at. Deliberately never
+// returned to the uploader, so a forger cannot iterate against the checks.
+model KycDocumentForensics {
+  id               String    @id @default(uuid())
+  documentId       String    @unique
+  applicantAddress String
+  format           String
+  flagged          Boolean
+  signals          Json
+  analyzedAt       DateTime  @default(now())
+  /// Set when a reviewer resolves a flagged document.
+  reviewedAt       DateTime?
+  reviewedBy       String?
+  /// "CLEARED" | "CONFIRMED_TAMPERED"
+  reviewOutcome    String?
+  reviewNote       String?
+
+  @@index([flagged, reviewedAt])
+  @@index([applicantAddress])
 }
 
 model LoanApplication {
-  id                 String     @id @default(uuid())
+  id                 String           @id @default(uuid())
   applicantId        String
-  applicant          Applicant  @relation(fields: [applicantId], references: [id])
+  applicant          Applicant        @relation(fields: [applicantId], references: [id])
   escrowContractId   String?
   loanId             String?
-  principal          Float
+  principal          Float // DB CHECK: principal > 0 (enforced via migration LoanApplication_principal_check)
+  interestRateBps    Int      @default(800) // DB CHECK: 200 <= interestRateBps <= 1800 (LoanApplication_interestRateBps_check) — protocol floor/cap 2%/18%
+  // Rate sheet version this application was priced from (issue #746). Null for
+  // applications created before rate sheets were versioned.
+  rateSheetVersionId String?
+  rateSheetVersion   InterestRateSheetVersion? @relation(fields: [rateSheetVersionId], references: [id])
   status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 
-  // New fields for repayment tracking
+  // Repayment tracking
   dueDate            DateTime?
-  missedPayments     Int        @default(0)
-  lateFeeBalance     Float      @default(0)
+  missedPayments     Int              @default(0)
+  lateFeeBalance     Float            @default(0)
   gracePeriodEndsAt  DateTime?
+
+  // SLA and reviewer tracking fields
+  assignedReviewerEmail String?
+  // Assignment queue (issue #621): the review staff member this application was
+  // automatically (round-robin) or manually assigned to.
+  assignedReviewerId    String?   @map("assigned_reviewer_id")
+  assignedReviewer      Reviewer? @relation("AssignedReviewer", fields: [assignedReviewerId], references: [id])
+  assignedAt            DateTime?
+  statusUpdatedAt       DateTime   @default(now())
+  slaAlertSentAt        DateTime?
+  deletedAt            DateTime?
+
+  // Draft inactivity tracking: bumped on any field edit while status = 'Draft'.
+  lastActivityAt        DateTime   @default(now())
+  // Set when the stale-draft cleanup job first flags/notifies this draft.
+  // Cleared on resume, so it also marks whether a notice is outstanding.
+  draftStaleNotifiedAt   DateTime?
+  comments           LoanComment[]
+
+  // Human-readable rejection reason (manual or auto-rejection).
+  reason                 String?
+  autoRejectedAt         DateTime?
+  autoRejectionLogs      LoanAutoRejectionLog[]
+
+  // Set when the application needs a reviewer before it can proceed, e.g.
+  // DUPLICATE_TAX_ID when the tax ID matches another applicant.
+  manualReviewReason     String?
+
+  // Current servicer of record. Null means the originating lender still
+  // services the loan. Changed only through LoanServicingTransfer.
+  servicer               String?
+  servicerContact        String?
+  servicingTransfers     LoanServicingTransfer[]
+  offeringWatches        OfferingWatch[]
+
+  // Index backing getApplicationsByBorrower(): filter by applicant then sort by createdAt
+  @@index([applicantId, createdAt])
+  // Index backing getPendingApplications(): WHERE status = 'Pending' — avoids full table scan
+  @@index([status])
+  // Composite index for queries that filter by both applicant and status
+  @@index([applicantId, status])
+  // Composite index for admin queue sorting: WHERE status = '...' ORDER BY createdAt
+  @@index([status, createdAt])
+  @@index([deletedAt])
+  // Composite index backing the stale draft cleanup scan: WHERE status = 'Draft' AND lastActivityAt < cutoff
+  @@index([status, lastActivityAt])
+  // Index backing reviewer workload queries (applications assigned to a reviewer)
+  @@index([assignedReviewerId])
+  // Index backing "which loans were priced from rate sheet version N" audits
+  @@index([rateSheetVersionId])
+}
+
+/// Append-only history of interest rate sheets (issue #746). A rate change is
+/// always a new row with the next `version`; rows are never updated or deleted
+/// (enforced by a database trigger), so the sheet in effect at any past instant
+/// can be reconstructed exactly.
+model InterestRateSheetVersion {
+  id            String   @id @default(uuid())
+  /// Monotonic version number, 1-based. Unique so concurrent publishes cannot
+  /// both claim the same version.
+  version       Int      @unique
+  /// When this version starts pricing new offers.
+  effectiveAt   DateTime
+  /// The full rate sheet: { baseRateBps, creditScoreTiers? }.
+  rates         Json
+  /// Field-level diff against the previous version: [{ path, before, after }].
+  changedValues Json
+  /// Wallet address of the admin who published it, or "admin-api-key".
+  changedBy     String
+  changeReason  String?
+  createdAt     DateTime @default(now())
+  loanApplications LoanApplication[]
+
+  @@index([effectiveAt])
+}
+
+// Investor watchlist for upcoming offerings (issue #799). A loan is an
+// "upcoming offering" while it is still Pending (in underwriting) and
+// "opens for investment" on approval; `notifiedAt` records that the watching
+// investor has already been told, so the open-transition notification is
+// sent at most once per watch.
+model OfferingWatch {
+  id                String          @id @default(uuid())
+  investorAddress   String
+  loanApplicationId String
+  loanApplication   LoanApplication @relation(fields: [loanApplicationId], references: [id], onDelete: Cascade)
+  createdAt         DateTime        @default(now())
+  notifiedAt        DateTime?
+
+  @@unique([investorAddress, loanApplicationId])
+  @@index([loanApplicationId, notifiedAt])
+  @@index([investorAddress])
+}
+
+enum ServicingTransferStatus {
+  SCHEDULED
+  COMPLETED
+}
+
+/// Append-only history of servicing rights transfers for a loan. Rows are
+/// never overwritten, so every prior servicer stays queryable.
+model LoanServicingTransfer {
+  id                  String                  @id @default(uuid())
+  loanApplicationId   String
+  loanApplication     LoanApplication         @relation(fields: [loanApplicationId], references: [id], onDelete: Cascade)
+  fromServicer        String?
+  fromServicerContact String?
+  toServicer          String
+  toServicerContact   String
+  effectiveDate       DateTime
+  reason              String
+  status              ServicingTransferStatus @default(SCHEDULED)
+  initiatedBy         String
+  notifiedAt          DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime                @default(now())
+
+  @@index([loanApplicationId, createdAt])
+  // Backs the job that applies due transfers: WHERE status = 'SCHEDULED' AND effectiveDate <= now()
+  @@index([status, effectiveDate])
+}
+
+enum AutoRejectionRuleType {
+  MIN_CREDIT_SCORE
+  MAX_DEBT_TO_INCOME
+  REQUIRES_VERIFICATION
+}
+
+model LoanAutoRejectionRule {
+  id        String              @id @default(uuid())
+  name      String
+  ruleType  AutoRejectionRuleType
+  config    Json
+  active    Boolean             @default(true)
+  priority  Int                 @default(0)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  logs      LoanAutoRejectionLog[]
+
+  @@index([active, priority])
+}
+
+model LoanAutoRejectionLog {
+  id            String                @id @default(uuid())
+  applicationId String
+  application   LoanApplication       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  ruleId        String
+  rule          LoanAutoRejectionRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  reason        String
+  createdAt     DateTime              @default(now())
+
+  @@index([applicationId])
+  @@index([ruleId])
+  @@index([createdAt])
+}
+
+model LoanComment {
+  id                String   @id @default(uuid())
+  loanApplicationId String
+  loanApplication   LoanApplication @relation(fields: [loanApplicationId], references: [id], onDelete: Cascade)
+  authorAddress     String
+  content           String
+  parentId          String?
+  parent            LoanComment? @relation("ThreadedComments", fields: [parentId], references: [id], onDelete: Cascade)
+  replies           LoanComment[] @relation("ThreadedComments")
+  mentions          String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([loanApplicationId, createdAt])
+  @@index([parentId])
+  @@index([authorAddress])
 }
 
 model AuditLog {
-  id           String   @id @default(uuid())
+  id           String   @default(uuid())
   action       String
   actorAddress String?
   ipAddress    String?
   metadata     Json?
   createdAt    DateTime @default(now())
 
+  @@id([id, createdAt])
   @@index([action])
   @@index([actorAddress])
   @@index([createdAt])
   // Composite index backing the audit-log query path: filter by event type
   // (action) then keyset-paginate by createdAt without a table scan.
   @@index([action, createdAt])
+}
+
+model Borrower {
+  id              String              @id @default(uuid())
+  stellarAddress  String              @unique
+  escrowBalance   String              @default("0")
+  loanOutstanding String              @default("0")
+  totalDeposited  String              @default("0")
+  totalDisbursed  String              @default("0")
+  totalRepaid     String              @default("0")
+  lastEventLedger Int                 @default(0)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  deletedAt       DateTime?
+
+  deposits        EscrowDeposit[]
+  withdrawals     EscrowWithdrawal[]
+  disbursements   LoanDisbursement[]
+  repayments      LoanRepayment[]
+  suspiciousActivityAlerts SuspiciousActivityAlert[]
+
+  @@index([deletedAt])
+}
+
+model EscrowDeposit {
+  id          String   @id @default(uuid())
+  borrower    Borrower @relation(fields: [borrowerId], references: [id])
+  borrowerId  String
+  contractId  String
+  amount      String
+  ledger      Int
+  eventHash   String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([borrowerId])
+  @@index([ledger])
+}
+
+model EscrowWithdrawal {
+  id          String   @id @default(uuid())
+  borrower    Borrower @relation(fields: [borrowerId], references: [id])
+  borrowerId  String
+  contractId  String
+  amount      String
+  ledger      Int
+  eventHash   String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([borrowerId])
+  @@index([ledger])
+}
+
+/// A reviewable AML alert generated from the rolling escrow transaction window.
+/// Evidence is deliberately stored as structured JSON so an admin can audit
+/// the exact transactions and thresholds that produced the alert.
+model SuspiciousActivityAlert {
+  id               String   @id @default(uuid())
+  borrowerId       String
+  borrower         Borrower @relation(fields: [borrowerId], references: [id])
+  ruleCode         String
+  ruleName         String
+  status           SuspiciousActivityStatus @default(OPEN)
+  windowStart      DateTime
+  windowEnd        DateTime
+  evidence         Json
+  detectedAt       DateTime @default(now())
+  reviewedAt       DateTime?
+  reviewedBy       String?
+  reviewNotes      String?
+
+  @@unique([borrowerId, ruleCode, windowStart])
+  @@index([status, detectedAt])
+  @@index([borrowerId, detectedAt])
+}
+
+enum SuspiciousActivityStatus {
+  OPEN
+  CLEARED
+  CONFIRMED
+}
+
+model LoanDisbursement {
+  id          String   @id @default(uuid())
+  borrower    Borrower @relation(fields: [borrowerId], references: [id])
+  borrowerId  String
+  contractId  String
+  amount      String
+  ledger      Int
+  eventHash   String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([borrowerId])
+  @@index([ledger])
+}
+
+model LoanRepayment {
+  id          String   @id @default(uuid())
+  borrower    Borrower @relation(fields: [borrowerId], references: [id])
+  borrowerId  String
+  contractId  String
+  amount      String
+  ledger      Int
+  eventHash   String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([borrowerId])
+  @@index([ledger])
+}
+
+model EventIndexerState {
+  id                  String   @id @default(uuid())
+  key                 String   @unique
+  lastProcessedLedger Int      @default(0)
+  cursor              String?
+  updatedAt           DateTime @updatedAt
+}
+
+enum DataDeletionStatus {
+  PENDING
+  APPROVED
+  COMPLETED
+  REJECTED
+}
+
+model DataDeletionRequest {
+  id            String             @id @default(uuid())
+  walletAddress String
+  status        DataDeletionStatus @default(PENDING)
+  reason        String?
+  requestedAt   DateTime           @default(now())
+  processedAt   DateTime?
+  anonymizedAt  DateTime?
+  details       Json?
+
+  @@index([walletAddress])
+  @@index([status])
 }
 
 model BorrowerCredential {
@@ -281,6 +733,10 @@ model WebhookSubscription {
   status      WebhookSubscriptionStatus @default(active)
   /// Optional owning wallet address — used to scope management API access.
   ownerAddress String?
+  /// Payload contract selected by the subscriber. New subscriptions use v2.
+  webhookSchemaVersion Int                       @default(2)
+  /// Set when the selected version is approaching removal.
+  deprecationNotifiedAt DateTime?
   createdAt   DateTime                  @default(now())
   updatedAt   DateTime                  @updatedAt
 
@@ -289,6 +745,7 @@ model WebhookSubscription {
   @@index([status])
   @@index([ownerAddress])
   @@index([secretRotatedAt])
+  @@index([webhookSchemaVersion])
 }
 
 /// Immutable delivery attempt record — one row per HTTP attempt.
@@ -314,9 +771,266 @@ model WebhookDelivery {
   attempt        Int                 @default(0)
   /// When the next retry should be attempted (null once terminal).
   nextRetryAt    DateTime?
+  /// When the event was originally dispatched (shared by every attempt of one dispatch).
+  dispatchedAt   DateTime?
+  /// When this attempt finished (response received or request failed).
+  completedAt    DateTime?
+  /// Attempt outcome: "success", "retry" (will be retried) or "dlq" (moved to the DLQ).
+  outcome        String?
   createdAt      DateTime            @default(now())
 
   @@index([subscriptionId])
   @@index([success])
   @@index([nextRetryAt])
+  @@index([completedAt])
+}
+
+model ApiKey {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  name      String
+  scopes    String[]
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+  @@index([revoked])
+}
+
+model NotificationPreference {
+  id                String   @id @default(uuid())
+  applicantId       String   @unique
+  applicant         Applicant @relation(fields: [applicantId], references: [id])
+  email             String?
+  phone             String?
+  emailAlerts       Boolean  @default(true)
+  smsAlerts         Boolean  @default(false)
+  escrowApproaching Boolean  @default(true)
+  escrowReached     Boolean  @default(true)
+  paymentMissed     Boolean  @default(true)
+  loanMilestones    Boolean  @default(true)
+  governanceAlerts  Boolean  @default(true)
+  webhookUrl        String?
+
+  // Per-category delivery cadence (immediate / daily digest / weekly digest).
+  // Deliberately no `securityFrequency` field — security-critical alerts
+  // (e.g. new-device login) are always sent immediately in code and are
+  // never gated by a stored preference. See services/notification.ts.
+  depositsFrequency    NotificationFrequency @default(IMMEDIATE)
+  milestonesFrequency  NotificationFrequency @default(IMMEDIATE)
+  governanceFrequency  NotificationFrequency @default(IMMEDIATE)
+
+  // Business hours throttling fields
+  timezone          String   @default("UTC")
+  businessDays      String   @default("1,2,3,4,5") // Monday-Friday
+  startHour         String   @default("09:00")
+  endHour           String   @default("17:00")
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([applicantId])
+}
+
+model SessionToken {
+  id            String    @id @default(uuid())
+  tokenHash     String    @unique
+  walletAddress String
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  lastUsedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([walletAddress])
+  @@index([expiresAt])
+  @@index([createdAt])
+}
+
+// Tracks admin "view as user" read-only support sessions end-to-end: who
+// impersonated whom, the window it was valid for, and when it actually
+// ended (which may be earlier than expiresAt if explicitly revoked). This is
+// the enforcement source of truth (authMiddleware checks it on every
+// impersonated request); AuditLog additionally gets start/end entries
+// referencing this row's id so the audit trail is queryable alongside every
+// other admin action.
+model ImpersonationSession {
+  id            String    @id @default(uuid())
+  adminAddress  String
+  targetAddress String
+  reason        String?
+  ipAddress     String?
+  startedAt     DateTime  @default(now())
+  expiresAt     DateTime
+  endedAt       DateTime?
+  endedBy       String?
+  createdAt     DateTime  @default(now())
+
+  @@index([adminAddress])
+  @@index([targetAddress])
+  @@index([expiresAt])
+}
+
+model InviteCode {
+  id        String    @id @default(uuid())
+  code      String    @unique
+  email     String?
+  used      Boolean   @default(false)
+  usedBy    String?
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  @@index([code])
+  @@index([used])
+}
+
+model WaitlistEntry {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  walletAddress String?
+  status        String    @default("pending")
+  inviteCode    String?
+  position      Int?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Availability of review staff for the assignment queue (issue #621).
+/// Only `ACTIVE` reviewers take part in the round-robin rotation.
+enum ReviewerStatus {
+  ACTIVE
+  INACTIVE
+  ON_LEAVE
+}
+
+/// Review staff that new loan applications are distributed across by the
+/// round-robin assignment queue (issue #621).
+model Reviewer {
+  id             String         @id @default(uuid())
+  email          String         @unique
+  name           String?
+  status         ReviewerStatus @default(ACTIVE)
+  /// Stamped on every assignment so the queue can pick the least-recently
+  /// assigned active reviewer and keep the distribution even.
+  lastAssignedAt DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  assignedApplications LoanApplication[] @relation("AssignedReviewer")
+
+  @@index([status, lastAssignedAt])
+}
+
+/// One captured database operation whose duration exceeded the configurable
+/// slow-query threshold. Rows are rolled up by `fingerprint` into the weekly
+/// digest (issue #583).
+model SlowQueryLog {
+  id          String   @id @default(uuid())
+  /// Normalized query pattern (literals stripped) used for grouping.
+  query       String
+  /// Stable hash of the normalized pattern; groups equivalent statements.
+  fingerprint String
+  /// Prisma model the operation ran against, when applicable.
+  model       String?
+  /// Prisma operation name (e.g. findMany, create), when applicable.
+  operation   String?
+  /// Wall-clock duration of the operation in milliseconds.
+  durationMs  Int
+  occurredAt  DateTime @default(now())
+
+  @@index([occurredAt])
+  @@index([fingerprint])
+  @@index([fingerprint, occurredAt])
+}
+
+enum EmailSuppressionReason {
+  HARD_BOUNCE
+  SOFT_BOUNCE
+  SPAM_COMPLAINT
+}
+
+/// Outbound email suppression list, fed by the email provider's bounce and
+/// complaint webhook. Every send checks this table first. Hard bounces and spam
+/// complaints suppress permanently; soft bounces suppress until
+/// `suppressedUntil` (exponential backoff) and become permanent after repeated
+/// failures.
+model EmailSuppression {
+  id               String                 @id @default(uuid())
+  /// Lower-cased, trimmed recipient address.
+  email            String                 @unique
+  reason           EmailSuppressionReason
+  /// True for hard bounces and complaints; soft bounces rely on `suppressedUntil`.
+  permanent        Boolean                @default(false)
+  /// End of the current soft-bounce backoff window.
+  suppressedUntil  DateTime?
+  softBounceCount  Int                    @default(0)
+  /// Internal flag raised on spam complaints for staff follow-up.
+  flaggedForReview Boolean                @default(false)
+  /// Provider-supplied reason text from the most recent event.
+  lastDetail       String?
+  lastEventAt      DateTime               @default(now())
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  @@index([permanent])
+}
+
+/// Hardship late-fee waiver request workflow (issue #749).
+///
+/// A borrower facing genuine hardship (job loss, medical emergency, etc.)
+/// submits a structured request against a loan with an outstanding
+/// `lateFeeBalance`. Requests sit in PENDING until an admin applies a
+/// documented decision: APPROVED (full waiver), PARTIAL (partial waiver) or
+/// DENIED. Every decision records the waived amount, the documented reason
+/// and the approving admin so the full request-to-decision trail is auditable
+/// against the loan.
+enum FeeWaiverStatus {
+  PENDING
+  APPROVED
+  PARTIAL
+  DENIED
+}
+
+/// Documented hardship categories accepted on waiver requests.
+enum HardshipReason {
+  JOB_LOSS
+  MEDICAL_EMERGENCY
+  NATURAL_DISASTER
+  REDUCED_INCOME
+  BEREAVEMENT
+  OTHER
+}
+
+model LateFeeWaiverRequest {
+  id                String         @id @default(uuid())
+  loanApplicationId String
+  /// Borrower wallet address that filed the request (denormalized for queue filtering).
+  borrowerAddress   String
+  hardshipReason    HardshipReason
+  /// Free-text supporting context supplied by the borrower.
+  context           String
+  /// Late-fee amount outstanding when the request was filed (audit snapshot).
+  requestedAmount   Float
+  /// Amount actually waived by the admin decision (0 for DENIED/PENDING).
+  waivedAmount      Float          @default(0)
+  status            FeeWaiverStatus @default(PENDING)
+  /// Admin wallet / API-key identity that decided the request.
+  decidedBy         String?
+  /// Documented approval-criteria reference + rationale recorded by the admin.
+  decisionReason    String?
+  /// Approval-criteria version evaluated (e.g. "waiver-policy-v1").
+  policyVersion     String         @default("waiver-policy-v1")
+  decidedAt         DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([loanApplicationId, status])
+  @@index([status, createdAt])
+  @@index([borrowerAddress])
 }

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { loadConfig } from "../config.js";
 import {
@@ -147,6 +150,7 @@ export function createRpcFetcher(opts: {
   rpcUrl: string;
   escrowContractId?: string;
   lendingPoolContractId?: string;
+  startLedger?: number;
 }): EventFetcher {
   const server = new rpc.Server(opts.rpcUrl, {
     allowHttp: opts.rpcUrl.startsWith("http://"),
@@ -165,6 +169,8 @@ export function createRpcFetcher(opts: {
     const request: rpc.Server.GetEventsRequest = { filters };
     if (cursor) {
       request.cursor = cursor;
+    } else if (opts.startLedger != null) {
+      request.startLedger = Math.max(opts.startLedger, 1);
     } else {
       const latest = await server.getLatestLedger();
       request.startLedger = Math.max(latest.sequence - 100, 1);

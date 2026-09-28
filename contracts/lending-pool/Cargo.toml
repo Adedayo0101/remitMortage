@@ -9,10 +9,14 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
-verification-registry = { path = "../verification-registry" }
-multisig-validator = { path = "../multisig-validator" }
-insurance-pool = { path = "../insurance-pool" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 proptest = "1"
+# Only needed to deploy real instances in tests (env.register(...)); production
+# code talks to these contracts via raw env.invoke_contract instead, to avoid
+# linking their #[contractimpl] exports into this crate's own cdylib. See the
+# comment above `premium_for` in src/lib.rs.
+verification-registry = { path = "../verification-registry" }
+multisig-validator = { path = "../multisig-validator" }
+insurance-pool = { path = "../insurance-pool" }

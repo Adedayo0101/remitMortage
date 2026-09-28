@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 function makeId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -8,6 +11,7 @@ export interface MilestoneProposal {
   id: string;
   milestoneId: string;
   evidenceCid: string;
+  arweaveTxId?: string;
   status: MilestoneProposalStatus;
   reason?: string;
   createdAt: string;
@@ -16,13 +20,14 @@ export interface MilestoneProposal {
 
 const store: Map<string, MilestoneProposal> = new Map();
 
-export function createProposal(milestoneId: string, evidenceCid: string): MilestoneProposal {
+export function createProposal(milestoneId: string, evidenceCid: string, arweaveTxId?: string): MilestoneProposal {
   const id = makeId();
   const now = new Date().toISOString();
   const proposal: MilestoneProposal = {
     id,
     milestoneId,
     evidenceCid,
+    arweaveTxId,
     status: "Open",
     createdAt: now,
     updatedAt: now,

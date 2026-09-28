@@ -1,0 +1,47 @@
+name: Mutation Testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main, development ]
+  schedule:
+    - cron: '0 0 * * 0' # Run weekly
+
+concurrency:
+  group: mutation-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation-tests:
+    name: Run cargo-mutants (Lending Pool)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts -> target
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+
+      - name: Run Mutation Tests (lending-pool)
+        run: cargo mutants -p lending-pool
+        working-directory: contracts
+
+      - name: Upload Mutation Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: contracts/mutants.out
+          retention-days: 14

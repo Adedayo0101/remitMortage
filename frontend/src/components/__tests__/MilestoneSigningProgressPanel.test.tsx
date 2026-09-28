@@ -1,7 +1,23 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import React from "react";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import MilestoneSigningProgressPanel from "../MilestoneSigningProgressPanel";
 import type { MilestoneSigningStatus } from "@/lib/milestoneSigning";
+
+jest.mock("@/context/WalletContext", () => ({
+  useWallet: () => ({
+    publicKey: "GTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTEST",
+    isConnected: true,
+  }),
+}));
+
+jest.mock("@/context/ToastContext", () => ({
+  useToast: () => ({
+    toast: jest.fn(),
+  }),
+}));
 
 function makeStatus(overrides: Partial<MilestoneSigningStatus> = {}): MilestoneSigningStatus {
   return {
@@ -56,7 +72,7 @@ describe("MilestoneSigningProgressPanel", () => {
 
     render(<MilestoneSigningProgressPanel proposalId="prop-1" pollIntervalMs={50000} />);
 
-    expect(screen.getByTestId("signing-progress-loading")).toBeInTheDocument();
+    expect(screen.getByTestId("signature-queue-loading")).toBeInTheDocument();
   });
 
   it("renders signer rows color-coded by status once loaded", async () => {
@@ -67,21 +83,18 @@ describe("MilestoneSigningProgressPanel", () => {
 
     render(<MilestoneSigningProgressPanel proposalId="prop-1" pollIntervalMs={50000} />);
 
-    await waitFor(() => expect(screen.getByTestId("signing-progress-panel")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("signature-queue-panel")).toBeInTheDocument());
 
-    const rows = screen.getAllByTestId("signer-row");
+    const rows = screen.getAllByTestId("queue-signer-row");
     expect(rows).toHaveLength(3);
     expect(rows.filter((r) => r.dataset.status === "approved")).toHaveLength(1);
     expect(rows.filter((r) => r.dataset.status === "pending")).toHaveLength(2);
 
-    // Pending signers get a dynamic loading indicator.
-    expect(screen.getAllByTestId("pending-signer-pulse")).toHaveLength(2);
-
-    // Not yet at quorum — no disbursement banner.
-    expect(screen.queryByTestId("disbursement-unlocked-banner")).not.toBeInTheDocument();
+    // Not yet at quorum — no quorum-reached banner.
+    expect(screen.queryByTestId("quorum-reached-banner")).not.toBeInTheDocument();
   });
 
-  it("shows the disbursement-unlocked banner and fires onFullyApproved once quorum is met", async () => {
+  it("shows the quorum-reached banner and fires onFullyApproved once quorum is met", async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => makeStatus({ status: "Passed", currentWeight: 3 }),
@@ -97,7 +110,7 @@ describe("MilestoneSigningProgressPanel", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId("disbursement-unlocked-banner")).toBeInTheDocument()
+      expect(screen.getByTestId("quorum-reached-banner")).toBeInTheDocument()
     );
     expect(onFullyApproved).toHaveBeenCalledTimes(1);
   });
@@ -118,8 +131,8 @@ describe("MilestoneSigningProgressPanel", () => {
 
     render(<MilestoneSigningProgressPanel proposalId="prop-1" pollIntervalMs={1000} />);
 
-    await waitFor(() => expect(screen.getByTestId("signing-progress-panel")).toBeInTheDocument());
-    expect(screen.queryByTestId("disbursement-unlocked-banner")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("signature-queue-panel")).toBeInTheDocument());
+    expect(screen.queryByTestId("quorum-reached-banner")).not.toBeInTheDocument();
 
     await act(async () => {
       jest.advanceTimersByTime(1000);
@@ -127,7 +140,7 @@ describe("MilestoneSigningProgressPanel", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId("disbursement-unlocked-banner")).toBeInTheDocument()
+      expect(screen.getByTestId("quorum-reached-banner")).toBeInTheDocument()
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

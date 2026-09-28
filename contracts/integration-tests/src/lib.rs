@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 //! Cross-contract integration tests for the RemitMortgage protocol.
 //!
 //! This crate is intentionally empty at the library level. It exists solely to
@@ -7,4 +10,3 @@
 
 #[cfg(test)]
 mod test_tranche_waterfall;
-

@@ -1,7 +1,11 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import nodemailer from "nodemailer";
 import logger from "../utils/logger.js";
 import { loadConfig } from "../config.js";
-import { getEmailTranslator } from "../i18n/emailI18n.js";
+import { getCurrentTenant, type TenantBranding } from "./tenant.js";
+import { isEmailSuppressed } from "./emailSuppression.js";
 
 const config = loadConfig();
 
@@ -21,12 +25,34 @@ if (config.smtpUser && config.smtpPass) {
 // Export transporter for testing/mocking
 export const transporter = nodemailer.createTransport(transporterConfig);
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /**
- * Returns a branded HTML email wrapper.
- * @param locale - Optional BCP-47 locale for footer strings.
+ * Returns an HTML email wrapper branded for the current request's tenant
+ * (or `tenant`, when given).
  */
-export function getBrandedHtml(title: string, bodyContentHtml: string, locale?: string): string {
-  const t = getEmailTranslator(locale);
+export function getBrandedHtml(
+  title: string,
+  bodyContentHtml: string,
+  tenant: TenantBranding = getCurrentTenant()
+): string {
+  const name = escapeHtml(tenant.name);
+  const legalEntity = escapeHtml(tenant.legalEntity);
+  const logo = tenant.logoUrl
+    ? `<img src="${escapeHtml(tenant.logoUrl)}" alt="${name}" style="max-height: 48px; margin-bottom: 12px;">
+            `
+    : "";
+  const support = tenant.supportEmail
+    ? `
+            <p>Need help? Contact <a href="mailto:${escapeHtml(tenant.supportEmail)}">${escapeHtml(tenant.supportEmail)}</a>.</p>`
+    : "";
   return `
     <!DOCTYPE html>
     <html>
@@ -51,7 +77,7 @@ export function getBrandedHtml(title: string, bodyContentHtml: string, locale?: 
             border: 1px solid #e2e8f0;
           }
           .header {
-            background-color: #0f172a;
+            background-color: ${tenant.colors.header};
             color: #ffffff;
             padding: 32px 24px;
             text-align: center;
@@ -68,7 +94,7 @@ export function getBrandedHtml(title: string, bodyContentHtml: string, locale?: 
           }
           .cta-button {
             display: inline-block;
-            background-color: #3b82f6;
+            background-color: ${tenant.colors.primary};
             color: #ffffff !important;
             text-decoration: none;
             padding: 12px 24px;
@@ -107,14 +133,14 @@ export function getBrandedHtml(title: string, bodyContentHtml: string, locale?: 
       <body>
         <div class="container">
           <div class="header">
-            <h1>${t("brand_name")}</h1>
+            ${logo}<h1>${legalEntity} | ${name}</h1>
           </div>
           <div class="content">
             ${bodyContentHtml}
           </div>
           <div class="footer">
-            <p>${t("automated_footer")}</p>
-            <p>&copy; ${new Date().getFullYear()} ${t("copyright_footer")}</p>
+            <p>This is an automated notification from ${name} protocol.</p>
+            <p>&copy; ${new Date().getFullYear()} ${legalEntity}. All rights reserved.</p>${support}
           </div>
         </div>
       </body>
@@ -126,9 +152,13 @@ export function getBrandedHtml(title: string, bodyContentHtml: string, locale?: 
  * Sends a generic HTML email.
  */
 export async function sendEmail(to: string, subject: string, htmlContent: string): Promise<boolean> {
+  if (await isEmailSuppressed(to)) {
+    logger.info(`[EmailService] Skipping send to suppressed address ${to}`);
+    return false;
+  }
   try {
     await transporter.sendMail({
-      from: config.smtpFrom,
+      from: getCurrentTenant().senderEmail,
       to,
       subject,
       html: htmlContent,
@@ -144,14 +174,8 @@ export async function sendEmail(to: string, subject: string, htmlContent: string
  * Sends a branded Deposit Receipt HTML email.
  * @param locale - BCP-47 locale tag from the recipient's stored preference.
  */
-export async function sendDepositReceipt(
-  to: string,
-  amount: string,
-  transactionId: string,
-  locale?: string
-): Promise<boolean> {
-  const t = getEmailTranslator(locale);
-  const subject = t("deposit_subject");
+export async function sendDepositReceipt(to: string, amount: string, transactionId: string): Promise<boolean> {
+  const subject = `Deposit Receipt - ${getCurrentTenant().name}`;
   const body = `
     <h2>${t("deposit_heading")}</h2>
     <p>${t("deposit_body", { amount })}</p>
@@ -178,14 +202,8 @@ export async function sendDepositReceipt(
  * Sends a branded Repayment Reminder HTML email.
  * @param locale - BCP-47 locale tag from the recipient's stored preference.
  */
-export async function sendRepaymentReminder(
-  to: string,
-  amount: string,
-  dueDate: string,
-  locale?: string
-): Promise<boolean> {
-  const t = getEmailTranslator(locale);
-  const subject = t("repayment_subject");
+export async function sendRepaymentReminder(to: string, amount: string, dueDate: string): Promise<boolean> {
+  const subject = `Repayment Reminder - ${getCurrentTenant().name}`;
   const body = `
     <h2>${t("repayment_heading")}</h2>
     <p>${t("repayment_body")}</p>
@@ -238,3 +256,42 @@ export async function sendLoanStatusUpdate(
   `;
   return sendEmail(to, subject, getBrandedHtml(subject, body, locale));
 }
+
+/**
+ * Sends a branded Lockout Security Alert HTML email.
+ */
+export async function sendLockoutNotificationEmail(
+  to: string,
+  lockoutMinutes: number,
+  ipAddress?: string
+): Promise<boolean> {
+  const brand = getCurrentTenant().name;
+  const subject = `Security Alert: Account Locked - ${brand}`;
+  const body = `
+    <h2 style="color: #ef4444;">Security Alert: Account Temporarily Locked</h2>
+    <p>Multiple consecutive failed login attempts were detected on your ${brand} account.</p>
+    <p>To protect your financial records and assets from unauthorized access, your account has been temporarily locked for <strong>${lockoutMinutes} minute(s)</strong>.</p>
+    <table class="details-table">
+      <tr>
+        <td class="details-label">Lockout Duration</td>
+        <td class="details-value"><strong>${lockoutMinutes} minute(s)</strong></td>
+      </tr>
+      ${
+        ipAddress
+          ? `<tr>
+        <td class="details-label">Originating IP Address</td>
+        <td class="details-value"><code>${ipAddress}</code></td>
+      </tr>`
+          : ""
+      }
+      <tr>
+        <td class="details-label">Timestamp</td>
+        <td class="details-value">${new Date().toLocaleString()}</td>
+      </tr>
+    </table>
+    <p style="margin-top: 20px;">If this was not you, someone may be attempting to guess your password. We strongly recommend resetting your password immediately once the lockout period expires.</p>
+    <a href="#" class="cta-button" style="background-color: #ef4444;">Reset Password</a>
+  `;
+  return sendEmail(to, subject, getBrandedHtml(subject, body));
+}
+

@@ -1,4 +1,15 @@
-use soroban_sdk::{contracttype, Address, BytesN, Symbol};
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
+use soroban_sdk::{contracttype, Address, BytesN, Symbol, Vec};
+
+/// Admin-controlled signer set used for death/incapacity attestations.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeneficiaryAttestorConfig {
+    pub signers: Vec<Address>,
+    pub threshold: u32,
+}
 
 /// Configuration set during contract initialization.
 #[contracttype]
@@ -44,6 +55,14 @@ pub struct EscrowConfig {
     pub persistent_lifetime_threshold: u32,
     /// Optional lending protocol vault address for yield routing.
     pub yield_vault: Option<Address>,
+    /// Percentage of a first-cycle deposit matched from the dedicated reserve.
+    pub match_bps: u32,
+    /// Maximum matched amount per first-cycle goal, in token units.
+    pub match_cap: i128,
+    /// When true, only whitelisted addresses may deposit. Toggleable by admin
+    /// for regulated or pilot deployments. `false` — the deployment default —
+    /// preserves existing permissionless behaviour.
+    pub permissioned_mode: bool,
 }
 
 /// Tracks an individual borrower's escrow balance and status per goal.
@@ -62,6 +81,27 @@ pub struct BorrowerRecord {
     pub withdrawn: bool,
     /// Whether the collateral was seized by the lending pool due to default.
     pub seized: bool,
+    /// Yield shares allocated from yield vault routing.
+    pub yield_shares: i128,
+    /// Total reserve amount matched during the current savings cycle.
+    pub matched_amount: i128,
+    /// Configurable opt-in flag to automatically roll over matured balance into a new savings cycle.
+    pub auto_rollover: bool,
+}
+
+/// Borrower-authorized recurring deposit schedule for one escrow goal.
+///
+/// Anyone (e.g. a keeper bot) may execute the draw once `next_execution_ledger`
+/// is reached; funds are pulled from the borrower's pre-approved allowance.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutoDepositSchedule {
+    /// Amount pulled per draw (USDC stroops).
+    pub amount: i128,
+    /// Ledgers between draws.
+    pub interval_ledgers: u32,
+    /// Earliest ledger at which the next draw may execute.
+    pub next_execution_ledger: u32,
 }
 
 /// Pending upgrade proposal data.
@@ -93,6 +133,10 @@ pub enum DataKey {
     Borrower(Address, Symbol),
     /// Total pooled balance across all borrowers.
     TotalPooled,
+    /// Remaining token-denominated balance available for deposit matching.
+    MatchingReserve,
+    /// Total yield shares issued.
+    TotalYieldShares,
     /// Current contract version (incremented on each upgrade).
     Version,
     /// Pending upgrade proposal (present only when a timelock delay is active).
@@ -108,4 +152,24 @@ pub enum DataKey {
     /// Optional LendingPool contract address that early-exit penalty fees are
     /// routed to as investor yield. Unset means penalties stay in the contract.
     LendingPool,
+    /// Beneficiary designated by the borrower for a given goal.
+    Beneficiary(Address, Symbol),
+    /// Last ledger at which the goal owner performed an authenticated action.
+    LastOwnerActivity(Address, Symbol),
+    /// Marks that a beneficiary has already claimed a given goal.
+    BeneficiaryClaimed(Address, Symbol),
+    /// Ledgers of owner inactivity after which a beneficiary may claim.
+    BeneficiaryInactivityPeriod,
+    /// Admin-controlled signer set used for death/incapacity attestations.
+    BeneficiaryAttestors,
+    /// Yield shares allocated to a borrower for a given goal.
+    YieldShares(Address, Symbol),
+    /// Reentrancy guard flag.
+    ReentrancyGuard,
+    /// Whitelist flag for a permissioned-mode address. Present and `true` means
+    /// the address is allowed to interact with the contract when permissioned
+    /// mode is enabled.
+    Whitelist(Address),
+    /// Recurring auto-deposit schedule for a borrower's goal.
+    AutoDeposit(Address, Symbol),
 }
