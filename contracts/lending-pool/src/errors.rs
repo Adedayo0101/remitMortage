@@ -103,24 +103,16 @@ pub enum PoolError {
     BorrowerLoanCapExceeded = 46,
     /// Refinancing request was submitted before the cooldown window elapsed.
     RefinanceCooldownActive = 47,
+    /// Application fee exceeds the ceiling permitted on a single application.
+    ApplicationFeeTooHigh = 48,
     /// Withdrawal amount exceeds the pool's configured per-transaction limit.
     WithdrawalExceedsMaxSingleLimit = 50,
-    /// Deposit attempted before the configured per-investor cooldown has elapsed.
-    DepositCooldownActive = 51,
-    /// Refinance execution attempted after the rate-lock window has expired.
-    /// The borrower must call `request_refinance` again to obtain a fresh quote.
-    RefinanceRateLockExpired = 52,
-    /// No pending rate-lock exists for this loan; `request_refinance` must be
-    /// called before `execute_refinance`.
-    RefinanceRateLockNotFound = 53,
-    /// Emergency liquidity injection requires an InsurancePool to be configured.
-    InsurancePoolNotSet = 48,
-    /// Emergency liquidity injection requires a GovernanceContract to be configured.
-    GovernanceContractNotSet = 54,
-    /// The referenced governance proposal has not reached `Passed` status.
-    GovernanceProposalNotPassed = 55,
-    /// Injection amount exceeds the configured percentage cap of insurance reserves.
-    EmergencyInjectionCapExceeded = 56,
+    /// No payoff quote exists for this loan.
+    PayoffQuoteNotFound = 51,
+    /// The payoff quote has expired; request a fresh quote.
+    PayoffQuoteExpired = 52,
+    /// Payoff quotes are disabled (window is zero) or the window is invalid.
+    InvalidQuoteWindow = 53,
 }
 
 #[contracterror]
