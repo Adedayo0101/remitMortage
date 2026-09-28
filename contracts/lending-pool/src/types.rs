@@ -103,6 +103,31 @@ pub struct PoolConfig {
     /// behaviour is unchanged until an admin opts in via
     /// `set_max_single_withdrawal`.
     pub max_single_withdrawal: i128,
+    /// Minimum number of ledgers that must elapse between an investor's
+    /// consecutive deposits.  Prevents rapid-fire deposit spam that could
+    /// grief pool accounting or exploit a buggy integration retry loop.
+    ///
+    /// `0` — the deployment default — disables the cooldown entirely, so
+    /// existing behaviour is unchanged until an admin opts in via
+    /// `set_deposit_cooldown_ledgers`.
+    pub deposit_cooldown_ledgers: u32,
+    /// Number of ledgers after a `request_refinance` call during which the
+    /// quoted rate is guaranteed.  `execute_refinance` is rejected once this
+    /// window has elapsed; the borrower must re-request to obtain a fresh
+    /// quote.
+    ///
+    /// `0` — the deployment default — means no expiry is enforced: the lock
+    /// holds indefinitely until executed or superseded.  Set a non-zero value
+    /// via `set_rate_lock_window_ledgers` to opt in.
+    pub rate_lock_window_ledgers: u32,
+    /// Maximum share of the insurance pool's current reserves that a single
+    /// `inject_emergency_liquidity` call may draw, expressed in basis points
+    /// (e.g. 2000 = 20 %).
+    ///
+    /// `0` — the deployment default — disables the cap entirely (no per-call
+    /// ceiling beyond the pool's actual reserve balance).  Set a non-zero
+    /// value via `set_emergency_injection_cap_bps` to opt in.
+    pub emergency_injection_cap_bps: u32,
     /// When true, only whitelisted addresses may call deposit, request_loan,
     /// and withdraw. Toggleable by admin for regulated or pilot deployments.
     /// `false` — the deployment default — preserves existing permissionless
@@ -272,6 +297,27 @@ pub struct HalvingInfo {
 pub struct RestructureProposal {
     pub new_schedule: RepaymentSchedule,
     pub proposed_at_ledger: u32,
+}
+
+/// Rate-lock snapshot recorded when a refinance is requested.
+///
+/// The locked rate is guaranteed to apply on `execute_refinance` as long as
+/// the call arrives before `lock_expiry_ledger`.  After that ledger the
+/// borrower must call `request_refinance` again to obtain a fresh quote.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefinanceRateLock {
+    /// The interest rate (bps) quoted at request time.  This is the rate that
+    /// will be written to the loan on a successful `execute_refinance`.
+    pub locked_rate_bps: u32,
+    /// Proposed new term length in months, also locked at request time.
+    pub locked_duration_months: u32,
+    /// Ledger sequence at or before which `execute_refinance` must be called.
+    /// A call arriving at a ledger strictly greater than this value is
+    /// rejected with `RefinanceRateLockExpired`.
+    pub lock_expiry_ledger: u32,
+    /// Ledger at which the request was made, used for event attribution.
+    pub requested_at_ledger: u32,
 }
 
 /// An individual item in a batch disbursement request.
