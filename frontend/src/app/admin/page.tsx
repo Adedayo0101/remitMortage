@@ -14,6 +14,7 @@ const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 import ActiveLoansMapView from "../../components/ActiveLoansMapView";
 import AuditLogViewer from "../../components/AuditLogViewer";
 import LoanCommentsPanel from "../../components/LoanCommentsPanel";
+import { LoanKanbanBoard, KanbanLoan } from "../../components/LoanKanbanBoard";
 
 // The admin wallet authorized to approve loans and milestones. Configured via
 // NEXT_PUBLIC_ADMIN_ADDRESS at build time.
@@ -21,12 +22,7 @@ const ADMIN_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-interface PendingLoan {
-  id: string;
-  borrower: string;
-  principal: number;
-  verificationScore: number;
-}
+interface PendingLoan extends KanbanLoan {}
 
 interface MilestoneReview {
   id: string;
@@ -150,12 +146,23 @@ function AdminDashboard() {
       const pendingResponse = await fetch("/api/loan/pending");
       if (pendingResponse.ok) {
         const pending = await pendingResponse.json();
-        setLoans((Array.isArray(pending) ? pending : []).map((loan: any) => ({
-          id: loan.id,
-          borrower: loan.borrowerAddress,
-          principal: Number(loan.amount),
-          verificationScore: Number(loan.verificationScore ?? 0),
-        })));
+        setLoans((Array.isArray(pending) ? pending : []).map((loan: any) => {
+          let mappedStatus = "submitted";
+          if (loan.status === "Approved") mappedStatus = "approved";
+          else if (loan.status === "Disbursing") mappedStatus = "disbursing";
+          else if (loan.status === "MANUAL_REVIEW") mappedStatus = "underwriting";
+          
+          const daysInStatus = loan.updatedAt ? Math.floor((Date.now() - new Date(loan.updatedAt).getTime()) / 86400000) : 0;
+          
+          return {
+            id: loan.id,
+            borrower: loan.borrowerAddress,
+            principal: Number(loan.amount),
+            verificationScore: Number(loan.verificationScore ?? 0),
+            status: mappedStatus,
+            daysInStatus,
+          };
+        }));
       } else {
         setLoans([]);
       }
@@ -390,6 +397,7 @@ function PendingLoansTab({
 }) {
   const { publicKey } = useWallet();
   const [expandedLoanId, setExpandedLoanId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"list" | "kanban">("kanban");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [summaryItems, setSummaryItems] = useState<BulkResultItem[] | null>(null);
@@ -528,15 +536,31 @@ function PendingLoansTab({
   return (
     <div className="space-y-3 relative pb-20">
       <div className="flex items-center justify-between p-3 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]">
-        <label className="flex items-center gap-3 cursor-pointer text-sm font-medium">
-          <input
-            type="checkbox"
-            checked={allSelected}
-            onChange={toggleSelectAll}
-            className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500"
-          />
-          <span>Select All ({loans.length} loans)</span>
-        </label>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-3 cursor-pointer text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleSelectAll}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500"
+            />
+            <span>Select All ({loans.length} loans)</span>
+          </label>
+          <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+            <button
+              onClick={() => setViewMode("kanban")}
+              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${viewMode === "kanban" ? "bg-cyan-500 text-slate-900" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              Kanban
+            </button>
+            <button
+              onClick={() => setViewMode("list")}
+              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${viewMode === "list" ? "bg-cyan-500 text-slate-900" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              List
+            </button>
+          </div>
+        </div>
         {selectedIds.size > 0 && (
           <span className="text-xs text-[var(--accent-primary)] font-semibold">
             {selectedIds.size} selected
@@ -544,8 +568,28 @@ function PendingLoansTab({
         )}
       </div>
 
-      {loans.map((loan) => {
-        const isSelected = selectedIds.has(loan.id);
+      {viewMode === "kanban" ? (
+        <LoanKanbanBoard 
+          loans={loans} 
+          onStatusChange={async (loanId, newStatus) => {
+            const loan = loans.find(l => l.id === loanId);
+            if (!loan) return;
+            // Respect existing status-change API rules by calling the bulk-review or approve/reject handles
+            if (newStatus === "approved") {
+              onApprove(loan);
+            } else if (newStatus === "rejected") {
+              onReject(loan);
+            } else {
+              // Other status changes like "underwriting" would ideally call an API
+              // Currently we'll just trigger a refresh
+              onRefresh();
+            }
+          }} 
+        />
+      ) : (
+        <>
+          {loans.map((loan) => {
+            const isSelected = selectedIds.has(loan.id);
         return (
           <div
             key={loan.id}
