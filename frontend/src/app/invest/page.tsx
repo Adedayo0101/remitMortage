@@ -299,6 +299,17 @@ function InvestPageInner() {
     poolRates?.juniorApyBps ??
     (metrics ? Math.max(0, Math.round(metrics.estimatedApyBps * 2 - seniorApyBps)) : 0);
 
+  const userHoldings: TrancheHolding[] =
+    position && position.tranche && parseFloat(position.deposited) > 0
+      ? [{ tranche: position.tranche, amount: parseFloat(position.deposited) }]
+      : [];
+
+  const concentrationAnalysis = computeConcentrationMetrics(
+    userHoldings,
+    0.7,
+    { seniorApyBps, juniorApyBps }
+  );
+
   return (
     <div className="rm-app-page rm-invest-page min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
@@ -405,6 +416,17 @@ function InvestPageInner() {
             </>
           )}
         </section>
+
+        {/* Auto-Diversification Rebalancing Suggestion */}
+        <InvestorRebalancingSuggestions
+          analysis={concentrationAnalysis}
+          onSelectTranche={(t, amt) => {
+            setSelectedTranche(t);
+            if (amt) {
+              setDepositAmount(String(amt));
+            }
+          }}
+        />
 
         <div className="grid md:grid-cols-2 gap-6">
           {/* Deposit Form */}
