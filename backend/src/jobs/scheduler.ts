@@ -17,6 +17,7 @@ import { runSuspiciousActivityScan } from "../services/suspiciousActivity.js";
 import { runRateLimitAuditJob } from "./rateLimitAudit.js";
 import { runDeadlockDetectionJob } from "./deadlockDetection.js";
 import { runUnusedIndexAuditJob } from "./unusedIndexAudit.js";
+import { runStaleFeatureFlagAuditJob } from "./staleFeatureFlagAudit.js";
 import { applyDueServicingTransfers } from "../services/loanServicing.js";
 import { prisma } from "../services/db.js";
 import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
@@ -34,6 +35,7 @@ let suspiciousActivityTask: ReturnType<typeof cron.schedule> | null = null;
 let rateLimitAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let deadlockDetectionTask: ReturnType<typeof cron.schedule> | null = null;
 let unusedIndexAuditTask: ReturnType<typeof cron.schedule> | null = null;
+let staleFlagAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let servicingTransferTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
@@ -135,6 +137,18 @@ export function startScheduler() {
     }
   }, { timezone: "UTC" });
 
+  // Weekly (Mon 11:00 UTC) by default: stale feature-flag cleanup candidates.
+  // Report-only — never deletes flags. See docs/STALE_FEATURE_FLAG_CLEANUP.md.
+  const staleFlagSchedule = process.env.STALE_FLAG_AUDIT_CRON_SCHEDULE || "0 11 * * 1";
+  staleFlagAuditTask = cron.schedule(staleFlagSchedule, async () => {
+    try {
+      console.log("[Scheduler] Triggering stale feature flag audit job...");
+      await runStaleFeatureFlagAuditJob();
+    } catch (error) {
+      logger.error("[Scheduler] Stale feature flag audit job failed", { error });
+    }
+  }, { timezone: "UTC" });
+
   // Every 15 minutes: apply loan servicing transfers whose effective date has passed
   const servicingSchedule = process.env.LOAN_SERVICING_TRANSFER_CRON_SCHEDULE || "*/15 * * * *";
   servicingTransferTask = cron.schedule(servicingSchedule, async () => {
@@ -149,7 +163,7 @@ export function startScheduler() {
   startAnalyticsRefreshScheduler();
 
   console.log(
-    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, slow query digest, suspicious activity scan, rate limit audit, deadlock detection, unused index audit, loan servicing transfer, and analytics refresh jobs scheduled."
+    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, slow query digest, suspicious activity scan, rate limit audit, deadlock detection, unused index audit, stale feature flag audit, loan servicing transfer, and analytics refresh jobs scheduled."
   );
 }
 
@@ -201,6 +215,10 @@ export function stopScheduler() {
   if (unusedIndexAuditTask) {
     unusedIndexAuditTask.stop();
     unusedIndexAuditTask = null;
+  }
+  if (staleFlagAuditTask) {
+    staleFlagAuditTask.stop();
+    staleFlagAuditTask = null;
   }
   if (servicingTransferTask) {
     servicingTransferTask.stop();
