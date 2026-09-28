@@ -4,6 +4,7 @@
 #![no_std]
 
 mod errors;
+mod state_machine;
 mod types;
 
 use crate::errors::MilestoneError;
@@ -874,3 +875,6 @@ impl MilestoneContract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod property_tests;

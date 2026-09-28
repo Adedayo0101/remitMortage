@@ -35,6 +35,7 @@ let suspiciousActivityTask: ReturnType<typeof cron.schedule> | null = null;
 let rateLimitAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let deadlockDetectionTask: ReturnType<typeof cron.schedule> | null = null;
 let unusedIndexAuditTask: ReturnType<typeof cron.schedule> | null = null;
+let staleFlagAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let servicingTransferTask: ReturnType<typeof cron.schedule> | null = null;
 let queryKillerTask: ReturnType<typeof cron.schedule> | null = null;
 
@@ -213,6 +214,10 @@ export function stopScheduler() {
   if (unusedIndexAuditTask) {
     unusedIndexAuditTask.stop();
     unusedIndexAuditTask = null;
+  }
+  if (staleFlagAuditTask) {
+    staleFlagAuditTask.stop();
+    staleFlagAuditTask = null;
   }
   if (servicingTransferTask) {
     servicingTransferTask.stop();
