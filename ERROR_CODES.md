@@ -116,7 +116,7 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 44 | `InvalidCollateralRatio` | Invalid collateral ratio configuration. |
 | 45 | `OriginationFeeTooHigh` | Origination fee exceeds the full-disbursement ceiling. |
 | 46 | `BorrowerLoanCapExceeded` | Borrower already holds the maximum number of active loans permitted by `max_active_loans_per_borrower`. |
-| 47 | `RefinanceCooldownActive` | Refinancing request was submitted before the cooldown window elapsed. |
+| 48 | `ApplicationFeeTooHigh` | Application fee exceeds the ceiling permitted on a single application. |
 | 50 | `WithdrawalExceedsMaxSingleLimit` | Withdrawal amount exceeds the pool's configured per-transaction limit. |
 
 ## lending-pool (`LoanAssumptionError`)
