@@ -119,6 +119,14 @@ export interface Config {
   assignmentQueueEnabled: boolean;
   /** Duration (ms) above which a database operation is captured as a slow query (issue #583). */
   slowQueryThresholdMs: number;
+  /**
+   * Payroll/income verification provider endpoint (issue #802). Null leaves
+   * the Null provider active — every employer is reported not covered and
+   * applicants fall back to manual document review.
+   */
+  payrollVerificationApiUrl: string | null;
+  /** Bearer token sent to the payroll verification provider. */
+  payrollVerificationApiKey: string | null;
   /** Backup KYC provider endpoint. Null leaves failover disabled. */
   kycBackupProviderUrl: string | null;
   /** Bearer token sent to the backup KYC provider. */
@@ -301,6 +309,8 @@ export function loadConfig(): Config {
     // Default on: the assignment queue is additive and best-effort.
     assignmentQueueEnabled: process.env.ASSIGNMENT_QUEUE_ENABLED !== "false",
     slowQueryThresholdMs: parseInt(process.env.SLOW_QUERY_THRESHOLD_MS || "200", 10),
+    payrollVerificationApiUrl: process.env.PAYROLL_VERIFICATION_API_URL || null,
+    payrollVerificationApiKey: process.env.PAYROLL_VERIFICATION_API_KEY || null,
     kycBackupProviderUrl: process.env.KYC_BACKUP_PROVIDER_URL || null,
     kycBackupProviderApiKey: process.env.KYC_BACKUP_PROVIDER_API_KEY || null,
     kycFailoverThreshold: parseInt(process.env.KYC_FAILOVER_THRESHOLD || "3", 10),
