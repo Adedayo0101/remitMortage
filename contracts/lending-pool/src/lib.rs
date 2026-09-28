@@ -18,8 +18,9 @@ mod test_loan_assumption;
 pub use crate::errors::{LoanAssumptionError, PoolError};
 pub use crate::types::{
     BatchDisburseItem, DataKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
-    LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PendingUpgradeRecord,
-    PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche, TrancheInfo,
+    LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PayoffQuote,
+    PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche,
+    TrancheInfo,
 };
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
@@ -676,6 +677,78 @@ impl LendingPoolContract {
         }
     }
 
+    /// Settle a quoted payoff at exactly the locked amount.
+    ///
+    /// The caller has already verified a live quote and `amount ==
+    /// quote.quoted_amount`. Any interest that accrued after the quote is
+    /// forgiven: the loan is closed, the quote is consumed, and liquidity
+    /// accounting reflects only the quoted transfer.
+    fn settle_quoted_payoff(
+        env: &Env,
+        config: &PoolConfig,
+        loan_id: &BytesN<32>,
+        loan: &mut LoanRecord,
+        borrower: &Address,
+        amount: i128,
+    ) -> Result<(), PoolError> {
+        let token = Self::token_client(env, &config.token);
+        token.transfer(borrower, &env.current_contract_address(), &amount);
+
+        let old_repaid = loan.repaid;
+        loan.repaid += amount;
+        // Forgive post-quote accrual: quoted amount fully settles the loan.
+        loan.outstanding_debt = 0;
+        loan.status = LoanStatus::Repaid;
+        Self::release_borrower_loan_slot(env, &loan.borrower);
+        let undisbursed = loan.principal - loan.disbursed;
+        if undisbursed > 0 {
+            let active_commitments = Self::read_active_commitments(env);
+            env.storage().instance().set(
+                &DataKey::ActiveLoanCommitments,
+                &(active_commitments - undisbursed),
+            );
+        }
+        Self::set_loan(env, loan_id, loan);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PayoffQuote(loan_id.clone()));
+
+        let mut interest_paid = 0i128;
+        if loan.repaid > loan.principal {
+            let interest_start = if old_repaid > loan.principal {
+                old_repaid
+            } else {
+                loan.principal
+            };
+            interest_paid = loan.repaid - interest_start;
+        }
+        if interest_paid > 0 {
+            let total_interest = Self::read_total_repaid_interest(env) + interest_paid;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalRepaidInterest, &total_interest);
+            Self::add_borrower_lifetime_interest(env, &loan.borrower, interest_paid);
+        }
+
+        let liquidity = Self::read_total_liquidity(env) + amount;
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalLiquidity, &liquidity);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (symbol_short!("repay"),),
+            (borrower.clone(), loan_id.clone(), amount, 0i128),
+        );
+        env.events().publish(
+            (symbol_short!("pay_quote"), symbol_short!("used")),
+            (loan_id.clone(), amount),
+        );
+        Ok(())
+    }
+
     /// The configured grace period (in ledgers) after an installment's due date
     /// before late penalties accrue, falling back to `GRACE_PERIOD_LEDGERS`.
     fn grace_period_ledgers(env: &Env) -> u32 {
@@ -731,6 +804,21 @@ impl LendingPoolContract {
     /// Calculate the fee amount for a given withdrawal amount and fee rate.
     fn calculate_fee_amount(amount: i128, fee_bps: u32) -> i128 {
         (amount * fee_bps as i128) / BPS_SCALE as i128
+    }
+
+    /// Returns `true` when the investor's holding duration exempts the
+    /// withdrawal from the early-redemption fee.
+    ///
+    /// The waiver is fully off when `redemption_fee_waiver_ledgers == 0`
+    /// (every withdrawal pays the fee exactly as before). Otherwise the fee
+    /// is waived once `current_ledger - start_ledger >= waiver_ledgers`.
+    fn is_fee_waived(env: &Env, config: &PoolConfig, record: &InvestorRecord) -> bool {
+        if config.redemption_fee_waiver_ledgers == 0 {
+            return false;
+        }
+        let current = env.ledger().sequence();
+        let held = current.saturating_sub(record.start_ledger);
+        held >= config.redemption_fee_waiver_ledgers
     }
 
     fn current_yield_share(env: &Env, amount: i128) -> i128 {
@@ -876,6 +964,13 @@ impl LendingPoolContract {
             max_single_withdrawal: 0,
             // Permissionless by default; admin opts in via `set_permissioned_mode`.
             permissioned_mode: false,
+            // No fee waiver at deployment: every withdrawal pays the
+            // utilization-based fee exactly as before until an admin opts in
+            // via `set_redemption_fee_waiver_ledgers`.
+            redemption_fee_waiver_ledgers: 0,
+            // Payoff quoting disabled at deployment until an admin sets a
+            // window via `set_payoff_quote_window`.
+            payoff_quote_window_ledgers: 0,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
@@ -1988,7 +2083,27 @@ impl LendingPoolContract {
             return Err(PoolError::InvalidLoanState);
         }
 
+        // ── Payoff Quote Lock ─────────────────────────────────────────
+        // A live (unexpired) quote locks the payoff amount: paying exactly
+        // the quoted amount settles the loan even if interest accrued since
+        // the quote. An expired quote is pruned here so it can never be
+        // honored at the stale amount — normal accrual applies and the
+        // caller must request a fresh quote.
+        let quote_key = DataKey::PayoffQuote(loan_id.clone());
+        let stored_quote: Option<PayoffQuote> =
+            env.storage().persistent().get(&quote_key);
+        let mut quoted_payoff = false;
+        if let Some(q) = stored_quote {
+            if env.ledger().sequence() > q.expires_ledger {
+                env.storage().persistent().remove(&quote_key);
+            } else if amount == q.quoted_amount && q.quoted_amount > 0 {
+                quoted_payoff = true;
+            }
+        }
+
         // Accrue compound interest before computing what is owed.
+        // For a quoted payoff the accrual is computed but then forgiven:
+        // the borrower settles at exactly the quoted amount.
         Self::accrue_interest(&env, &mut loan);
 
         // Keep simple-interest total_owed for yield waterfall distribution.
@@ -1996,12 +2111,21 @@ impl LendingPoolContract {
         let total_owed = loan.principal + interest;
         let remaining = loan.outstanding_debt;
 
+        // A quoted payoff settles at exactly the quoted amount: forgive any
+        // interest that accrued after the quote instead of rejecting the
+        // payment or leaving a residual balance.
+        if quoted_payoff {
+            Self::settle_quoted_payoff(&env, &config, &loan_id, &mut loan, &borrower, amount)?;
+            return Ok(());
+        }
+
         if amount > remaining {
             return Err(PoolError::OverPayment);
         }
 
         // If schedule exists, enforce installment logic (due dates, grace, penalties)
-        if env
+        if !quoted_payoff
+            && env
             .storage()
             .persistent()
             .has(&DataKey::LoanSchedule(loan_id.clone()))
@@ -2194,6 +2318,10 @@ impl LendingPoolContract {
         // Mark as repaid if fully paid (compound debt cleared).
         if loan.outstanding_debt == 0 {
             loan.status = LoanStatus::Repaid;
+            // A full repayment consumes any outstanding quote.
+            env.storage()
+                .persistent()
+                .remove(&DataKey::PayoffQuote(loan_id.clone()));
 
             // Full repayment frees the borrower's active-loan slot.
             Self::release_borrower_loan_slot(&env, &loan.borrower);
@@ -2233,6 +2361,48 @@ impl LendingPoolContract {
             ),
         );
 
+        Ok(())
+    }
+
+    /// Execute a payoff using a previously locked quote.
+    ///
+    /// `amount` must equal the stored quoted amount exactly. A live quote
+    /// settles the loan at the quoted amount even if interest accrued since
+    /// the quote. An expired quote reverts with `PayoffQuoteExpired` (and is
+    /// pruned) so a stale amount is never silently honored — the caller must
+    /// request a fresh quote. With no stored quote this reverts with
+    /// `PayoffQuoteNotFound`.
+    pub fn payoff_with_quote(
+        env: Env,
+        borrower: Address,
+        loan_id: BytesN<32>,
+        amount: i128,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        borrower.require_auth();
+        if amount <= 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+        let config = Self::read_config(&env)?;
+        let mut loan = Self::read_loan(&env, &loan_id)?;
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::InvalidLoanState);
+        }
+        let key = DataKey::PayoffQuote(loan_id.clone());
+        let quote: PayoffQuote = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(PoolError::PayoffQuoteNotFound)?;
+        if env.ledger().sequence() > quote.expires_ledger {
+            env.storage().persistent().remove(&key);
+            return Err(PoolError::PayoffQuoteExpired);
+        }
+        if amount != quote.quoted_amount {
+            return Err(PoolError::InvalidAmount);
+        }
+        Self::accrue_interest(&env, &mut loan);
+        Self::settle_quoted_payoff(&env, &config, &loan_id, &mut loan, &borrower, amount)?;
         Ok(())
     }
 
@@ -2832,8 +3002,15 @@ impl LendingPoolContract {
             }
 
             // ── Dynamic Fee Calculation ───────────────────────────────────
+            // Long-term holders past the configured waiver period pay no
+            // early-redemption fee; short-term withdrawals pay exactly as before.
             let utilization_bps = Self::calculate_utilization(&env);
-            let fee_bps = Self::calculate_withdrawal_fee_bps(utilization_bps);
+            let base_fee_bps = Self::calculate_withdrawal_fee_bps(utilization_bps);
+            let fee_bps = if Self::is_fee_waived(&env, &config, &record) {
+                0u32
+            } else {
+                base_fee_bps
+            };
             let fee_amount = Self::calculate_fee_amount(amount, fee_bps);
             let net_amount = amount - fee_amount;
 
@@ -3859,6 +4036,175 @@ impl LendingPoolContract {
             .get::<DataKey, PoolConfig>(&DataKey::Config)
             .map(|config| config.max_single_withdrawal)
             .unwrap_or(0)
+    }
+
+    // ── Redemption Fee Waiver (#745) ────────────────────────────────────
+
+    /// Configure the minimum holding period, in ledgers, after which the
+    /// early-redemption (withdrawal) fee is waived. Admin-only.
+    ///
+    /// `0` disables the waiver: every withdrawal pays the fee exactly as
+    /// before. Any non-zero value waives the fee in full once
+    /// `current_ledger - investor.start_ledger >= waiver_ledgers`.
+    pub fn set_redemption_fee_waiver_ledgers(
+        env: Env,
+        waiver_ledgers: u32,
+    ) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        config.redemption_fee_waiver_ledgers = waiver_ledgers;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.events()
+            .publish((symbol_short!("set_fwaiv"),), waiver_ledgers);
+        Ok(())
+    }
+
+    /// Get the configured fee-waiver holding period in ledgers.
+    /// `0` means no waiver: all withdrawals pay the fee.
+    pub fn get_redemption_fee_waiver_ledgers(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.redemption_fee_waiver_ledgers)
+            .unwrap_or(0)
+    }
+
+    /// Preview the fee breakdown for a hypothetical withdrawal by a specific
+    /// investor, applying the long-term-holder waiver when the position's
+    /// holding duration meets the configured minimum.
+    ///
+    /// Returns (gross_amount, fee_amount, net_amount, effective_fee_bps,
+    /// utilization_bps).
+    pub fn preview_withdrawal_fee_for(
+        env: Env,
+        investor: Address,
+        amount: i128,
+    ) -> (i128, i128, i128, u32, u32) {
+        let utilization_bps = Self::calculate_utilization(&env);
+        let base_fee_bps = Self::calculate_withdrawal_fee_bps(utilization_bps);
+        let effective_fee_bps = match Self::read_config(&env) {
+            Ok(config) => {
+                let record = Self::read_investor(&env, &investor);
+                if Self::is_fee_waived(&env, &config, &record) {
+                    0u32
+                } else {
+                    base_fee_bps
+                }
+            }
+            Err(_) => base_fee_bps,
+        };
+        let fee_amount = Self::calculate_fee_amount(amount, effective_fee_bps);
+        let net_amount = amount - fee_amount;
+        (
+            amount,
+            fee_amount,
+            net_amount,
+            effective_fee_bps,
+            utilization_bps,
+        )
+    }
+
+    // ── Payoff Quote Lock (#743) ────────────────────────────────────────
+
+    /// Configure the payoff-quote validity window in ledgers. Admin-only.
+    ///
+    /// `0` disables quoting. A non-zero window (e.g. a 24–48h equivalent in
+    /// ledgers) lets `quote_payoff` lock a payoff amount that `repay` honors
+    /// verbatim within the window.
+    pub fn set_payoff_quote_window(
+        env: Env,
+        window_ledgers: u32,
+    ) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        config.payoff_quote_window_ledgers = window_ledgers;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.events()
+            .publish((symbol_short!("set_qwin"),), window_ledgers);
+        Ok(())
+    }
+
+    /// Get the configured payoff-quote validity window in ledgers.
+    pub fn get_payoff_quote_window(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.payoff_quote_window_ledgers)
+            .unwrap_or(0)
+    }
+
+    /// Snapshot and lock the current payoff amount for `loan_id`.
+    ///
+    /// Accrues interest to the current ledger, stores
+    /// `outstanding_debt` as the locked quote, and returns it. A payoff of
+    /// exactly the quoted amount made on or before `expires_ledger` settles
+    /// the loan at the quoted amount even if further interest would
+    /// otherwise have accrued. Requesting a quote never changes accrual
+    /// itself — an unused quote simply expires and normal accrual continues.
+    pub fn quote_payoff(env: Env, loan_id: BytesN<32>) -> Result<i128, PoolError> {
+        let config = Self::read_config(&env)?;
+        if config.payoff_quote_window_ledgers == 0 {
+            return Err(PoolError::InvalidQuoteWindow);
+        }
+        let mut loan = Self::read_loan(&env, &loan_id)?;
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::InvalidLoanState);
+        }
+        Self::accrue_interest(&env, &mut loan);
+        Self::set_loan(&env, &loan_id, &loan);
+
+        let now = env.ledger().sequence();
+        let quote = PayoffQuote {
+            quoted_amount: loan.outstanding_debt,
+            quoted_at_ledger: now,
+            expires_ledger: now.saturating_add(config.payoff_quote_window_ledgers),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::PayoffQuote(loan_id.clone()), &quote);
+        env.events().publish(
+            (symbol_short!("pay_quote"),),
+            (loan_id, quote.quoted_amount, quote.expires_ledger),
+        );
+        Ok(quote.quoted_amount)
+    }
+
+    /// Return the stored payoff quote for `loan_id`, if any.
+    pub fn get_payoff_quote(env: Env, loan_id: BytesN<32>) -> Option<PayoffQuote> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PayoffQuote(loan_id))
+    }
+
+    /// Read a stored quote, pruning it when expired.
+    ///
+    /// Returns `Ok(Some(quote))` while valid, `Ok(None)` when no quote
+    /// exists. An expired quote is removed so it can never be honored at
+    /// the stale amount, and `Err(PayoffQuoteExpired)` is returned so
+    /// callers can explicitly re-quote instead of silently underpaying.
+    fn read_live_payoff_quote(
+        env: &Env,
+        loan_id: &BytesN<32>,
+    ) -> Result<Option<PayoffQuote>, PoolError> {
+        let key = DataKey::PayoffQuote(loan_id.clone());
+        let quote: Option<PayoffQuote> = env.storage().persistent().get(&key);
+        match quote {
+            None => Ok(None),
+            Some(q) => {
+                if env.ledger().sequence() > q.expires_ledger {
+                    env.storage().persistent().remove(&key);
+                    Err(PoolError::PayoffQuoteExpired)
+                } else {
+                    Ok(Some(q))
+                }
+            }
+        }
     }
 
     /// Get the currently configured per-day late-payment penalty in basis points.
