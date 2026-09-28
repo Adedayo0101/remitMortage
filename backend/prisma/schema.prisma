@@ -178,11 +178,35 @@ model Applicant {
   loanApplications    LoanApplication[]
   borrowerCredentials BorrowerCredential[]
   kycDocuments        KycDocument[]
+  employmentVerifications EmploymentVerification[]
   notificationPreference NotificationPreference?
   deletedAt          DateTime?
 
   @@index([deletedAt])
   @@index([taxIdHash])
+}
+
+// Employment/income verification attempts (issue #802), automated via a
+// payroll provider or falling back to manual document review. Only the
+// result and the confirmed income figure are stored — never a payroll
+// credential or pay history. verifiedMonthlyIncome is encrypted at rest
+// (services/employmentVerificationStore.ts), matching Applicant.monthlyIncome.
+model EmploymentVerification {
+  id                    String    @id @default(uuid())
+  applicantId           String
+  applicant             Applicant @relation(fields: [applicantId], references: [id])
+  method                String    // "AUTOMATED_PAYROLL" | "MANUAL_DOCUMENT"
+  status                String    // "VERIFIED" | "NOT_COVERED" | "FAILED"
+  employerName          String?
+  verifiedMonthlyIncome String?
+  providerReference     String?
+  providerName          String?
+  failureReason         String?
+  verifiedAt            DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([applicantId, createdAt])
 }
 
 model VerificationResult {
