@@ -89,6 +89,17 @@ pub struct PoolConfig {
     /// `false` — the deployment default — preserves existing permissionless
     /// behaviour.
     pub permissioned_mode: bool,
+    /// Minimum holding period, in ledgers, after which an investor's
+    /// withdrawal is waived of the early-redemption (utilization-based
+    /// withdrawal) fee. Holding duration is measured from the investor's
+    /// `start_ledger` to the current ledger at withdrawal time.
+    /// `0` — the deployment default — disables the waiver so every
+    /// withdrawal pays the fee exactly as before.
+    pub redemption_fee_waiver_ledgers: u32,
+    /// Fixed window, in ledgers, for which a `quote_payoff` snapshot stays
+    /// valid. A payoff executed within the window settles at exactly the
+    /// quoted amount. `0` disables quoting (quotes cannot be created).
+    pub payoff_quote_window_ledgers: u32,
 }
 
 /// Tracks an individual investor's capital contribution.
@@ -363,6 +374,8 @@ pub enum DataKey {
     LoanSymbolMap(Symbol),
     /// Pending loan assumption request, keyed by loan ID.
     LoanAssumption(BytesN<32>),
+    /// Locked payoff quote for a loan, keyed by loan ID.
+    PayoffQuote(BytesN<32>),
 }
 
 /// A pending loan assumption request where an existing borrower proposes to transfer
@@ -388,4 +401,17 @@ pub struct LoanCollateralRecord {
     pub released_collateral: i128,
     /// Minimum required collateralization ratio in basis points (e.g. 3000 = 30%).
     pub min_collateral_ratio_bps: u32,
+}
+
+/// A locked payoff quote: the exact amount that settles the loan if paid
+/// within the validity window, regardless of intervening interest accrual.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayoffQuote {
+    /// Snapshotted payoff amount (outstanding debt at quote time).
+    pub quoted_amount: i128,
+    /// Ledger at which the quote was created.
+    pub quoted_at_ledger: u32,
+    /// Last ledger at which the quote is still valid (inclusive).
+    pub expires_ledger: u32,
 }
