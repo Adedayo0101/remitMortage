@@ -331,14 +331,15 @@ async function handleEmailDispatch(recipient: string, content: string): Promise<
   if (content.trim().startsWith("{")) {
     try {
       const parsed = JSON.parse(content);
+      const locale: string | undefined = parsed.locale;
       if (parsed.template === "deposit_receipt") {
-        return await sendDepositReceipt(recipient, parsed.amount, parsed.transactionId);
+        return await sendDepositReceipt(recipient, parsed.amount, parsed.transactionId, locale);
       }
       if (parsed.template === "repayment_reminder") {
-        return await sendRepaymentReminder(recipient, parsed.amount, parsed.dueDate);
+        return await sendRepaymentReminder(recipient, parsed.amount, parsed.dueDate, locale);
       }
       if (parsed.template === "loan_status_update") {
-        return await sendLoanStatusUpdate(recipient, parsed.loanId, parsed.status);
+        return await sendLoanStatusUpdate(recipient, parsed.loanId, parsed.status, locale);
       }
     } catch {
       // Fallback if JSON parsing fails
@@ -373,20 +374,6 @@ const FREQUENCY_FIELD_BY_EVENT: Partial<
   ESCROW_REACHED: "depositsFrequency",
   MILESTONE_UPDATE: "milestonesFrequency",
   GOVERNANCE_PROPOSAL: "governanceFrequency",
-};
-
-/**
- * Maps each event type to the fine-grained per-category, per-channel opt-in
- * matrix category governing it. PAYMENT_MISSED has no entry — it hasn't been
- * migrated off the coarser emailAlerts/smsAlerts global toggles, which
- * dispatchMaturityAlerts falls back to for any event type absent here.
- */
-const COMMUNICATION_CATEGORY_BY_EVENT: Partial<Record<MaturityAlertEventType, CommunicationCategory>> = {
-  ESCROW_APPROACHING: "DEPOSITS",
-  ESCROW_REACHED: "DEPOSITS",
-  MILESTONE_UPDATE: "MILESTONES",
-  GOVERNANCE_PROPOSAL: "GOVERNANCE",
-  SECURITY_ALERT: "SECURITY",
 };
 
 export async function dispatchMaturityAlerts(
@@ -487,22 +474,9 @@ export async function dispatchMaturityAlerts(
         ? computeBusinessHoursDelay(preferences, isUrgent)
         : computeDigestDelay(preferences, frequency);
 
-  // For the four categories with a fine-grained opt-in matrix, that matrix
-  // decides whether each channel is attempted at all — independently per
-  // category, which is the whole point of this feature (disabling SMS for
-  // deposits must not touch email/push, or SMS for any other category).
-  // PAYMENT_MISSED isn't in that matrix yet, so it keeps using the coarser
-  // emailAlerts/smsAlerts global toggles below, unchanged from before.
-  const communicationCategory = COMMUNICATION_CATEGORY_BY_EVENT[event.type];
-  const channelMatrix = communicationCategory ? await getCommunicationPreferences(applicantAddress) : null;
-
-  function channelEnabled(channel: CommunicationChannel, legacyToggle: boolean): boolean {
-    if (communicationCategory && channelMatrix) {
-      return channelMatrix[communicationCategory][channel].enabled;
-    }
-    return legacyToggle;
-  }
-
+  // Note: the emailAlerts/smsAlerts channel toggles below still apply even to
+  // security alerts — "always immediate" governs *timing*, not whether the
+  // user has that delivery channel switched on at all.
   const dispatches: Promise<any>[] = [];
 
   if (email && channelEnabled("EMAIL", Boolean(emailAlerts))) {

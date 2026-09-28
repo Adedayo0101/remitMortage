@@ -35,11 +35,10 @@ pub enum MilestoneStatus {
     Disbursed = 2,
     Disputed = 3,
     Refunded = 4,
-    /// Sent back by a governance approver for the contractor to resubmit.
-    /// Once a milestone has ever been `Rejected`, it permanently forfeits
-    /// eligibility for the first-submission performance bonus even after a
-    /// successful resubmission and approval.
-    Rejected = 5,
+    /// A portion of the milestone amount has been released via
+    /// `partially_approve_milestone`; the remainder is still pending and
+    /// can be completed by further partial or full releases.
+    PartiallyDisbursed = 5,
 }
 
 /// Milestone record stored on-chain.
@@ -66,17 +65,10 @@ pub struct MilestoneRecord {
     pub approved_ledger: u32,
     /// Ledger sequence at which the milestone was disputed (0 if not disputed).
     pub disputed_ledger: u32,
-    /// Ledger sequence by which approval must happen to remain eligible for
-    /// the performance bonus. Defaults to a far-future ledger at proposal
-    /// time (see `DEFAULT_MILESTONE_DEADLINE_LEDGERS`) and may be tightened
-    /// by the contractor via `set_milestone_deadline`.
-    pub deadline_ledger: u32,
-    /// True once this milestone has ever been rejected and resubmitted —
-    /// permanently disqualifies it from the performance bonus, even after a
-    /// later resubmission is cleanly approved.
-    pub was_resubmitted: bool,
-    /// True once a performance bonus has been paid out for this milestone.
-    pub bonus_awarded: bool,
+    /// Amount already released via partial approvals (0 until the first
+    /// partial or full release). `amount - released_amount` is the
+    /// remaining unreleased portion still pending.
+    pub released_amount: i128,
 }
 
 /// A proposal to change the budget for an existing (pending) milestone.

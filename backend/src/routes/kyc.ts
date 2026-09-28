@@ -11,6 +11,7 @@ import { storeEncryptedDocument, getEncryptedDocument } from "../services/kycSto
 import { decryptBuffer } from "../services/kmsEncryption.js";
 import { issueKycAccessToken, verifyKycAccessToken } from "../services/kycAccessToken.js";
 import { extractKycFields } from "../services/ocrService.js";
+import { verifyEmployment, getEmploymentVerificationStatus } from "../services/employmentVerification.js";
 import {
   createOcrResult,
   getOcrResult,
@@ -176,6 +177,17 @@ kycRouter.post(
       const ocrBuffer = req._ocrBuffer ?? Buffer.alloc(0);
       const ocrMime = req._ocrMimeType ?? req.file.mimetype;
       const ocrResult = await extractKycFields(ocrBuffer, ocrMime);
+
+      // Metadata forgery analysis on the same plaintext copy (issue #813).
+      // A flag routes the document to manual review; it never rejects the
+      // upload, and the outcome is deliberately not returned to the uploader
+      // so the checks can't be iterated against. Never throws.
+      await analyzeAndRecordDocument({
+        documentId: record.documentId,
+        applicantAddress: address,
+        buffer: ocrBuffer,
+        mimeType: ocrMime,
+      });
 
       // Persist the OCR result (non-fatal — upload already succeeded)
       let ocrRecord: Awaited<ReturnType<typeof createOcrResult>> | null = null;
@@ -362,32 +374,49 @@ kycRouter.post(
 
     const ocrRecord = await getOcrResult(documentId);
 
-    // When there is no OCR record (document pre-dates OCR, or OCR store
-    // errored) we fall through to allow manual-entry submissions unchanged.
-    if (ocrRecord && !ocrRecord.ocrFailed) {
-      // Verify the document belongs to the authenticated wallet
-      if (req.user?.walletAddress !== ocrRecord.applicantAddress) {
+    // Issue #760: ownership is enforced even when there is no OCR record
+    // (pre-OCR documents) or OCR failed — fall back to the encrypted-document
+    // owner record instead of allowing cross-user submits.
+    if (!ocrRecord || ocrRecord.ocrFailed) {
+      const stored = await getEncryptedDocument(documentId);
+      if (!stored) {
+        res.status(404).json({ error: "document_not_found" });
+        return;
+      }
+      if (req.user?.walletAddress !== stored.applicantAddress) {
         res.status(403).json({
           error: "forbidden",
           message: "You may only submit documents for your own address.",
         });
         return;
       }
-
-      const unconfirmed = getUnconfirmedFields(ocrRecord);
-      if (unconfirmed.length > 0) {
-        res.status(400).json({
-          error: "unconfirmed_ocr_fields",
-          message:
-            "All OCR-extracted fields must be confirmed before submission. " +
-            `Please confirm: ${unconfirmed.join(", ")}.`,
-          unconfirmedFields: unconfirmed,
-        });
-        return;
-      }
+      // Manual-entry path: no OCR confirmations to enforce.
+      res.json({ submitted: true, documentId });
+      return;
     }
 
-    // All fields confirmed (or OCR was not available) — submission accepted.
+    // OCR produced extractable fields — owner check + confirmation gate.
+    if (req.user?.walletAddress !== ocrRecord.applicantAddress) {
+      res.status(403).json({
+        error: "forbidden",
+        message: "You may only submit documents for your own address.",
+      });
+      return;
+    }
+
+    const unconfirmed = getUnconfirmedFields(ocrRecord);
+    if (unconfirmed.length > 0) {
+      res.status(400).json({
+        error: "unconfirmed_ocr_fields",
+        message:
+          "All OCR-extracted fields must be confirmed before submission. " +
+          `Please confirm: ${unconfirmed.join(", ")}.`,
+        unconfirmedFields: unconfirmed,
+      });
+      return;
+    }
+
+    // All fields confirmed — submission accepted.
     res.json({ submitted: true, documentId });
   }
 );
@@ -560,3 +589,121 @@ kycRouter.get("/:documentId/decrypt", requireOperatorKey, async (req: Request, r
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/kyc/:address/employment-verification
+//
+// Automated payroll-provider verification (issue #802), alongside the
+// existing manual pay-stub upload. Always 200 unless something genuinely
+// unexpected happens — an uncovered employer or a provider outage are
+// expected outcomes that route to manual review, never an error response.
+// ---------------------------------------------------------------------------
+
+/**
+ * @openapi
+ * /api/kyc/{address}/employment-verification:
+ *   post:
+ *     summary: Verify applicant employment/income via an automated payroll provider
+ *     description: >-
+ *       Attempts automated employment and income verification through the
+ *       configured payroll provider. Falls back to manual document review
+ *       (never blocking the applicant) when the employer isn't covered or
+ *       the provider is unavailable.
+ *     tags:
+ *       - KYC
+ *     parameters:
+ *       - in: path
+ *         name: address
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               employerName: { type: string }
+ *     responses:
+ *       200:
+ *         description: Verification outcome (VERIFIED, NOT_COVERED, or FAILED).
+ *       400:
+ *         description: Missing employerName.
+ *       403:
+ *         description: Authenticated wallet does not match the path address.
+ */
+kycRouter.post(
+  "/:address/employment-verification",
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response) => {
+    const address = String(req.params.address);
+    if (req.user?.walletAddress !== address) {
+      res.status(403).json({
+        error: "forbidden",
+        message: "You may only verify employment for your own address.",
+      });
+      return;
+    }
+
+    const { employerName } = req.body ?? {};
+    if (!employerName || typeof employerName !== "string") {
+      res.status(400).json({ error: "missing_field", message: "employerName is required." });
+      return;
+    }
+
+    try {
+      const outcome = await verifyEmployment(address, employerName);
+      res.status(200).json(outcome);
+    } catch (error) {
+      logger.error("[KYC] Employment verification error", { error, address });
+      res.status(500).json({
+        error: "employment_verification_failed",
+        message: (error as Error).message || "Failed to verify employment.",
+      });
+    }
+  }
+);
+
+/**
+ * @openapi
+ * /api/kyc/{address}/employment-verification:
+ *   get:
+ *     summary: Get the applicant's latest employment verification status
+ *     tags:
+ *       - KYC
+ *     parameters:
+ *       - in: path
+ *         name: address
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: The latest verification record, or null if none exists.
+ *       403:
+ *         description: Authenticated wallet does not match the path address.
+ */
+kycRouter.get(
+  "/:address/employment-verification",
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response) => {
+    const address = String(req.params.address);
+    if (req.user?.walletAddress !== address) {
+      res.status(403).json({
+        error: "forbidden",
+        message: "You may only view employment verification for your own address.",
+      });
+      return;
+    }
+
+    try {
+      const verification = await getEmploymentVerificationStatus(address);
+      res.status(200).json({ verification });
+    } catch (error) {
+      logger.error("[KYC] Get employment verification status error", { error, address });
+      res.status(500).json({
+        error: "employment_verification_failed",
+        message: (error as Error).message || "Failed to fetch employment verification status.",
+      });
+    }
+  }
+);

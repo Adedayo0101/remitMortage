@@ -4,6 +4,7 @@
 #![no_std]
 
 mod errors;
+mod state_machine;
 mod types;
 
 use crate::errors::MilestoneError;
@@ -312,9 +313,7 @@ impl MilestoneContract {
             created_ledger,
             approved_ledger: 0,
             disputed_ledger: 0,
-            deadline_ledger: created_ledger.saturating_add(DEFAULT_MILESTONE_DEADLINE_LEDGERS),
-            was_resubmitted: false,
-            bonus_awarded: false,
+            released_amount: 0,
         };
         Self::set_milestone(&env, &proposal_id, &record);
 
@@ -489,19 +488,28 @@ impl MilestoneContract {
     ///
     /// Admin-only. The milestone is marked `Disbursed`, so it can never be
     /// released more than once (preventing over-release of the allocation).
+    /// If prior partial releases exist (`PartiallyDisbursed`), this releases
+    /// only the remaining unreleased portion and completes the milestone.
     pub fn release_milestone(env: Env, proposal_id: BytesN<32>) -> Result<(), MilestoneError> {
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
         Self::non_reentrant(&env, || {
 
         let mut record = Self::read_milestone(&env, &proposal_id)?;
-        if record.status != MilestoneStatus::Approved {
+        if record.status != MilestoneStatus::Approved
+            && record.status != MilestoneStatus::PartiallyDisbursed
+        {
             return Err(MilestoneError::InvalidStatus);
         }
 
         let current_ledger = env.ledger().sequence();
         if current_ledger < record.approved_ledger.saturating_add(config.min_delay_ledgers) {
             return Err(MilestoneError::TimelockNotElapsed);
+        }
+
+        let remaining = record.amount.saturating_sub(record.released_amount);
+        if remaining <= 0 {
+            return Err(MilestoneError::InvalidStatus);
         }
 
         // Cross-contract call: lending_pool.disburse(loan_id, contractor, amount).
@@ -512,10 +520,11 @@ impl MilestoneContract {
             &env,
             record.loan_id.clone().into_val(&env),
             record.contractor.clone().into_val(&env),
-            record.amount.into_val(&env),
+            remaining.into_val(&env),
         ];
         env.invoke_contract::<()>(&config.lending_pool, &func, args);
 
+        record.released_amount = record.amount;
         record.status = MilestoneStatus::Disbursed;
 
         // Performance bonus — evaluated only after the underlying
@@ -527,10 +536,110 @@ impl MilestoneContract {
 
         Self::set_milestone(&env, &proposal_id, &record);
 
+        env.events().publish(
+            (symbol_short!("milestone"), symbol_short!("full")),
+            (proposal_id, remaining),
+        );
+
         Self::bump_instance(&env);
 
         Ok(())
         }) // non_reentrant
+    }
+
+    /// Partially approve a milestone, releasing only `release_amount` now
+    /// and leaving the remainder tracked as still pending.
+    ///
+    /// Admin-only. The milestone must be in `Approved` status (or
+    /// `PartiallyDisbursed` for a follow-up partial). `release_amount` must
+    /// be greater than zero and no more than the remaining unreleased amount
+    /// (`amount - released_amount`); larger requests revert with
+    /// `ExceedsRemainingAmount` instead of closing the milestone prematurely.
+    /// When the cumulative released total reaches the full milestone amount
+    /// the milestone transitions to `Disbursed`; otherwise it moves to (or
+    /// stays in) `PartiallyDisbursed` so a later full or partial approval
+    /// can complete it. Emits a `partial` event, distinct from the `full`
+    /// event emitted by `release_milestone` / completing partials.
+    pub fn partially_approve_milestone(
+        env: Env,
+        proposal_id: BytesN<32>,
+        release_amount: i128,
+    ) -> Result<(), MilestoneError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        Self::non_reentrant(&env, || {
+
+        let mut record = Self::read_milestone(&env, &proposal_id)?;
+        if record.status != MilestoneStatus::Approved
+            && record.status != MilestoneStatus::PartiallyDisbursed
+        {
+            return Err(MilestoneError::InvalidStatus);
+        }
+
+        if release_amount <= 0 {
+            return Err(MilestoneError::InvalidPartialAmount);
+        }
+
+        let remaining = record.amount.saturating_sub(record.released_amount);
+        if release_amount > remaining {
+            return Err(MilestoneError::ExceedsRemainingAmount);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger < record.approved_ledger.saturating_add(config.min_delay_ledgers) {
+            return Err(MilestoneError::TimelockNotElapsed);
+        }
+
+        let func: Symbol = symbol_short!("disburse");
+        let args: Vec<Val> = vec![
+            &env,
+            record.loan_id.clone().into_val(&env),
+            record.contractor.clone().into_val(&env),
+            release_amount.into_val(&env),
+        ];
+        env.invoke_contract::<()>(&config.lending_pool, &func, args);
+
+        record.released_amount += release_amount;
+        if record.released_amount >= record.amount {
+            record.released_amount = record.amount;
+            record.status = MilestoneStatus::Disbursed;
+            Self::set_milestone(&env, &proposal_id, &record);
+            env.events().publish(
+                (symbol_short!("milestone"), symbol_short!("full")),
+                (proposal_id, release_amount),
+            );
+        } else {
+            record.status = MilestoneStatus::PartiallyDisbursed;
+            Self::set_milestone(&env, &proposal_id, &record);
+            let remaining_after = record.amount.saturating_sub(record.released_amount);
+            env.events().publish(
+                (symbol_short!("milestone"), symbol_short!("partial")),
+                (proposal_id, release_amount, remaining_after),
+            );
+        }
+
+        Self::bump_instance(&env);
+
+        Ok(())
+        }) // non_reentrant
+    }
+
+    /// Remaining unreleased amount for a milestone
+    /// (`amount - released_amount`, floored at zero).
+    pub fn get_remaining_amount(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Result<i128, MilestoneError> {
+        let record = Self::read_milestone(&env, &proposal_id)?;
+        Ok(record.amount.saturating_sub(record.released_amount))
+    }
+
+    /// Amount already released via partial/full approvals.
+    pub fn get_released_amount(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Result<i128, MilestoneError> {
+        Ok(Self::read_milestone(&env, &proposal_id)?.released_amount)
     }
 
     /// Dispute an active milestone and trigger a refund to the lending pool.
@@ -1019,3 +1128,6 @@ impl MilestoneContract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod property_tests;
