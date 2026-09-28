@@ -84,6 +84,10 @@ import {
   HttpKycProvider,
   sendKycFailoverAlert,
 } from "./services/kycProviderFailover.js";
+import {
+  HttpPayrollVerificationProvider,
+  setPayrollVerificationProvider,
+} from "./services/payrollVerificationProvider.js";
 import logger from "./utils/logger.js";
 import { feeEstimator } from "./services/feeEstimator.js";
 import { initializeRedis } from "./services/redis.js";
@@ -117,6 +121,19 @@ if (config.kycBackupProviderUrl) {
         onAlert: sendKycFailoverAlert,
       }
     )
+  );
+}
+
+// Automated employment verification (issue #802). Disabled unless a provider
+// URL is configured — the Null provider stays active otherwise, so every
+// applicant falls back to manual document review.
+if (config.payrollVerificationApiUrl) {
+  setPayrollVerificationProvider(
+    new HttpPayrollVerificationProvider({
+      url: config.payrollVerificationApiUrl,
+      apiKey: config.payrollVerificationApiKey,
+      providerName: "payroll_provider",
+    })
   );
 }
 
