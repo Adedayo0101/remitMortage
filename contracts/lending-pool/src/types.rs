@@ -656,6 +656,10 @@ pub enum FeatureKey {
     /// Ceiling on late fees per billing period, in basis points of the
     /// installment. Absent or zero disables this limb of the cap.
     LateFeeCapBps,
+    /// Fee charged to the incoming borrower on `assume_loan`, in basis points
+    /// of the loan's outstanding principal. Absent or zero means no fee.
+    /// Never above `MAX_ASSUMPTION_FEE_BPS`.
+    AssumptionFeeBps,
     /// An investor's yield mode. Absent means `YieldMode::Claim`.
     YieldMode(Address),
     /// Configured collateral haircut (bps) for an asset class. Absent means

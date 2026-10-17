@@ -132,6 +132,15 @@ const FEE_HIGH_BPS: u32 = 200;
 /// investors who funded the loans.
 const MAX_FEE_SWITCH_BPS: u32 = 5_000;
 
+// ── Loan Assumption Fee Constants ────────────────────────────────────
+/// Hard ceiling on the loan assumption fee: 2% (200 bps) of the loan's
+/// outstanding principal.
+///
+/// Enforced both when the fee is configured and when it is charged, so a
+/// misconfigured or malicious admin parameter can never confiscate a
+/// meaningful share of the loan from the incoming borrower.
+const MAX_ASSUMPTION_FEE_BPS: u32 = 200;
+
 // ── Dynamic Interest Rate Constants ────────────────────────────────────
 /// Excellent tier (score 80–100): 4% APR.
 const INTEREST_RATE_EXCELLENT_BPS: u32 = 400;
@@ -5821,6 +5830,23 @@ impl LendingPoolContract {
             }
         }
 
+        // Assumption fee: paid by the incoming borrower to the treasury,
+        // capped at MAX_ASSUMPTION_FEE_BPS of the outstanding principal.
+        let fee = Self::assumption_fee_for(&env, &loan);
+        if fee > 0 {
+            let config =
+                Self::read_config(&env).map_err(|_| LoanAssumptionError::NotInitialized)?;
+            Self::token_client(&env, &config.token).transfer(
+                &new_borrower,
+                &config.treasury_address,
+                &fee,
+            );
+            env.events().publish(
+                (symbol_short!("assm_fee"),),
+                (loan_id.clone(), new_borrower.clone(), fee),
+            );
+        }
+
         // Exposure follows the loan to the new borrower.
         Self::release_borrower_exposure(&env, &loan.borrower, loan.principal);
         let assumed = Self::read_borrower_exposure(&env, &new_borrower);
@@ -5835,6 +5861,51 @@ impl LendingPoolContract {
             .persistent()
             .remove(&DataKey::LoanAssumption(loan_id));
         Ok(())
+    }
+
+    /// The fee `assume_loan` charges for `loan`: the configured bps of its
+    /// outstanding principal, never more than `MAX_ASSUMPTION_FEE_BPS`.
+    fn assumption_fee_for(env: &Env, loan: &LoanRecord) -> i128 {
+        let configured: u32 = env
+            .storage()
+            .instance()
+            .get(&FeatureKey::AssumptionFeeBps)
+            .unwrap_or(0);
+        let bps = configured.min(MAX_ASSUMPTION_FEE_BPS) as i128;
+        let outstanding = loan.principal.saturating_sub(loan.repaid).max(0);
+        outstanding.saturating_mul(bps) / BPS_SCALE as i128
+    }
+
+    /// Configure the loan assumption fee, in basis points of the loan's
+    /// outstanding principal. Rejects anything above the hard cap
+    /// (`MAX_ASSUMPTION_FEE_BPS`). `0` disables the fee. Admin-only.
+    pub fn set_assumption_fee(env: Env, fee_bps: u32) -> Result<(), LoanAssumptionError> {
+        let config = Self::read_config(&env).map_err(|_| LoanAssumptionError::NotInitialized)?;
+        config.admin.require_auth();
+        if fee_bps > MAX_ASSUMPTION_FEE_BPS {
+            return Err(LoanAssumptionError::AssumptionFeeCapExceeded);
+        }
+        env.storage()
+            .instance()
+            .set(&FeatureKey::AssumptionFeeBps, &fee_bps);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.events().publish((symbol_short!("assm_cfg"),), fee_bps);
+        Ok(())
+    }
+
+    /// The configured loan assumption fee in basis points (0 when unset).
+    pub fn get_assumption_fee(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&FeatureKey::AssumptionFeeBps)
+            .unwrap_or(0)
+    }
+
+    /// The hard on-chain ceiling for the loan assumption fee, in basis points.
+    pub fn get_max_assumption_fee(_env: Env) -> u32 {
+        MAX_ASSUMPTION_FEE_BPS
     }
 
     /// Cancel a pending loan assumption request. Initiated by current borrower.

@@ -30,6 +30,7 @@ import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
 import { watchlistRouter } from "./routes/watchlist.js";
+import { investorRouter, investorAdminRouter } from "./routes/investor.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
@@ -303,6 +304,7 @@ app.use("/api/did", sensitiveRateLimiter, didRouter);
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
 app.use("/api/watchlist", authMiddleware, readYourWritesMiddleware, watchlistRouter);
+app.use("/api/investor", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, investorRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/referral", referralRouter);
 app.use("/api/tenant", tenantRouter);
@@ -311,6 +313,7 @@ app.use("/api/admin", authMiddleware, readYourWritesMiddleware, feeWaiverAdminRo
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, rateSheetAdminRouter);
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, notificationTemplatesAdminRouter);
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, adminSearchRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, investorAdminRouter);
 app.use("/api/admin", adminAuthRouter);
 // Bare (no outer authMiddleware): impersonation/start and /end authenticate
 // via the admin's own token through requireAdmin regardless of whether an
