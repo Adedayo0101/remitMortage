@@ -230,6 +230,43 @@ pub enum DataKey {
     /// Cumulative hardship principal withdrawn by a borrower/goal within a
     /// specific period index (`current_ledger / HardshipPeriodLedgers`).
     HardshipWithdrawnInPeriod(Address, Symbol, u32),
+    /// Admin-confirmed scheduled release time for a borrower's goal.
+    ReleaseSchedule(Address, Symbol),
+    /// Release time proposed by the borrower, awaiting admin confirmation.
+    PendingReleaseTime(Address, Symbol),
+    /// Limits on how often and how far a release time can be rescheduled.
+    ReleaseScheduleLimits,
+}
+
+/// An admin-confirmed release date for one escrow goal. While present,
+/// `release` reverts before `release_time` even if the savings target is met.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReleaseSchedule {
+    /// Ledger timestamp (seconds) from which release is allowed.
+    pub release_time: u64,
+    /// How many times the confirmed date has been moved after the first
+    /// confirmation.
+    pub reschedule_count: u32,
+    /// Ledger timestamp at which the date was last confirmed.
+    pub confirmed_at: u64,
+}
+
+/// Limits on rescheduling a goal's release time. `0` means unlimited for the
+/// interval, horizon and shift fields; `max_reschedules == 0` forbids any
+/// rescheduling once a date has been confirmed.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReleaseScheduleLimits {
+    /// Maximum number of reschedules after the first confirmation.
+    pub max_reschedules: u32,
+    /// Minimum seconds between two confirmed changes of the date.
+    pub min_reschedule_interval_secs: u64,
+    /// Furthest a release time may lie in the future, in seconds from now.
+    pub max_horizon_secs: u64,
+    /// Largest move, in seconds, between the current confirmed date and a
+    /// rescheduled one.
+    pub max_shift_secs: u64,
 }
 
 /// A borrower's hardship withdrawal request: a hash of the supporting
