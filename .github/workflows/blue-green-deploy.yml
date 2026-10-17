@@ -33,6 +33,12 @@ on:
         default: ''
         type: string
 
+      freeze_override_reason:
+        description: 'Emergency override of a deployment freeze (devops/deploy-freeze-calendar.json). Only authorized overriders are honored; the person and reason are logged.'
+        required: false
+        default: ''
+        type: string
+
 permissions:
   contents: read
 
@@ -53,7 +59,7 @@ jobs:
   determine-slots:
     name: Determine Active & Idle Slots
     runs-on: ubuntu-latest
-    needs: validate-override
+    needs: [validate-override, deploy-freeze-gate]
     outputs:
       active_slot: ${{ steps.identify.outputs.active_slot }}
       idle_slot: ${{ steps.identify.outputs.idle_slot }}
@@ -228,6 +234,34 @@ jobs:
         run: |
           echo "::error::disable_auto_rollback requires override_reason so the override is auditable."
           exit 1
+
+  # Blocks deploys inside a freeze window (month-end, incident hold, ...) from
+  # devops/deploy-freeze-calendar.json unless an authorized person supplies an
+  # override reason. Status is shown in the run summary; overrides are logged
+  # with the person and reason (artifact + team channel). See
+  # docs/DEPLOYMENT_FREEZE.md.
+  deploy-freeze-gate:
+    name: Deploy Freeze Gate
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment }}
+      DEPLOY_ACTOR: ${{ github.actor }}
+      FREEZE_OVERRIDE_REASON: ${{ github.event.inputs.freeze_override_reason }}
+      DEVOPS_ALERT_WEBHOOK_URL: ${{ secrets.DEVOPS_ALERT_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - name: Check deployment freeze calendar
+        run: node scripts/deploy-freeze-gate.mjs check
+      - name: Upload freeze override log
+        if: hashFiles('freeze-override-log.jsonl') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: freeze-override-log-${{ github.run_id }}
+          path: freeze-override-log.jsonl
+          retention-days: 400
 
   post-deploy-health-gate:
     name: Post-Deploy Health Gate
