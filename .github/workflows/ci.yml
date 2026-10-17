@@ -79,6 +79,40 @@ jobs:
         run: npm run test:security
         working-directory: backend
 
+  # ── API Response Schema Validation (issue #879) ────────────────────────
+  # Fails when a real response disagrees with the schema the OpenAPI document
+  # publishes for its method, path and status — an undocumented field, a wrong
+  # type, or an undocumented status code. Error shapes are covered alongside
+  # the success cases. See docs/OPENAPI_RESPONSE_VALIDATION.md for how to
+  # change a schema on purpose.
+  openapi-response-validation:
+    name: API Response Schema Validation
+    runs-on: ubuntu-latest
+    needs: backend-ci
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+        working-directory: backend
+
+      # Exported first so the committed artifact and the in-process spec the
+      # suite validates against are known to agree.
+      - name: Export Backend OpenAPI
+        run: npm run docs:export
+        working-directory: backend
+
+      - name: Validate Responses Against OpenAPI Schemas
+        run: npm run test:openapi
+        working-directory: backend
+
   # ── Backend Coverage ───────────────────────────────────────────────────
   # Coverage quality gate: `jest --coverage` exits non-zero when
   # statements/branches/functions/lines fall below the thresholds declared in
