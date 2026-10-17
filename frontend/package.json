@@ -11,6 +11,7 @@
     "format:check": "prettier --check .",
     "test": "jest --passWithNoTests",
     "test:a11y": "jest --testPathPattern=a11y --no-coverage",
+    "test:tx-preview": "jest src/lib/__tests__/transaction-preview.test.ts src/lib/__tests__/soroban-client-signing.test.ts src/components/__tests__/TransactionPreviewPanel.test.tsx",
     "test:a11y:axe": "playwright test -c playwright.a11y.config.ts",
     "contrast:check": "jest __tests__/contrastAudit.test.ts --no-coverage",
     "test:e2e": "playwright test",

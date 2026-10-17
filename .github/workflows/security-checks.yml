@@ -287,6 +287,83 @@ jobs:
       - name: Check IDOR coverage
         run: node scripts/check-idor-coverage.mjs
 
+  # ── Transaction Simulation Preview (issue #884) ────────────────────────
+  # Asserts that the preview shown before the wallet prompt matches what the
+  # transaction actually does — decoded from real envelopes, per transaction
+  # type — and that a failed simulation never reaches Freighter.
+  # See docs/TRANSACTION_SIMULATION_PREVIEW.md.
+  transaction-simulation-preview:
+    name: Transaction Simulation Preview
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run Preview and Signing-Gate Suites
+        run: npm run test:tx-preview
+        working-directory: frontend
+
+  # ── Admin Session Device Binding (issue #886) ──────────────────────────
+  # Asserts that an admin session cookie replayed from a different device is
+  # rejected and the session invalidated, that the legitimate device keeps
+  # working without extra prompts, and that the browser helper's proof format
+  # matches the server's. See docs/ADMIN_SESSION_DEVICE_BINDING.md.
+  admin-device-binding:
+    name: Admin Session Device Binding
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Backend Dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Run Device Binding Suite
+        run: npx jest src/__tests__/adminDeviceBinding.test.ts --no-coverage
+        working-directory: backend
+
+  # ── Prototype Pollution / Unsafe Merge Gate (issue #885) ────────────────
+  # Fails CI when first-party source gains an unguarded merge sink —
+  # Object.assign() into an existing object, a hand-rolled deep merge, a
+  # property write keyed by request data, or JSON.parse() on untrusted text.
+  # The runtime guards live in backend/src/utils/safeObject.ts and
+  # frontend/src/lib/safe-object.ts; behavioural assertions are in
+  # backend/src/__tests__/prototypePollution.test.ts (strip + safe merge) and
+  # prototypeFreeze.test.ts (startup freeze). See docs/PROTOTYPE_POLLUTION_GUARDS.md.
+  unsafe-merge-gate:
+    name: Prototype Pollution — Unsafe Merge Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Test the gate itself
+        run: node --test scripts/check-unsafe-merge.test.mjs
+
+      - name: Check for unguarded merge and deserialization patterns
+        run: node scripts/check-unsafe-merge.mjs
+
   # ── Open Redirect Coverage Gate (issue #759) ─────────────────────────────
   # Fails CI when a redirect-accepting path is added without validation via
   # resolveSafeRedirect/getSafeRedirectTarget plus registry coverage in

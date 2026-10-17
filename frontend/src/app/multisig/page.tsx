@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 import dynamic from "next/dynamic";
+import { previewTransaction } from "../../lib/soroban-client";
+import type { TransactionPreview } from "../../lib/transaction-preview";
 import { ChangeEvent, useMemo, useState } from "react";
 import {
   BASE_FEE,
@@ -14,6 +16,11 @@ import {
 } from "@stellar/stellar-sdk";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
+
+const TransactionPreviewPanel = dynamic(
+  () => import("../../components/tx/TransactionPreviewPanel"),
+  { ssr: false }
+);
 
 type CommitteeMember = {
   id: string;
@@ -82,6 +89,8 @@ export default function MultisigCoordinatorPage() {
   const [mediumThreshold, setMediumThreshold] = useState(2);
   const [highThreshold, setHighThreshold] = useState(3);
   const [transactionXdr, setTransactionXdr] = useState("");
+  const [preview, setPreview] = useState<TransactionPreview | null>(null);
+  const [previewAcknowledged, setPreviewAcknowledged] = useState(false);
   const [signedTransactionXdr, setSignedTransactionXdr] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [isBusy, setIsBusy] = useState(false);
@@ -237,6 +246,10 @@ export default function MultisigCoordinatorPage() {
       const transaction = builder.setTimeout(300).build();
       const xdr = transaction.toXDR();
       setTransactionXdr(xdr);
+      // A rebuilt transaction is a different transaction: the old preview and
+      // the acknowledgement of its warnings no longer apply to it.
+      setPreview(null);
+      setPreviewAcknowledged(false);
       setStatusMessage("SetOptions transaction built successfully.");
       return xdr;
     } catch (error) {
@@ -247,15 +260,41 @@ export default function MultisigCoordinatorPage() {
     }
   }
 
+  /**
+   * Issue #884: a signing-policy change is the most dangerous transaction in
+   * the app — get the thresholds wrong and the account is locked out
+   * permanently. So the envelope is decoded and described before the wallet is
+   * asked for anything, and the describing happens from the XDR, not from the
+   * form that built it.
+   */
   async function signSetupTransaction() {
     const xdr = transactionXdr || (await buildSetupTransaction());
 
     if (!xdr) return;
 
     setIsBusy(true);
-    setStatusMessage("Requesting Freighter signature...");
+    setStatusMessage("Checking what this transaction will do...");
 
     try {
+      const built = await previewTransaction(xdr, {
+        intent: { account: governanceAccount.trim() },
+      });
+      setPreview(built);
+
+      if (!built.ok) {
+        // Never reaches the wallet: there is nothing trustworthy to show.
+        setStatusMessage(built.failureReason ?? "The transaction could not be previewed.");
+        return;
+      }
+
+      if (built.requiresAcknowledgement && !previewAcknowledged) {
+        setStatusMessage(
+          "Review the preview below and confirm the warnings before signing."
+        );
+        return;
+      }
+
+      setStatusMessage("Requesting Freighter signature...");
       const freighterPublicKey = await getFreighterPublicKey();
 
       if (freighterPublicKey !== governanceAccount.trim()) {
@@ -557,6 +596,14 @@ export default function MultisigCoordinatorPage() {
 
                 {statusMessage && (
                   <p className="text-sm text-[var(--text-secondary)]">{statusMessage}</p>
+                )}
+
+                {preview && (
+                  <TransactionPreviewPanel
+                    preview={preview}
+                    acknowledged={previewAcknowledged}
+                    onAcknowledgedChange={setPreviewAcknowledged}
+                  />
                 )}
 
                 {transactionXdr && (

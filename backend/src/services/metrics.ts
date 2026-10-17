@@ -280,6 +280,32 @@ export const payloadRejectedTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Reserved object keys (`__proto__`, `constructor`, `prototype`) removed from
+ * an incoming request, labelled by guard mode and route prefix. A non-zero
+ * rate means someone is probing for prototype pollution (issue #885).
+ * See middleware/prototypePollutionGuard.ts.
+ */
+export const prototypePollutionStrippedTotal = new Counter({
+  name: "remitmortgage_prototype_pollution_stripped_total",
+  help: "Total reserved object keys stripped from request bodies and query strings.",
+  labelNames: ["mode", "route"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Admin requests rejected by device binding, labelled by failure reason and
+ * enforcement mode (issue #886). A rising `device_mismatch` or
+ * `replayed_proof` rate is session theft in progress, not a config problem.
+ * See middleware/adminDeviceBinding.ts.
+ */
+export const adminDeviceBindingFailuresTotal = new Counter({
+  name: "remitmortgage_admin_device_binding_failures_total",
+  help: "Total admin requests rejected because the device proof did not match the bound session.",
+  labelNames: ["reason", "mode"] as const,
+  registers: [metricsRegistry],
+});
+
 // ---------------------------------------------------------------------------
 // Graceful shutdown metrics
 // ---------------------------------------------------------------------------
