@@ -11,6 +11,7 @@ import {
   disableAdmin2FA,
 } from "../services/totpAuth.js";
 import logger from "../utils/logger.js";
+import { adaptiveCaptcha } from "../middleware/adaptiveCaptcha.js";
 import { credentialStuffingGuard } from "../middleware/credentialStuffing.js";
 import { recordCredentialFailure } from "../services/credentialStuffing.js";
 
@@ -84,7 +85,7 @@ adminAuthRouter.post("/2fa/enable", requireAdmin, (req: AuthenticatedRequest, re
  *     summary: Authenticate admin action or login using TOTP code or single-use Backup Recovery Code
  *     tags: [Admin 2FA]
  */
-adminAuthRouter.post("/2fa/verify", (req: Request, res: Response) => {
+adminAuthRouter.post("/2fa/verify", adaptiveCaptcha("admin_2fa_verify"), (req: Request, res: Response) => {
   const { adminAddress, code } = req.body;
 
   if (!adminAddress || !code) {

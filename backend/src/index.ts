@@ -52,6 +52,7 @@ import { loanImportRouter } from "./routes/loanImport.js";
 import { exportsRouter } from "./routes/exports.js";
 import { apiKeyUsageRouter } from "./routes/apiKeyUsage.js";
 import { authRouter } from "./routes/auth.js";
+import { captchaRouter } from "./routes/captcha.js";
 import {
   feeWaiverLoanRouter,
   feeWaiverAdminRouter,
@@ -328,6 +329,7 @@ app.use("/api/webhooks/email-events", emailEventsRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
 app.use("/api/user", userRouter);
 app.use("/api/waitlist", waitlistRouter);
+app.use("/api/captcha", captchaRouter);
 app.use("/api/auth", credentialStuffingGuard, authRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
