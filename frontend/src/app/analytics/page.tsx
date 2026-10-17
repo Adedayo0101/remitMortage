@@ -19,7 +19,9 @@ import {
   Cell,
 } from "recharts";
 import ChartExportControls from "@/components/charts/ChartExportControls";
+import AccessibleChart from "@/components/charts/AccessibleChart";
 import type { ChartExportData, ChartSeries } from "@/lib/chart-export";
+import { summarizeShares, summarizeTrend } from "@/lib/chart-summary";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 const RateBenchmarkWidget = dynamic(() => import("../../components/RateBenchmarkWidget"), {
@@ -137,6 +139,31 @@ export default function AnalyticsPage() {
   );
   const performanceLegend = useMemo<ChartSeries[]>(
     () => loanPerformance.map((d) => ({ label: `${d.name} (${d.value}%)`, color: d.color })),
+    [loanPerformance]
+  );
+
+  const volumeSummary = useMemo(
+    () =>
+      [
+        summarizeTrend(
+          "Deposits",
+          volumeData.map((d) => ({ label: d.month, value: d.deposits })),
+          (v) => `$${v.toLocaleString("en-US")}`
+        ),
+        summarizeTrend(
+          "Repayments",
+          volumeData.map((d) => ({ label: d.month, value: d.repayments })),
+          (v) => `$${v.toLocaleString("en-US")}`
+        ),
+      ].join(" "),
+    [volumeData]
+  );
+  const performanceSummary = useMemo(
+    () =>
+      summarizeShares(
+        "Loan performance",
+        loanPerformance.map((d) => ({ label: d.name, value: d.value }))
+      ),
     [loanPerformance]
   );
 
@@ -341,78 +368,85 @@ export default function AnalyticsPage() {
                     disabled={!mounted || volumeData.length === 0}
                   />
                 </div>
-                <div ref={volumeChartRef} className="h-[300px] w-full">
-                  {mounted && volumeData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart
-                        data={volumeData}
-                        margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                      >
-                        <defs>
-                          <linearGradient id="colorDeposits" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.4} />
-                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0.0} />
-                          </linearGradient>
-                          <linearGradient id="colorDisbursements" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.4} />
-                            <stop offset="95%" stopColor="#06b6d4" stopOpacity={0.0} />
-                          </linearGradient>
-                          <linearGradient id="colorRepayments" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
-                            <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255, 255, 255, 0.05)" />
-                        <XAxis dataKey="month" stroke="#64748b" style={{ fontSize: "11px" }} />
-                        <YAxis
-                          stroke="#64748b"
-                          style={{ fontSize: "11px" }}
-                          tickFormatter={(tick) => `$${tick.toLocaleString()}`}
-                        />
-                        <Tooltip
-                          contentStyle={{
-                            backgroundColor: "#111827",
-                            borderColor: "rgba(99, 102, 241, 0.15)",
-                            borderRadius: "8px",
-                            color: "#f1f5f9",
-                          }}
-                          formatter={(value) => [`$${value.toLocaleString()}`, ""]}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="deposits"
-                          name="Deposits"
-                          stroke="#6366f1"
-                          fillOpacity={1}
-                          fill="url(#colorDeposits)"
-                          strokeWidth={2}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="disbursements"
-                          name="Disbursed"
-                          stroke="#06b6d4"
-                          fillOpacity={1}
-                          fill="url(#colorDisbursements)"
-                          strokeWidth={2}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="repayments"
-                          name="Repayments"
-                          stroke="#10b981"
-                          fillOpacity={1}
-                          fill="url(#colorRepayments)"
-                          strokeWidth={2}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="h-full flex items-center justify-center text-sm text-[var(--text-secondary)]">
-                      Loading chart...
-                    </div>
-                  )}
-                </div>
+                <AccessibleChart
+                  chartTitle="Volume Trends (USDC)"
+                  summary={volumeSummary}
+                  data={volumeExportData}
+                  filterDescription="Monthly volumes for the last 12 months."
+                >
+                  <div ref={volumeChartRef} className="h-[300px] w-full">
+                    {mounted && volumeData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart
+                          data={volumeData}
+                          margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                        >
+                          <defs>
+                            <linearGradient id="colorDeposits" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#6366f1" stopOpacity={0.4} />
+                              <stop offset="95%" stopColor="#6366f1" stopOpacity={0.0} />
+                            </linearGradient>
+                            <linearGradient id="colorDisbursements" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.4} />
+                              <stop offset="95%" stopColor="#06b6d4" stopOpacity={0.0} />
+                            </linearGradient>
+                            <linearGradient id="colorRepayments" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
+                              <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255, 255, 255, 0.05)" />
+                          <XAxis dataKey="month" stroke="#64748b" style={{ fontSize: "11px" }} />
+                          <YAxis
+                            stroke="#64748b"
+                            style={{ fontSize: "11px" }}
+                            tickFormatter={(tick) => `$${tick.toLocaleString()}`}
+                          />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: "#111827",
+                              borderColor: "rgba(99, 102, 241, 0.15)",
+                              borderRadius: "8px",
+                              color: "#f1f5f9",
+                            }}
+                            formatter={(value) => [`$${value.toLocaleString()}`, ""]}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="deposits"
+                            name="Deposits"
+                            stroke="#6366f1"
+                            fillOpacity={1}
+                            fill="url(#colorDeposits)"
+                            strokeWidth={2}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="disbursements"
+                            name="Disbursed"
+                            stroke="#06b6d4"
+                            fillOpacity={1}
+                            fill="url(#colorDisbursements)"
+                            strokeWidth={2}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="repayments"
+                            name="Repayments"
+                            stroke="#10b981"
+                            fillOpacity={1}
+                            fill="url(#colorRepayments)"
+                            strokeWidth={2}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-sm text-[var(--text-secondary)]">
+                        Loading chart...
+                      </div>
+                    )}
+                  </div>
+                </AccessibleChart>
               </div>
 
               {/* Loan Performance Pie Chart */}
@@ -435,50 +469,60 @@ export default function AnalyticsPage() {
                     disabled={!mounted || loanPerformance.length === 0}
                   />
                 </div>
-                <div
-                  ref={performanceChartRef}
-                  className="h-[240px] flex items-center justify-center relative"
+                <AccessibleChart
+                  chartTitle="Loan Performance"
+                  summary={performanceSummary}
+                  data={performanceExportData}
+                  filterDescription="Share of the loan pool by status."
+                  formatCell={(value, col) =>
+                    col === 1 && typeof value === "number" ? `${value}%` : String(value)
+                  }
                 >
-                  {mounted && loanPerformance.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={loanPerformance}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={65}
-                          outerRadius={85}
-                          paddingAngle={5}
-                          dataKey="value"
-                        >
-                          {loanPerformance.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.color} />
-                          ))}
-                        </Pie>
-                        <Tooltip
-                          contentStyle={{
-                            backgroundColor: "#111827",
-                            borderColor: "rgba(99, 102, 241, 0.15)",
-                            borderRadius: "8px",
-                            color: "#f1f5f9",
-                          }}
-                          formatter={(value) => [`${value}%`, ""]}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="text-sm text-[var(--text-secondary)]">Loading chart...</div>
-                  )}
-                  {/* Center Text */}
-                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                    <span className="text-2xl font-black text-[var(--text-primary)]">
-                      {loanPerformance.find((d) => d.name === "Active")?.value || 0}%
-                    </span>
-                    <span className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)]">
-                      Active Pool
-                    </span>
+                  <div
+                    ref={performanceChartRef}
+                    className="h-[240px] flex items-center justify-center relative"
+                  >
+                    {mounted && loanPerformance.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={loanPerformance}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={65}
+                            outerRadius={85}
+                            paddingAngle={5}
+                            dataKey="value"
+                          >
+                            {loanPerformance.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: "#111827",
+                              borderColor: "rgba(99, 102, 241, 0.15)",
+                              borderRadius: "8px",
+                              color: "#f1f5f9",
+                            }}
+                            formatter={(value) => [`${value}%`, ""]}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="text-sm text-[var(--text-secondary)]">Loading chart...</div>
+                    )}
+                    {/* Center Text */}
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                      <span className="text-2xl font-black text-[var(--text-primary)]">
+                        {loanPerformance.find((d) => d.name === "Active")?.value || 0}%
+                      </span>
+                      <span className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)]">
+                        Active Pool
+                      </span>
+                    </div>
                   </div>
-                </div>
+                </AccessibleChart>
                 {/* Custom Legend */}
                 <div className="flex justify-around text-xs border-t border-[var(--border-color)] pt-4">
                   {loanPerformance.map((item, i) => (

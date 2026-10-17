@@ -41,6 +41,9 @@ const reportTo = JSON.stringify({
 });
 
 const nextConfig: NextConfig = {
+  // Browser source maps are only emitted for the CI client-bundle secret scan
+  // (scripts/client-bundle-secret-scan.mjs); they are never shipped to users.
+  productionBrowserSourceMaps: process.env.CLIENT_BUNDLE_SOURCEMAPS === "true",
   turbopack: {
     root: process.cwd(),
   },
