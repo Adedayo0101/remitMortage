@@ -44,9 +44,11 @@ use crate::types::DataKey;
 pub use crate::types::{
     AutoDepositSchedule, BeneficiaryList, BeneficiarySplit, BorrowerRecord, EscrowConfig,
     HardshipWithdrawalRequest, PendingAttestorChangeProposal, PendingPenaltyProposal,
-    PendingUpgradeRecord, ReleaseSchedule, ReleaseScheduleLimits,
+    PendingUpgradeRecord, ReleaseSchedule, ReleaseScheduleLimits, TtlKeeperEntry,
 };
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, IntoVal, Symbol};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, Address, BytesN, Env, IntoVal, Symbol, Vec,
+};
 
 // Fallback TTL values, used only before `initialize` has stored a config.
 // Live values come from EscrowConfig so each network can be tuned separately.
@@ -66,6 +68,11 @@ const DEFAULT_MAX_RESCHEDULE_SHIFT_SECS: u64 = 90 * 86_400; // ~3 months
 /// hardship withdrawal request before it expires (~7 days at production
 /// ledger time). Admin-configurable via `set_hardship_approval_window_ledgers`.
 const DEFAULT_HARDSHIP_WINDOW_LEDGERS: u32 = 120_960;
+
+/// Upper bound on the number of records one `extend_ttl_batch` call may touch
+/// (issue #855). Bounds the per-call CPU/ledger footprint so the permissionless
+/// keeper cannot be used to force an unbounded amount of work.
+const MAX_TTL_KEEPER_BATCH: u32 = 20;
 
 // Use a small constant in tests so ledger advances stay well within instance TTL.
 #[cfg(not(test))]
@@ -2070,6 +2077,44 @@ impl EscrowContract {
             .get::<DataKey, EscrowConfig>(&DataKey::Config)
             .map(|c| c.permissioned_mode)
             .unwrap_or(false)
+    }
+
+    /// Permissionless TTL keeper (issue #855).
+    ///
+    /// Extends the instance entry's TTL and the persistent TTL of every listed
+    /// borrower/goal record. Any address may call it — a keeper bot, an
+    /// operator, or the borrower themselves — so a dormant record cannot
+    /// archive out from under its owner while there is someone willing to pay
+    /// the ledger fee.
+    ///
+    /// Only records the contract owns are addressable: each entry is a
+    /// `(borrower, goal_id)` pair naming a [`DataKey::Borrower`] entry. A
+    /// record that does not exist is rejected with [`EscrowError::EscrowGoalNotFound`]
+    /// rather than silently extending an unrelated key. The batch must be
+    /// non-empty and at most [`MAX_TTL_KEEPER_BATCH`] entries, otherwise the
+    /// call fails with [`EscrowError::InvalidTtlConfig`] before doing any work.
+    pub fn extend_ttl_batch(env: Env, entries: Vec<TtlKeeperEntry>) -> Result<u32, EscrowError> {
+        let count = entries.len();
+        if count == 0 || count > MAX_TTL_KEEPER_BATCH {
+            return Err(EscrowError::InvalidTtlConfig);
+        }
+
+        // The instance entry backs config and every query, so extend it once
+        // for the whole batch.
+        Self::extend_instance_ttl(&env);
+
+        let mut extended = 0u32;
+        for entry in entries.iter() {
+            let key = DataKey::Borrower(entry.borrower.clone(), entry.goal_id.clone());
+            if !env.storage().persistent().has(&key) {
+                return Err(EscrowError::EscrowGoalNotFound);
+            }
+            Self::extend_persistent_ttl(&env, &key);
+            extended += 1;
+        }
+
+        env.events().publish((symbol_short!("ttl_ext"),), extended);
+        Ok(extended)
     }
 
     /// Internal helper: rejects the call if permissioned mode is on and the
