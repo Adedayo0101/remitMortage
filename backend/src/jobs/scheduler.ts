@@ -26,6 +26,7 @@ import { prisma } from "../services/db.js";
 import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
 import { runDataQualityAuditJob } from "./dataQualityAudit.js";
 import { runAuditChainVerificationJob } from "./auditChainVerification.js";
+import { runOutboxCleanupOnce, runOutboxRelayOnce } from "./outboxRelay.js";
 import { scheduledJob } from "../services/jobLeaderElection.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
@@ -49,6 +50,8 @@ let queryKillerTask: ReturnType<typeof cron.schedule> | null = null;
 let fourEyesApprovalExpiryTask: ReturnType<typeof cron.schedule> | null = null;
 let dataQualityAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let auditChainVerificationTask: ReturnType<typeof cron.schedule> | null = null;
+let outboxRelayTask: ReturnType<typeof cron.schedule> | null = null;
+let outboxCleanupTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -216,6 +219,27 @@ export function startScheduler() {
     }
   }), { timezone: "UTC" });
 
+  // Every minute: publish pending transactional-outbox rows (issue #858). The
+  // relay is at-least-once; rows stay pending if the queue is unavailable.
+  const outboxRelaySchedule = process.env.OUTBOX_RELAY_CRON_SCHEDULE || "* * * * *";
+  outboxRelayTask = cron.schedule(outboxRelaySchedule, scheduledJob("outbox-relay", async () => {
+    try {
+      await runOutboxRelayOnce();
+    } catch (error) {
+      logger.error("[Scheduler] Outbox relay job failed", { error });
+    }
+  }), { timezone: "UTC" });
+
+  // Daily at 03:30 UTC: delete published outbox rows past the retention window.
+  const outboxCleanupSchedule = process.env.OUTBOX_CLEANUP_CRON_SCHEDULE || "30 3 * * *";
+  outboxCleanupTask = cron.schedule(outboxCleanupSchedule, scheduledJob("outbox-cleanup", async () => {
+    try {
+      await runOutboxCleanupOnce();
+    } catch (error) {
+      logger.error("[Scheduler] Outbox cleanup job failed", { error });
+    }
+  }), { timezone: "UTC" });
+
   // Start the materialized view refresh scheduler (every 5 minutes by default)
   startAnalyticsRefreshScheduler();
 
@@ -304,6 +328,14 @@ export function stopScheduler() {
   if (dataQualityAuditTask) {
     dataQualityAuditTask.stop();
     dataQualityAuditTask = null;
+  }
+  if (outboxRelayTask) {
+    outboxRelayTask.stop();
+    outboxRelayTask = null;
+  }
+  if (outboxCleanupTask) {
+    outboxCleanupTask.stop();
+    outboxCleanupTask = null;
   }
   stopAnalyticsRefreshScheduler();
   console.log("[Scheduler] Stopped.");

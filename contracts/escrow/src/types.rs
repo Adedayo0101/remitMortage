@@ -157,6 +157,17 @@ pub struct PendingAttestorChangeProposal {
     pub execute_after: u32,
 }
 
+/// One borrower/goal record named in a permissionless TTL-extension batch
+/// (issue #855). The keeper entry point only accepts records this contract
+/// owns, so callers name them by the same `(borrower, goal_id)` tuple used for
+/// `DataKey::Borrower`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TtlKeeperEntry {
+    pub borrower: Address,
+    pub goal_id: Symbol,
+}
+
 /// Storage keys for the escrow contract.
 #[contracttype]
 #[derive(Clone)]
