@@ -1303,3 +1303,22 @@ model NotificationTemplateVersion {
   @@unique([key, locale, version])
   @@index([key, locale, status])
 }
+
+/// One execution of a scheduled job, written by the advisory-lock leader
+/// election wrapper (issue #935, services/jobLeaderElection.ts). Records which
+/// instance ran the job. A `running` row left behind by a crashed holder is
+/// marked `abandoned` by the next instance that acquires the job's lock.
+model ScheduledJobRun {
+  id         String    @id @default(uuid())
+  jobName    String
+  instanceId String
+  /// running | succeeded | failed | abandoned
+  status     String    @default("running")
+  startedAt  DateTime
+  finishedAt DateTime?
+  durationMs Int?
+  error      String?
+
+  @@index([jobName, startedAt(sort: Desc)])
+  @@index([jobName, status])
+}

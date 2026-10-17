@@ -38,6 +38,34 @@ export const metricsRegistry = new Registry();
 collectDefaultMetrics({ register: metricsRegistry });
 
 // ---------------------------------------------------------------------------
+// Scheduled job leader election (issue #935)
+// ---------------------------------------------------------------------------
+
+/**
+ * Outcomes of scheduled-job ticks on this instance. `executed`/`failed` mean
+ * this instance was the leader for the run; the `skipped_*` outcomes mean
+ * another instance already ran (or is running) it.
+ */
+export const scheduledJobRunsTotal = new Counter({
+  name: "remitmortgage_scheduled_job_runs_total",
+  help: "Scheduled job ticks handled by this instance, by outcome.",
+  labelNames: ["job", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Scheduled runs this instance skipped because it was not the leader.
+ * `lock_held`: another instance holds the job's advisory lock right now.
+ * `recently_run`: another instance already completed this run.
+ */
+export const scheduledJobSkippedTotal = new Counter({
+  name: "remitmortgage_scheduled_job_skipped_total",
+  help: "Scheduled job runs skipped because another instance is the leader.",
+  labelNames: ["job", "reason"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
 // HTTP metrics
 // ---------------------------------------------------------------------------
 
