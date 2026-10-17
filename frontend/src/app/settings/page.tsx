@@ -18,11 +18,21 @@ const PushNotificationPanel = dynamic(
   () => import("../../components/PushNotificationPanel"),
   { ssr: false }
 );
+const RecoveryCodesManager = dynamic(() => import("../../components/RecoveryCodesManager"), {
+  ssr: false,
+});
 const ReferralInvitePanel = dynamic(() => import("../../components/ReferralInvitePanel"), {
   ssr: false,
 });
 
-type SettingsTab = "profile" | "wallets" | "notifications" | "referrals" | "contractor" | "appearance";
+type SettingsTab =
+  | "profile"
+  | "wallets"
+  | "notifications"
+  | "security"
+  | "referrals"
+  | "contractor"
+  | "appearance";
 
 type NotificationKey =
   | "emailAlerts"
@@ -43,6 +53,7 @@ const tabs: { id: SettingsTab; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications & Alerts" },
+  { id: "security", label: "Security" },
   { id: "referrals", label: "Referrals" },
   { id: "contractor", label: "Developer/Contractor" },
   { id: "appearance", label: "Appearance" },
@@ -672,6 +683,18 @@ export default function SettingsPage() {
                     <span>Active Notification Rules:</span>
                     <span className="font-bold text-white">{enabledNotificationCount} of 7 enabled</span>
                   </div>
+                </section>
+              )}
+
+              {activeTab === "security" && (
+                <section role="tabpanel" aria-label="Security settings" className="space-y-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-white">Security</h2>
+                    <p className="text-slate-400 text-sm mt-1">
+                      Manage two-factor authentication recovery so you can always get back into your account.
+                    </p>
+                  </div>
+                  <RecoveryCodesManager />
                 </section>
               )}
 

@@ -22,7 +22,13 @@ mod fuzz_tests;
 
 pub use crate::errors::BridgeError;
 pub use crate::message::{InboundBridgeMessage, MessagePayloadType};
-pub use crate::types::{AssetInfo, BridgeConfig, BridgeOperation, BridgeState};
+pub use crate::types::{
+    AssetInfo, BridgeConfig, BridgeOperation, BridgeState, ChainVolumeWindow, PendingCapIncrease,
+};
+
+/// Rolling window length, in seconds, for the per-source-chain daily mint
+/// volume cap (issue #858).
+const DAILY_CAP_WINDOW_SECONDS: u64 = 86_400;
 
 /// Cross-chain bridge adapter interface for future EVM collateral support.
 ///
@@ -373,6 +379,21 @@ impl StellarBridgeAdapter {
     }
 
     /// Mint wrapped assets through the adapter interface.
+    ///
+    /// # Replay-protection invariant
+    ///
+    /// Each bridge operation can be minted **at most once**. The guard is the
+    /// operation's stored `status`: `mint` rejects a `"completed"` operation
+    /// with `AlreadyProcessed` *before* any other check that could be reached
+    /// on a replay and *before* any state-mutating effect (daily-volume
+    /// accounting, the `"completed"` status write, the `total_minted`
+    /// counter). The status flip and those effects happen in the same call,
+    /// so a message is either fully applied and marked, or not applied at
+    /// all. Because the guard is keyed by the operation id alone, a replay
+    /// that changes the amount, recipient or source chain is still rejected
+    /// as `AlreadyProcessed`, and operations are independent of each other,
+    /// so delivery order does not matter. Covered by the `replay_*` tests in
+    /// `test.rs`.
     pub fn mint(
         env: Env,
         operation_id: Symbol,
@@ -598,6 +619,8 @@ impl BridgeAdapter for StellarBridgeAdapter {
             .get::<_, BridgeOperation>(&DataKey::Operation(operation_id.clone()))
             .ok_or(BridgeError::OperationNotFound)?;
 
+        // Replay guard (see the invariant on `StellarBridgeAdapter::mint`):
+        // must stay ahead of every check and effect below.
         if operation.status == symbol_short!("completed") {
             return Err(BridgeError::AlreadyProcessed);
         }

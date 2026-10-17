@@ -6,6 +6,7 @@ import logger from "../utils/logger.js";
 import { startPartitionManager } from "./partitionManager.js";
 import { runRepaymentAudit } from "./repaymentAudit.js";
 import { runKycExpiryReminderJob } from "./kycExpiryReminder.js";
+import { runInvestorReverificationJob } from "./investorReverificationReminder.js";
 import { runEscrowReconciliation } from "./escrowReconciliation.js";
 import { runApplicationSlaMonitorJob } from "./applicationSlaMonitor.js";
 import { runAdminPortfolioDigestJob } from "./adminPortfolioDigest.js";
@@ -28,6 +29,7 @@ import { runAuditChainVerificationJob } from "./auditChainVerification.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
+let investorReverificationTask: ReturnType<typeof cron.schedule> | null = null;
 let escrowReconciliationTask: ReturnType<typeof cron.schedule> | null = null;
 let applicationSlaTask: ReturnType<typeof cron.schedule> | null = null;
 let adminDigestTask: ReturnType<typeof cron.schedule> | null = null;
@@ -97,6 +99,16 @@ export function startScheduler() {
   kycExpiryTask = cron.schedule(kycSchedule, async () => {
     console.log("[Scheduler] Triggering KYC expiry reminder job...");
     await runKycExpiryReminderJob();
+  }, { timezone: "UTC" });
+
+  // Daily at 08:30 UTC: accredited investor re-verification reminders
+  const reverificationSchedule = process.env.INVESTOR_REVERIFICATION_CRON_SCHEDULE || "30 8 * * *";
+  investorReverificationTask = cron.schedule(reverificationSchedule, async () => {
+    try {
+      await runInvestorReverificationJob();
+    } catch (error) {
+      logger.error("[Scheduler] Investor re-verification sweep failed", { error });
+    }
   }, { timezone: "UTC" });
 
   // Every 4 hours: escrow balance reconciliation
@@ -227,6 +239,10 @@ export function stopScheduler() {
   if (kycExpiryTask) {
     kycExpiryTask.stop();
     kycExpiryTask = null;
+  }
+  if (investorReverificationTask) {
+    investorReverificationTask.stop();
+    investorReverificationTask = null;
   }
   if (escrowReconciliationTask) {
     escrowReconciliationTask.stop();

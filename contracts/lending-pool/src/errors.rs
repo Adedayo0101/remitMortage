@@ -129,4 +129,8 @@ pub enum LoanAssumptionError {
     ApplicantNotVerified = 5,
     AssumptionNotFound = 6,
     AssumptionAlreadyRequested = 7,
+    /// The requested loan assumption fee is above the hard on-chain cap.
+    AssumptionFeeCapExceeded = 8,
+    /// The pool has not been initialized.
+    NotInitialized = 9,
 }

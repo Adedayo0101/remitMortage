@@ -466,6 +466,26 @@ model OfferingWatch {
   @@index([investorAddress])
 }
 
+/// Accredited-investor re-verification tracking (issue #725). One row per
+/// investor wallet, created when accreditation is first captured. The next
+/// deadline is derived from `lastVerifiedAt` plus the configured interval, so
+/// changing the interval never requires rewriting rows. The two reminder
+/// timestamps make the sweep idempotent and are cleared on every successful
+/// re-verification.
+model InvestorAccreditation {
+  id                 String    @id @default(uuid())
+  investorAddress    String    @unique
+  lastVerifiedAt     DateTime
+  /// Set when the "deadline approaching" reminder has been sent.
+  reminderSentAt     DateTime?
+  /// Set when the follow-up for a missed deadline has been sent.
+  missedReminderSentAt DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([lastVerifiedAt])
+}
+
 enum ServicingTransferStatus {
   SCHEDULED
   COMPLETED
