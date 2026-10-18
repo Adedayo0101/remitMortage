@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const compact = new URL(request.url).searchParams.get("compact") === "1";
   return NextResponse.json({
     totalValueLocked: 1250000,
     activeBorrowers: 42,
     activeInvestors: 18,
     loansDisbursed: 15,
-    recentActivity: [
+    recentActivity: compact ? [] : [
       {
         id: "1",
         type: "deposit",

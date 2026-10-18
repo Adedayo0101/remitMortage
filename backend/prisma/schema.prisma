@@ -247,6 +247,21 @@ model Borrower {
   repayments      LoanRepayment[]
 }
 
+model InvestorPosition {
+  id            String   @id @default(uuid())
+  walletAddress String   @unique
+  deposited     String   @default("0")
+  claimedYield  String   @default("0")
+  startLedger   Int      @default(0)
+  tranche       String
+  accruedYield  String   @default("0")
+  absorbedLoss  String   @default("0")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tranche])
+}
+
 model EscrowDeposit {
   id          String   @id @default(uuid())
   borrower    Borrower @relation(fields: [borrowerId], references: [id])

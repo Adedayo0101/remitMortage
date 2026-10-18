@@ -7,6 +7,7 @@ import { runEscrowReconciliation } from "./escrowReconciliation.js";
 import { runApplicationSlaMonitorJob } from "./applicationSlaMonitor.js";
 import { runAdminPortfolioDigestJob } from "./adminPortfolioDigest.js";
 import { runSessionTokenPurgeJob } from "./sessionTokenPurge.js";
+import { runInvestorPositionReconciliation } from "./investorPositionReconciliation.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
@@ -14,6 +15,7 @@ let escrowReconciliationTask: ReturnType<typeof cron.schedule> | null = null;
 let applicationSlaTask: ReturnType<typeof cron.schedule> | null = null;
 let adminDigestTask: ReturnType<typeof cron.schedule> | null = null;
 let sessionTokenPurgeTask: ReturnType<typeof cron.schedule> | null = null;
+let investorPositionReconciliationTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -66,9 +68,14 @@ export function startScheduler() {
     await runAdminPortfolioDigestJob();
   }, { timezone: "UTC" });
 
+  const investorSchedule = process.env.INVESTOR_POSITION_RECONCILIATION_CRON_SCHEDULE || "30 1 * * *";
+  investorPositionReconciliationTask = cron.schedule(investorSchedule, async () => {
+    console.log("[Scheduler] Triggering investor position reconciliation job...");
+    await runInvestorPositionReconciliation();
+  }, { timezone: "UTC" });
+
   console.log(
-    "[Scheduler] Started: repayment audit, KYC expiry reminder, escrow reconciliation, application SLA monitor, and admin portfolio digest jobs scheduled."
-    "[Scheduler] Started: repayment audit, session token purge, KYC expiry reminder, escrow reconciliation, and application SLA monitor jobs scheduled."
+    "[Scheduler] Started: repayment audit, session purge, KYC expiry reminder, escrow reconciliation, investor reconciliation, application SLA monitor, and admin portfolio digest jobs scheduled."
   );
 }
 
@@ -96,6 +103,10 @@ export function stopScheduler() {
   if (adminDigestTask) {
     adminDigestTask.stop();
     adminDigestTask = null;
+  }
+  if (investorPositionReconciliationTask) {
+    investorPositionReconciliationTask.stop();
+    investorPositionReconciliationTask = null;
   }
   console.log("[Scheduler] Stopped.");
 }

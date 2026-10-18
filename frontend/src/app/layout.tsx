@@ -3,6 +3,7 @@ import { WalletProvider } from "../context/WalletContext";
 import "./globals.css";
 import { ContractRegistryProvider } from "@/context/ContractRegistryContext";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { DataSaverProvider } from "@/context/DataSaverContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { NotificationProvider } from "@/context/NotificationContext";
 import { NotificationLayer } from "@/components/NotificationLayer";
@@ -118,6 +119,7 @@ export default async function RootLayout({
         <NextIntlClientProvider messages={messages} locale={locale}>
           <WalletBanner />
           <ThemeProvider>
+          <DataSaverProvider>
             <WalletProvider>
               <ContractRegistryProvider>
               <AuthProvider>
@@ -139,6 +141,7 @@ export default async function RootLayout({
               </AuthProvider>
               </ContractRegistryProvider>
             </WalletProvider>
+          </DataSaverProvider>
           </ThemeProvider>
         </NextIntlClientProvider>
       </body>

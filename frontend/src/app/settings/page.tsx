@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { getProductTourStore } from "@/hooks/useProductTourState";
+import { useDataSaver } from "@/context/DataSaverContext";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 // Push relies on browser-only APIs (ServiceWorker, PushManager, Notification),
@@ -133,6 +134,7 @@ async function readFreighterPublicKey() {
 }
 
 export default function SettingsPage() {
+  const { dataSaver, highContrast, setDataSaver, setHighContrast } = useDataSaver();
   const [activeTab, setActiveTab] = useState<SettingsTab>("profile");
   const [displayName, setDisplayName] = useState("Ada Remit");
   const [email, setEmail] = useState("ada@example.com");
@@ -396,6 +398,17 @@ export default function SettingsPage() {
                         Replay Tour
                       </button>
                     </div>
+                  </div>
+                  <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-5">
+                    <h3 className="text-sm font-semibold text-white">Accessibility & data use</h3>
+                    <label className="flex items-start justify-between gap-4 text-sm text-slate-200">
+                      <span><span className="font-semibold">Data saver</span><span className="block text-xs text-slate-400 mt-1">Honors your browser&apos;s Save-Data hint, reduces polling and chart payloads, and defers heavy visuals.</span></span>
+                      <input aria-label="Data saver" type="checkbox" checked={dataSaver} onChange={(event) => setDataSaver(event.target.checked)} className="mt-1 h-5 w-5 accent-cyan-500" />
+                    </label>
+                    <label className="flex items-start justify-between gap-4 text-sm text-slate-200">
+                      <span><span className="font-semibold">High-contrast palette</span><span className="block text-xs text-slate-400 mt-1">Uses stronger borders and focus indicators in addition to Windows forced-colors support.</span></span>
+                      <input aria-label="High contrast palette" type="checkbox" checked={highContrast} onChange={(event) => setHighContrast(event.target.checked)} className="mt-1 h-5 w-5 accent-cyan-500" />
+                    </label>
                   </div>
                 </section>
               )}

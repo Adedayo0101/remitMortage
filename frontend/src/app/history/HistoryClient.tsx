@@ -13,6 +13,7 @@ import useTransactionHistoryFilters, {
   type SortField,
   type TxCategory,
 } from "@/hooks/useTransactionHistoryFilters";
+import DateRangePicker from "@/components/DateRangePicker";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -495,28 +496,8 @@ export default function HistoryClient() {
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-xs text-[var(--text-muted)] mb-1.5 font-medium uppercase tracking-wider">
-                    From Date
-                  </label>
-                  <input
-                    type="date"
-                    value={filters.dateFrom}
-                    onChange={(e) => updateFilters({ dateFrom: e.target.value })}
-                    className="w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent-primary)] transition-colors"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs text-[var(--text-muted)] mb-1.5 font-medium uppercase tracking-wider">
-                    To Date
-                  </label>
-                  <input
-                    type="date"
-                    value={filters.dateTo}
-                    onChange={(e) => updateFilters({ dateTo: e.target.value })}
-                    className="w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent-primary)] transition-colors"
-                  />
+                <div className="md:col-span-2 lg:col-span-2">
+                  <DateRangePicker value={{ start: filters.dateFrom, end: filters.dateTo }} onChange={(range) => updateFilters({ dateFrom: range.start, dateTo: range.end })} />
                 </div>
 
                 <div>
