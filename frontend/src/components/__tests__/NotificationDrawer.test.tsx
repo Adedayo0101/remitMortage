@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
@@ -8,16 +11,9 @@ const mockMarkAllRead = jest.fn();
 const mockClearHistory = jest.fn();
 const mockClosePanel = jest.fn();
 
+// NotificationContext appends new records to the end of the array (oldest
+// first); NotificationDrawer reverses this for newest-first display.
 const mockHistory = [
-  {
-    id: "notif-1",
-    variant: "info" as const,
-    title: "Escrow Deposit Received",
-    message: "Deposited 500 USDC to escrow contract.",
-    duration: 5000,
-    read: false,
-    createdAt: Date.now() - 60000, // 1 min ago
-  },
   {
     id: "notif-2",
     variant: "success" as const,
@@ -26,6 +22,15 @@ const mockHistory = [
     duration: 5000,
     read: true,
     createdAt: Date.now() - 3600000, // 1 hour ago
+  },
+  {
+    id: "notif-1",
+    variant: "info" as const,
+    title: "Escrow Deposit Received",
+    message: "Deposited 500 USDC to escrow contract.",
+    duration: 5000,
+    read: false,
+    createdAt: Date.now() - 60000, // 1 min ago
   },
 ];
 

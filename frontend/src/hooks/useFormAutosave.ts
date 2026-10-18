@@ -1,4 +1,6 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 import { useEffect, useRef, useState } from "react";
 
@@ -7,6 +9,20 @@ interface AutosaveOptions {
   debounceMs?: number;
   onSave?: (data: any) => void;
   onRestore?: (data: any) => void;
+}
+
+function hasMeaningfulData(formData: Record<string, any>): boolean {
+  // Empty arrays/objects (e.g. a cost-breakdown list with no rows yet) are
+  // treated as empty so an untouched form never leaves a stale draft behind.
+  return Object.values(formData).some((value) => {
+    if (typeof value === "string") return value.trim().length > 0;
+    if (typeof value === "number") return value > 0;
+    if (Array.isArray(value)) return value.length > 0;
+    if (value && typeof value === "object") {
+      return Object.keys(value).length > 0;
+    }
+    return value != null;
+  });
 }
 
 /**
@@ -22,6 +38,10 @@ export function useFormAutosave<T extends Record<string, any>>(
   const [draftRestored, setDraftRestored] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const initialLoadRef = useRef(false);
+  const formDataRef = useRef(formData);
+  useEffect(() => {
+    formDataRef.current = formData;
+  }, [formData]);
 
   // Check for existing draft on mount
   useEffect(() => {
@@ -52,12 +72,7 @@ export function useFormAutosave<T extends Record<string, any>>(
     // Debounce the save operation
     timeoutRef.current = setTimeout(() => {
       try {
-        // Only save if form has meaningful data
-        const hasData = Object.values(formData).some((value) => {
-          if (typeof value === "string") return value.trim().length > 0;
-          if (typeof value === "number") return value > 0;
-          return value != null;
-        });
+        const hasData = hasMeaningfulData(formData);
 
         if (hasData) {
           const dataToSave = {
@@ -78,6 +93,19 @@ export function useFormAutosave<T extends Record<string, any>>(
       }
     };
   }, [formData, key, debounceMs, onSave]);
+
+  /**
+   * Writes the current form data to the draft immediately, bypassing the
+   * debounce. Used by "save draft" prompts; throws if storage fails.
+   */
+  const saveDraftNow = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    const current = formDataRef.current;
+    if (!hasMeaningfulData(current)) return;
+    const dataToSave = { ...current, _timestamp: Date.now() };
+    localStorage.setItem(key, JSON.stringify(dataToSave));
+    onSave?.(dataToSave);
+  };
 
   /**
    * Restores draft data from localStorage
@@ -121,6 +149,7 @@ export function useFormAutosave<T extends Record<string, any>>(
     hasDraft: hasDraft && !draftRestored,
     draftRestored,
     restoreDraft,
+    saveDraftNow,
     clearDraft,
     dismissDraft,
   };

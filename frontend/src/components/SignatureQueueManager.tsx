@@ -1,4 +1,6 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Clock, Fingerprint, ShieldCheck, Upload } from "lucide-react";
@@ -291,7 +293,10 @@ export function SignatureQueueManager({
       )}
 
       {isPassed && !txHash && !isSubmitting && (
-        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+        <div
+          data-testid="quorum-reached-banner"
+          className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3"
+        >
           <p className="flex items-center gap-2 text-sm font-semibold text-emerald-400">
             <ShieldCheck className="h-4 w-4 shrink-0" />
             Quorum reached

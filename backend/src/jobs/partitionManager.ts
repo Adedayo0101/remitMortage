@@ -1,8 +1,10 @@
-import cron from "node-cron";
-import { PrismaClient } from "@prisma/client";
-import logger from "../utils/logger.js";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
-const prisma = new PrismaClient();
+import cron from "node-cron";
+import { scheduledJob } from "../services/jobLeaderElection.js";
+import logger from "../utils/logger.js";
+import { prisma } from "../services/db.js";
 
 async function managePartitions() {
   logger.info("[partition-manager] Running partition management job");
@@ -44,6 +46,6 @@ async function managePartitions() {
 
 export function startPartitionManager() {
   // Run on the 1st of every month at midnight
-  cron.schedule("0 0 1 * *", managePartitions);
+  cron.schedule("0 0 1 * *", scheduledJob("partition-manager", managePartitions));
   logger.info("[partition-manager] Scheduled monthly partition management job");
 }

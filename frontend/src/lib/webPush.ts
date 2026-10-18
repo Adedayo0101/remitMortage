@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 /**
  * Web Push subscription management.
  *
@@ -124,7 +127,7 @@ export function getPermissionState(): NotificationPermission | "unsupported" {
  * The Push API predates widespread base64url support, so the padding and the
  * `-`/`_` characters have to be normalized by hand.
  */
-export function urlBase64ToUint8Array(base64String: string): Uint8Array {
+export function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
   const raw = atob(base64);

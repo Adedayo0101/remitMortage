@@ -1,4 +1,6 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 import dynamic from "next/dynamic";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -12,8 +14,21 @@ const PushNotificationPanel = dynamic(
   () => import("../../components/PushNotificationPanel"),
   { ssr: false }
 );
+const RecoveryCodesManager = dynamic(() => import("../../components/RecoveryCodesManager"), {
+  ssr: false,
+});
+const ReferralInvitePanel = dynamic(() => import("../../components/ReferralInvitePanel"), {
+  ssr: false,
+});
 
-type SettingsTab = "profile" | "wallets" | "notifications" | "contractor";
+type SettingsTab =
+  | "profile"
+  | "wallets"
+  | "notifications"
+  | "security"
+  | "referrals"
+  | "contractor"
+  | "appearance";
 
 type NotificationKey =
   | "emailAlerts"
@@ -34,7 +49,10 @@ const tabs: { id: SettingsTab; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications & Alerts" },
+  { id: "security", label: "Security" },
+  { id: "referrals", label: "Referrals" },
   { id: "contractor", label: "Developer/Contractor" },
+  { id: "appearance", label: "Appearance" },
 ];
 
 const notificationDetails: Record<
@@ -77,6 +95,26 @@ const notificationDetails: Record<
     category: "loan",
   },
 };
+
+type FrequencyCategory = "deposits" | "milestones" | "governance";
+
+const frequencyCategoryDetails: { key: FrequencyCategory; label: string; description: string }[] = [
+  {
+    key: "deposits",
+    label: "Deposits & Down-Payment Progress",
+    description: "Escrow approaching/reached alerts (section 2 above).",
+  },
+  {
+    key: "milestones",
+    label: "Construction Milestones",
+    description: "Milestone disbursement updates (section 3 above).",
+  },
+  {
+    key: "governance",
+    label: "Governance Proposals",
+    description: "New protocol governance proposals open for voting.",
+  },
+];
 
 const verifiedWallets = [
   {
@@ -149,6 +187,11 @@ export default function SettingsPage() {
     loanMilestones: true,
     loanApproval: true,
   });
+  const [frequencies, setFrequencies] = useState<Record<FrequencyCategory, NotificationFrequency>>({
+    deposits: "IMMEDIATE",
+    milestones: "IMMEDIATE",
+    governance: "IMMEDIATE",
+  });
   const [webhookUrl, setWebhookUrl] = useState("https://partner.example.com/remitmortgage/webhook");
   const [businessName, setBusinessName] = useState("Keystone Build Partners");
   const [registrationNumber, setRegistrationNumber] = useState("NG-RC-204918");
@@ -157,6 +200,8 @@ export default function SettingsPage() {
   const [webhookStatus, setWebhookStatus] = useState("");
   const [saveStatus, setSaveStatus] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+
+  const { theme, palette, toggleTheme, togglePalette } = useThemeStore();
 
   const emailError = email && !isValidEmail(email) ? "Enter a valid linked email address." : "";
   const webhookError =
@@ -191,6 +236,11 @@ export default function SettingsPage() {
               if (data.settings.notifications.webhookUrl !== undefined) {
                 setWebhookUrl(data.settings.notifications.webhookUrl);
               }
+              setFrequencies((prev) => ({
+                deposits: data.settings.notifications.depositsFrequency ?? prev.deposits,
+                milestones: data.settings.notifications.milestonesFrequency ?? prev.milestones,
+                governance: data.settings.notifications.governanceFrequency ?? prev.governance,
+              }));
             }
             if (data.settings.contractor) {
               if (data.settings.contractor.businessName) setBusinessName(data.settings.contractor.businessName);
@@ -263,7 +313,13 @@ export default function SettingsPage() {
         body: JSON.stringify({
           userId,
           profile: { displayName, email, phone },
-          notifications: { ...notifications, webhookUrl },
+          notifications: {
+            ...notifications,
+            webhookUrl,
+            depositsFrequency: frequencies.deposits,
+            milestonesFrequency: frequencies.milestones,
+            governanceFrequency: frequencies.governance,
+          },
           contractor: { businessName, registrationNumber, serviceRegion },
         }),
       });
@@ -282,6 +338,12 @@ export default function SettingsPage() {
           escrowReached: notifications.escrowReached,
           paymentMissed: notifications.paymentMissed,
           loanMilestones: notifications.loanMilestones,
+          // Governance alerts have no on/off toggle in this UI — only their
+          // delivery cadence is configurable, so this always stays enabled.
+          governanceAlerts: true,
+          depositsFrequency: frequencies.deposits,
+          milestonesFrequency: frequencies.milestones,
+          governanceFrequency: frequencies.governance,
           webhookUrl,
         }),
       }).catch(() => null);
@@ -592,10 +654,61 @@ export default function SettingsPage() {
                     {webhookStatus && <span className="text-xs text-cyan-300 block">{webhookStatus}</span>}
                   </label>
 
+                  {/* Notification Frequency */}
+                  <div className="space-y-3 pt-2 border-t border-slate-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">
+                      6. Notification Frequency
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Choose how often you receive non-urgent alerts for each category below.
+                      Immediate sends one email per event; digests batch that category's alerts
+                      into a single email at the cadence you pick.
+                    </p>
+                    <div className="space-y-3">
+                      {frequencyCategoryDetails.map((cat) => (
+                        <NotificationFrequencyControl
+                          key={cat.key}
+                          label={cat.label}
+                          description={cat.description}
+                          value={frequencies[cat.key]}
+                          onChange={(value) =>
+                            setFrequencies((prev) => ({ ...prev, [cat.key]: value }))
+                          }
+                        />
+                      ))}
+                      <NotificationFrequencyControl
+                        label="Security Alerts"
+                        description="New-device logins and other security-sensitive events."
+                        value="IMMEDIATE"
+                        onChange={() => {}}
+                        locked
+                        lockedReason="Security alerts always send immediately and can't be delayed or batched — this keeps you from missing unauthorized account activity while waiting on a digest."
+                      />
+                    </div>
+                  </div>
+
                   <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between text-xs text-slate-400">
                     <span>Active Notification Rules:</span>
                     <span className="font-bold text-white">{enabledNotificationCount} of 7 enabled</span>
                   </div>
+                </section>
+              )}
+
+              {activeTab === "security" && (
+                <section role="tabpanel" aria-label="Security settings" className="space-y-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-white">Security</h2>
+                    <p className="text-slate-400 text-sm mt-1">
+                      Manage two-factor authentication recovery so you can always get back into your account.
+                    </p>
+                  </div>
+                  <RecoveryCodesManager />
+                </section>
+              )}
+
+              {activeTab === "referrals" && (
+                <section role="tabpanel" aria-label="Referral settings" className="space-y-6">
+                  <ReferralInvitePanel ownerAddress={stellarAddress} />
                 </section>
               )}
 
@@ -642,6 +755,137 @@ export default function SettingsPage() {
                         className="w-full p-3.5 rounded-xl border border-slate-700 bg-slate-950/70 text-white focus:outline-none focus:border-cyan-500"
                       />
                     </label>
+                  </div>
+                </section>
+              )}
+
+              {activeTab === "appearance" && (
+                <section role="tabpanel" aria-label="Appearance settings" className="space-y-8">
+                  <div>
+                    <h2 className="text-2xl font-bold text-white">Appearance</h2>
+                    <p className="text-slate-400 text-sm mt-1">
+                      Customize the visual theme and accessibility palette. Preferences persist across sessions.
+                    </p>
+                  </div>
+
+                  <ThemeModeSettings />
+
+                  {/* Theme: Light / Dark (picking one switches to Manual mode) */}
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">Color Theme</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {(["dark", "light"] as const).map((t) => (
+                        <button
+                          key={t}
+                          type="button"
+                          aria-pressed={theme === t}
+                          onClick={() => theme !== t && toggleTheme()}
+                          className={`rounded-xl border p-5 text-left transition-all flex items-start gap-4 ${
+                            theme === t
+                              ? "border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/10"
+                              : "border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700"
+                          }`}
+                        >
+                          <span className={`mt-0.5 w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${t === "dark" ? "bg-slate-800 text-slate-200" : "bg-amber-100 text-amber-700"}`}>
+                            {t === "dark" ? (
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z" />
+                              </svg>
+                            ) : (
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                <circle cx="12" cy="12" r="5" />
+                                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" strokeWidth="2" stroke="currentColor" fill="none" />
+                              </svg>
+                            )}
+                          </span>
+                          <div>
+                            <span className="text-sm font-bold text-white capitalize">{t} Mode</span>
+                            <p className="text-xs text-slate-400 mt-1">
+                              {t === "dark" ? "Deep navy background with high-contrast accents." : "Light paper background for bright environments."}
+                            </p>
+                            {theme === t && (
+                              <span className="inline-block mt-2 px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500 text-slate-950">ACTIVE</span>
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Color Palette: Default / Color-Blind Friendly */}
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">Status Color Palette</h3>
+                    <p className="text-xs text-slate-400">
+                      The color-blind-friendly palette replaces green/red/amber status indicators with shapes and high-contrast colors that remain distinguishable across common color vision deficiencies (protanopia, deuteranopia, tritanopia).
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {(["default", "colorblind"] as const).map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          aria-pressed={palette === p}
+                          onClick={() => palette !== p && togglePalette()}
+                          className={`rounded-xl border p-5 text-left transition-all ${
+                            palette === p
+                              ? "border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/10"
+                              : "border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="text-sm font-bold text-white">
+                              {p === "default" ? "Default Palette" : "Color-Blind Friendly"}
+                            </span>
+                            {palette === p && (
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500 text-slate-950">ACTIVE</span>
+                            )}
+                          </div>
+
+                          {/* Palette preview swatches */}
+                          <div className="flex items-center gap-2 mt-1" aria-hidden="true">
+                            {p === "default" ? (
+                              <>
+                                <span className="w-5 h-5 rounded-full bg-[#10b981] border border-white/10" title="Success (green)" />
+                                <span className="w-5 h-5 rounded-full bg-[#f59e0b] border border-white/10" title="Warning (amber)" />
+                                <span className="w-5 h-5 rounded-full bg-[#ef4444] border border-white/10" title="Error (red)" />
+                                <span className="w-5 h-5 rounded-full bg-[#06b6d4] border border-white/10" title="Info (cyan)" />
+                              </>
+                            ) : (
+                              <>
+                                <span className="w-5 h-5 rounded-full bg-[#0066cc] border border-white/10" title="Success (blue)" />
+                                <span
+                                  className="w-0 h-0 border-l-[10px] border-r-[10px] border-b-[18px] border-l-transparent border-r-transparent border-b-[#ff8800]"
+                                  title="Warning (orange triangle)"
+                                />
+                                <span className="w-5 h-5 rounded-[2px] bg-[#cc0000] border border-white/10" title="Error (red square)" />
+                                <span
+                                  className="w-4 h-4 rotate-45 bg-[#6600cc] border border-white/10"
+                                  title="Info (purple diamond)"
+                                />
+                              </>
+                            )}
+                          </div>
+
+                          <p className="text-xs text-slate-400 mt-3 leading-relaxed">
+                            {p === "default"
+                              ? "Standard green/amber/red palette for most users."
+                              : "Validated against protanopia, deuteranopia, and tritanopia simulations. Uses distinct shapes alongside color to convey status."}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Live status indicator preview */}
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Status Indicator Preview</h3>
+                    <p className="text-xs text-slate-500">These indicators update instantly as you switch palettes above.</p>
+                    <div className="flex flex-wrap gap-4 pt-1">
+                      <span className="status-indicator success">Healthy / Approved</span>
+                      <span className="status-indicator warning">Pending / Warning</span>
+                      <span className="status-indicator error">Overdue / Error</span>
+                      <span className="status-indicator info">Info / Secondary</span>
+                      <span className="status-indicator neutral">Neutral</span>
+                    </div>
                   </div>
                 </section>
               )}

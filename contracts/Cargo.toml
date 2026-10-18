@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "escrow",
+    "bridge-adapter",
+    "budget-tests",
     "governance",
     "insurance-pool",
     "integration-tests",

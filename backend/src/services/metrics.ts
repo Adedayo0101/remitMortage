@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 /**
  * Prometheus metrics registry
  *
@@ -35,6 +38,34 @@ export const metricsRegistry = new Registry();
 collectDefaultMetrics({ register: metricsRegistry });
 
 // ---------------------------------------------------------------------------
+// Scheduled job leader election (issue #935)
+// ---------------------------------------------------------------------------
+
+/**
+ * Outcomes of scheduled-job ticks on this instance. `executed`/`failed` mean
+ * this instance was the leader for the run; the `skipped_*` outcomes mean
+ * another instance already ran (or is running) it.
+ */
+export const scheduledJobRunsTotal = new Counter({
+  name: "remitmortgage_scheduled_job_runs_total",
+  help: "Scheduled job ticks handled by this instance, by outcome.",
+  labelNames: ["job", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Scheduled runs this instance skipped because it was not the leader.
+ * `lock_held`: another instance holds the job's advisory lock right now.
+ * `recently_run`: another instance already completed this run.
+ */
+export const scheduledJobSkippedTotal = new Counter({
+  name: "remitmortgage_scheduled_job_skipped_total",
+  help: "Scheduled job runs skipped because another instance is the leader.",
+  labelNames: ["job", "reason"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
 // HTTP metrics
 // ---------------------------------------------------------------------------
 
@@ -60,6 +91,21 @@ export const httpRequestDurationSeconds = new Histogram({
   help: "HTTP request latency in seconds.",
   labelNames: ["method", "route", "status_code"] as const,
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [metricsRegistry],
+});
+
+/**
+ * Total HTTP requests partitioned by API version (issue #847), so a
+ * retirement decision for an old version is made from real traffic data
+ * rather than a guess. Version comes from the client-sent `Api-Version`
+ * request header, defaulting to `CURRENT_API_VERSION` (middleware/
+ * apiVersioning.ts) when absent — nearly all traffic today, since no client
+ * sends the header yet.
+ */
+export const httpRequestsByVersionTotal = new Counter({
+  name: "remitmortgage_http_requests_by_version_total",
+  help: "Total number of HTTP requests received, partitioned by API version.",
+  labelNames: ["version", "method", "route"] as const,
   registers: [metricsRegistry],
 });
 
@@ -200,6 +246,81 @@ export const schedulerJobsTotal = new Counter({
   name: "remitmortgage_scheduler_jobs_total",
   help: "Total background jobs executed.",
   labelNames: ["job_type", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
+// API key quota metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Total number of API requests rejected for exceeding their key's
+ * per-billing-period quota, by plan. See middleware/apiKeyQuota.ts.
+ */
+export const apiKeyQuotaExceededTotal = new Counter({
+  name: "remitmortgage_apikey_quota_exceeded_total",
+  help: "Total API requests rejected for exceeding the caller's per-billing-period quota.",
+  labelNames: ["plan"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
+// Request payload limit metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Total requests rejected by the payload size/shape limits, by reason
+ * (`too_large` | `too_deep` | `array_too_long`) and the matched route rule
+ * (a configured path prefix, or `default`). See middleware/payloadLimits.ts.
+ */
+export const payloadRejectedTotal = new Counter({
+  name: "remitmortgage_payload_rejected_total",
+  help: "Total requests rejected with 413 for exceeding body size, JSON depth or array length limits.",
+  labelNames: ["reason", "route"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Reserved object keys (`__proto__`, `constructor`, `prototype`) removed from
+ * an incoming request, labelled by guard mode and route prefix. A non-zero
+ * rate means someone is probing for prototype pollution (issue #885).
+ * See middleware/prototypePollutionGuard.ts.
+ */
+export const prototypePollutionStrippedTotal = new Counter({
+  name: "remitmortgage_prototype_pollution_stripped_total",
+  help: "Total reserved object keys stripped from request bodies and query strings.",
+  labelNames: ["mode", "route"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Admin requests rejected by device binding, labelled by failure reason and
+ * enforcement mode (issue #886). A rising `device_mismatch` or
+ * `replayed_proof` rate is session theft in progress, not a config problem.
+ * See middleware/adminDeviceBinding.ts.
+ */
+export const adminDeviceBindingFailuresTotal = new Counter({
+  name: "remitmortgage_admin_device_binding_failures_total",
+  help: "Total admin requests rejected because the device proof did not match the bound session.",
+  labelNames: ["reason", "mode"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown metrics
+// ---------------------------------------------------------------------------
+
+/** HTTP requests currently being served; drained to 0 during shutdown. */
+export const httpInFlightRequests = new Gauge({
+  name: "remitmortgage_http_in_flight_requests",
+  help: "Number of HTTP requests currently in flight.",
+  registers: [metricsRegistry],
+});
+
+/** 1 once the process has begun graceful shutdown (readiness is failing). */
+export const shuttingDown = new Gauge({
+  name: "remitmortgage_shutting_down",
+  help: "1 when the process is draining for shutdown, 0 otherwise.",
   registers: [metricsRegistry],
 });
 

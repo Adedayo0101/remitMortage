@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { useState, useEffect, useCallback } from 'react';
 import { useDataSaver } from '../context/DataSaverContext';
 import { dataSaverInterval } from '../lib/dataSaver';

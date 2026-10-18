@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { prisma } from "../services/db.js";
 import { loadConfig } from "../config.js";
 import logger from "../utils/logger.js";
@@ -138,6 +141,7 @@ export async function runApplicationSlaMonitorJob(): Promise<{ scannedCount: num
         where: { id: app.id },
         data: {
           slaAlertSentAt: now,
+          version: { increment: 1 },
         },
       });
     }

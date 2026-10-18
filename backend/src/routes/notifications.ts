@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { Router, Request, Response } from "express";
 import logger from "../utils/logger.js";
 import {
@@ -9,8 +12,15 @@ import {
   createInAppNotification,
 } from "../services/db.js";
 import { dispatchMaturityAlerts } from "../services/notification.js";
+import type { NotificationFrequency } from "../services/db.js";
 
 export const notificationsRouter = Router();
+
+const VALID_FREQUENCIES: NotificationFrequency[] = ["IMMEDIATE", "DAILY_DIGEST", "WEEKLY_DIGEST"];
+
+function isValidFrequency(value: unknown): value is NotificationFrequency {
+  return typeof value === "string" && (VALID_FREQUENCIES as string[]).includes(value);
+}
 
 /**
  * GET /api/notifications
@@ -25,7 +35,8 @@ notificationsRouter.get("/", async (req: Request, res: Response) => {
 
   try {
     const notifications = await getUserInAppNotifications(address);
-    const unreadCount = notifications.filter((n) => !n.read).length;
+    // Support both the older `status` field and a boolean `read` flag used by tests.
+    const unreadCount = notifications.filter((n: any) => (typeof n.read === 'boolean' ? !n.read : n.status !== "Sent")).length;
 
     return res.json({
       notifications,
@@ -50,6 +61,8 @@ notificationsRouter.patch("/:id/read", async (req: Request, res: Response) => {
   }
 
   try {
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
     await markInAppNotificationRead(id, address);
     return res.json({ success: true, message: `Notification ${id} marked as read.` });
   } catch (error: any) {
@@ -132,11 +145,52 @@ notificationsRouter.get("/preferences", async (req: Request, res: Response) => {
  * Save notification preferences for a user in the database.
  */
 notificationsRouter.post("/preferences", async (req: Request, res: Response) => {
-  const { address, userId, email, phone, emailAlerts, smsAlerts, escrowApproaching, escrowReached, paymentMissed, loanMilestones, webhookUrl } = req.body;
+  const {
+    address,
+    userId,
+    email,
+    phone,
+    emailAlerts,
+    smsAlerts,
+    escrowApproaching,
+    escrowReached,
+    paymentMissed,
+    loanMilestones,
+    governanceAlerts,
+    depositsFrequency,
+    milestonesFrequency,
+    governanceFrequency,
+    securityFrequency,
+    webhookUrl,
+  } = req.body;
   const targetId = address || userId;
 
   if (!targetId) {
     return res.status(400).json({ error: "Address or userId is required." });
+  }
+
+  // Security alerts are never configurable — reject the request outright
+  // rather than silently ignoring the field, so a client relying on this
+  // (a bug, or a UI that doesn't yet know better) finds out immediately.
+  if (securityFrequency !== undefined) {
+    return res.status(400).json({
+      error: "security_frequency_not_configurable",
+      message: "Security alerts are always delivered immediately and cannot be changed.",
+    });
+  }
+
+  for (const [field, value] of [
+    ["depositsFrequency", depositsFrequency],
+    ["milestonesFrequency", milestonesFrequency],
+    ["governanceFrequency", governanceFrequency],
+  ] as const) {
+    if (value !== undefined && !isValidFrequency(value)) {
+      return res.status(400).json({
+        error: "invalid_frequency",
+        field,
+        message: `${field} must be one of: ${VALID_FREQUENCIES.join(", ")}`,
+      });
+    }
   }
 
   try {
@@ -149,6 +203,10 @@ notificationsRouter.post("/preferences", async (req: Request, res: Response) => 
       escrowReached: Boolean(escrowReached),
       paymentMissed: Boolean(paymentMissed),
       loanMilestones: Boolean(loanMilestones),
+      governanceAlerts: Boolean(governanceAlerts),
+      ...(isValidFrequency(depositsFrequency) ? { depositsFrequency } : {}),
+      ...(isValidFrequency(milestonesFrequency) ? { milestonesFrequency } : {}),
+      ...(isValidFrequency(governanceFrequency) ? { governanceFrequency } : {}),
       webhookUrl,
     });
 

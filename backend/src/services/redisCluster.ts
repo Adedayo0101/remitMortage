@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import Redis, { Cluster, ClusterNode, ClusterOptions } from "ioredis";
 import { loadConfig } from "../config.js";
 import logger from "../utils/logger.js";
@@ -21,8 +24,8 @@ function buildClusterNodes(): ClusterNode[] {
   });
 }
 
-function buildClusterOptions(): ClusterOptions {
-  return {
+function buildClusterOptions(): any {
+  const opts: any = {
     lazyConnect: true,
     enableReadyCheck: true,
     enableOfflineQueue: true,
@@ -30,21 +33,16 @@ function buildClusterOptions(): ClusterOptions {
     retryDelayOnClusterDown: 1000,
     retryDelayOnTryAgain: 100,
     maxRetriesPerRequest: 3,
-    clusterRetryStrategy: (times: number) => {
-      const delay = Math.min(times * 200, 5000);
-      return delay;
-    },
+    clusterRetryStrategy: (times: number) => Math.min(times * 200, 5000),
     redisOptions: {
-      retryStrategy: (times: number) => {
-        const delay = Math.min(times * 100, 3000);
-        return delay;
-      },
+      retryStrategy: (times: number) => Math.min(times * 100, 3000),
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       enableOfflineQueue: true,
       lazyConnect: true,
     },
   };
+  return opts;
 }
 
 export async function initializeRedisCluster(): Promise<RedisClient | null> {
@@ -59,7 +57,7 @@ export async function initializeRedisCluster(): Promise<RedisClient | null> {
       const options = buildClusterOptions();
 
       logger.info("[redis-cluster] initializing cluster connection", {
-        nodes: nodes.map((n) => `${n.host}:${n.port}`),
+        nodes: nodes.map((n: any) => `${n.host}:${n.port}`),
       });
 
       clusterClient = new Cluster(nodes, options);

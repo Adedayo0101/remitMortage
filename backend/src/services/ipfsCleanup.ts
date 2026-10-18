@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { unpinFileFromIPFS } from "./ipfs.js";
 import logger from "../utils/logger.js";
 import { logUnpinnedCid } from "./ipfsAudit.js";
@@ -6,7 +9,11 @@ import { logUnpinnedCid } from "./ipfsAudit.js";
  * Unpins evidence from Pinata and records the outcome in the audit log.
  * Failures are logged as warnings and do not propagate.
  */
-export async function unpinEvidenceCid(cid: string, proposalId?: string): Promise<void> {
+export async function unpinEvidenceCid(
+  cid: string,
+  proposalId?: string,
+  options: { throwOnError?: boolean } = {}
+): Promise<void> {
   try {
     const result = await unpinFileFromIPFS(cid);
     await logUnpinnedCid({
@@ -26,5 +33,8 @@ export async function unpinEvidenceCid(cid: string, proposalId?: string): Promis
     }).catch((auditError) => {
       logger.warn(`[IPFSCleanup] Failed to write unpin audit log for CID ${cid}`, { auditError });
     });
+    if (options.throwOnError) {
+      throw error;
+    }
   }
 }

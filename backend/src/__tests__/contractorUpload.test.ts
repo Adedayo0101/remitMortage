@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import express from "express";
 import request from "supertest";
 import { Keypair } from "@stellar/stellar-sdk";
@@ -12,6 +15,19 @@ jest.mock("../services/ipfs.js", () => ({
 }));
 jest.mock("../services/ipfsAudit.js", () => ({ logUnpinnedCid: jest.fn() }));
 jest.mock("../services/ipfsCleanup.js", () => ({ unpinEvidenceCid: jest.fn() }));
+jest.mock("../services/db.js", () => ({
+  prisma: {
+    trackedCid: {
+      upsert: jest.fn().mockResolvedValue(undefined),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    milestoneEvidenceReference: {
+      upsert: jest.fn().mockResolvedValue(undefined),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+  },
+}));
 
 function sign(keypair: Keypair, challenge: string): string {
   return Buffer.from(keypair.sign(Buffer.from(challenge, "utf8"))).toString("hex");

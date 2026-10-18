@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import "dotenv/config";
 // Must load before any other module — OpenTelemetry auto-instrumentation
 // patches libraries (express, http, pg, etc.) at require-time.
@@ -26,36 +29,104 @@ import { milestoneRouter } from "./routes/milestone.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
+import { watchlistRouter } from "./routes/watchlist.js";
+import { investorRouter, investorAdminRouter } from "./routes/investor.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
+import { adminAuthRouter } from "./routes/adminAuth.js";
+import { adminDevicesRouter } from "./routes/adminDevices.js";
+import { impersonationRouter } from "./routes/impersonation.js";
 import { workspaceRouter } from "./routes/workspace.js";
+import { userRouter } from "./routes/user.js";
 import { metricsRouter } from "./routes/metrics.js";
+import { referralRouter } from "./routes/referral.js";
+import { tenantRouter } from "./routes/tenant.js";
 import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { incidentWebhookRouter } from "./routes/incidentWebhooks.js";
+import { chatOpsRouter } from "./routes/chatOpsCallbacks.js";
+import { entitlementsAdminRouter } from "./routes/entitlements.js";
+import { emailEventsRouter } from "./routes/emailEvents.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
+import { waitlistRouter } from "./routes/waitlist.js";
+import { loanImportRouter } from "./routes/loanImport.js";
+import { exportsRouter } from "./routes/exports.js";
+import { apiKeyUsageRouter } from "./routes/apiKeyUsage.js";
+import { authRouter } from "./routes/auth.js";
+import { captchaRouter } from "./routes/captcha.js";
+import {
+  feeWaiverLoanRouter,
+  feeWaiverAdminRouter,
+  feeWaiverBorrowerRouter,
+} from "./routes/feeWaiver.js";
+import { rateSheetAdminRouter } from "./routes/rateSheet.js";
+import { notificationTemplatesAdminRouter } from "./routes/notificationTemplates.js";
+import { adminSearchRouter } from "./routes/adminSearch.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { logMasker } from "./middleware/logMasker.js";
+import { payloadLimits } from "./middleware/payloadLimits.js";
+import { prototypePollutionGuard } from "./middleware/prototypePollutionGuard.js";
+import { freezeCriticalPrototypes } from "./utils/safeObject.js";
 import { correlationId } from "./middleware/correlationId.js";
+import { tenantContext } from "./services/tenant.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
-import { authMiddleware } from "./middleware/auth.js";
+import { authMiddleware, optionalAuthMiddleware } from "./middleware/auth.js";
+import { readYourWritesMiddleware } from "./middleware/readYourWrites.js";
+import { credentialStuffingGuard } from "./middleware/credentialStuffing.js";
+import { rlsMiddleware } from "./middleware/rls.js";
 import { startEventIndexer } from "./services/eventIndexer.js";
+import {
+  gracefulShutdown,
+  inFlightRequestTracker,
+  loadShutdownTimeouts,
+} from "./services/gracefulShutdown.js";
+import { stopNotificationScheduler } from "./services/notification.js";
+import { stopScheduler } from "./jobs/scheduler.js";
+import { stopWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
+import { stopSecretsRotationScheduler } from "./jobs/secretsRotation.js";
+import { stopJwtKeyRotationScheduler } from "./jobs/jwtKeyRotation.js";
+import { disconnect as disconnectDatabase } from "./services/db.js";
+import { closeRedis } from "./services/redis.js";
 import {
   globalRateLimiter,
   sensitiveRateLimiter,
   mutationRateLimiter,
 } from "./middleware/rateLimit.js";
 import { issueCsrfToken, csrfProtection, CSRF_COOKIE } from "./middleware/csrf.js";
+import { adminIpAllowlist, resolveTrustProxy } from "./middleware/adminIpAllowlist.js";
+import { requireBoundDevice } from "./middleware/adminDeviceBinding.js";
+import { notFoundHandler } from "./middleware/notFound.js";
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
+import {
+  startIpfsOrphanCleanupScheduler,
+  stopIpfsOrphanCleanupScheduler,
+} from "./jobs/ipfsOrphanCleanup.js";
 import { startBackupScheduler, startBackupCleanupScheduler } from "./jobs/backupScheduler.js";
 import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
+import { startWebhookAutoDisableScheduler, stopWebhookAutoDisableScheduler } from "./jobs/webhookAutoDisable.js";
+import { startSecretsRotationScheduler } from "./jobs/secretsRotation.js";
+import { startJwtKeyRotationScheduler } from "./jobs/jwtKeyRotation.js";
 import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
+import { getOcrProvider, setOcrProvider } from "./services/ocrService.js";
+import {
+  HttpAddressVerificationProvider,
+  setAddressVerificationProvider,
+} from "./services/addressVerificationProvider.js";
+import {
+  FailoverKycProvider,
+  HttpKycProvider,
+  sendKycFailoverAlert,
+} from "./services/kycProviderFailover.js";
+import {
+  HttpPayrollVerificationProvider,
+  setPayrollVerificationProvider,
+} from "./services/payrollVerificationProvider.js";
 import logger from "./utils/logger.js";
 import { feeEstimator } from "./services/feeEstimator.js";
 import { initializeRedis } from "./services/redis.js";
@@ -64,10 +135,46 @@ import { initializeRedisCluster, closeCluster } from "./services/redisCluster.js
 import { queueService } from "./services/queueService.js";
 import { startNotificationWorker, stopNotificationWorker } from "./workers/notificationWorker.js";
 import { startWebhookWorker, stopWebhookWorker } from "./workers/webhookWorker.js";
+import { startAnalyticsWorker, stopAnalyticsWorker } from "./workers/analyticsWorker.js";
 
 const app = express();
 const config = loadConfig();
 const PORT = config.port;
+
+// Serve KYC document verification from a backup provider when the primary
+// keeps failing. Disabled unless a backup provider URL is configured.
+if (config.kycBackupProviderUrl) {
+  setOcrProvider(
+    new FailoverKycProvider(
+      getOcrProvider(),
+      new HttpKycProvider({
+        url: config.kycBackupProviderUrl,
+        apiKey: config.kycBackupProviderApiKey,
+        timeoutMs: config.kycProviderTimeoutMs,
+      }),
+      {
+        failureThreshold: config.kycFailoverThreshold,
+        timeoutMs: config.kycProviderTimeoutMs,
+        cooldownMs: config.kycFailoverCooldownMs,
+        persistAlertAfterMs: config.kycFailoverAlertAfterMs,
+        onAlert: sendKycFailoverAlert,
+      }
+    )
+  );
+}
+
+// Automated employment verification (issue #802). Disabled unless a provider
+// URL is configured — the Null provider stays active otherwise, so every
+// applicant falls back to manual document review.
+if (config.payrollVerificationApiUrl) {
+  setPayrollVerificationProvider(
+    new HttpPayrollVerificationProvider({
+      url: config.payrollVerificationApiUrl,
+      apiKey: config.payrollVerificationApiKey,
+      providerName: "payroll_provider",
+    })
+  );
+}
 
 void initializeRedis();
 
@@ -106,6 +213,7 @@ void (async () => {
     await Promise.all([
       startNotificationWorker(),
       startWebhookWorker(),
+      startAnalyticsWorker(),
     ]);
     logger.info("[queue] BullMQ workers started", {
       mode: config.redisClusterEnabled ? "cluster" : "single",
@@ -118,7 +226,11 @@ void (async () => {
 // ── Middleware ───────────────────────────────────────────────────────────
 // Correlation ID must be first so every downstream middleware, handler and
 // log line for this request resolves the same trace ID.
+// In-flight request tracking comes before everything so draining counts (and,
+// once shutting down, turns away) every request (issue #827).
+app.use(inFlightRequestTracker());
 app.use(correlationId);
+app.use(tenantContext);
 // HTTP metrics must be first so the timer starts at the earliest possible point.
 app.use(httpMetricsMiddleware);
 app.use(tracingMiddleware);
@@ -139,7 +251,12 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json());
+// Per-route body size / JSON depth / array length limits (issue #828).
+app.use(payloadLimits());
+// Strip `__proto__` / `constructor` / `prototype` from every parsed body and
+// query string before any handler reads them (issue #885). Must sit directly
+// after body parsing and before anything that merges request data.
+app.use(prototypePollutionGuard());
 app.use(logMasker);
 app.use(cookieParser());
 
@@ -160,6 +277,11 @@ app.get("/api/csrf-token", (req, res) => {
   res.json({ csrfToken, cookieName: CSRF_COOKIE });
 });
 
+// Row-Level Security: sets PostgreSQL session tenant context per-request.
+// Runs after cookie parsing so the auth token is available, but before any
+// route handlers execute database queries.
+app.use(rlsMiddleware);
+
 // Basic rate limiter for verification endpoints: 100 requests per minute per IP
 const verificationLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -179,30 +301,69 @@ app.use("/api/health/rpc", rpcHealthRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
 app.use("/api/verify", verificationLimiter, verifyRouter);
-app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
-app.use("/api/loan", mutationRateLimiter, authMiddleware, loanRouter);
+app.use("/api/borrower", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, borrowerRouter);
+app.use("/api/borrower", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, feeWaiverBorrowerRouter);
+app.use("/api/loan", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, loanRouter);
+app.use("/api/loan", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, feeWaiverLoanRouter);
+app.use("/api/loan/import", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, loanImportRouter);
 app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
-app.use("/api/analytics", analyticsRouter);
+app.use("/api/analytics", optionalAuthMiddleware, readYourWritesMiddleware, analyticsRouter);
 app.use("/api/did", sensitiveRateLimiter, didRouter);
-app.use("/api/audit-logs", auditRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
+app.use("/api/watchlist", authMiddleware, readYourWritesMiddleware, watchlistRouter);
+app.use("/api/investor", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, investorRouter);
 app.use("/api/notifications", notificationsRouter);
-app.use("/api/admin", authMiddleware, adminRouter);
+app.use("/api/referral", referralRouter);
+app.use("/api/tenant", tenantRouter);
+// Device binding for admin sessions (issue #886): a session cookie alone is
+// never enough to reach an admin handler — every request must also carry a
+// signature from the device the session was bound to. Mounted before the admin
+// routers (and after authMiddleware, which decodes the `dbk` claim).
+// POST /api/admin/devices/enroll is exempt, since it is how a session becomes
+// bound in the first place.
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, requireBoundDevice(), adminDevicesRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, requireBoundDevice(), adminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, requireBoundDevice(), feeWaiverAdminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, requireBoundDevice(), rateSheetAdminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, requireBoundDevice(), notificationTemplatesAdminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, requireBoundDevice(), adminSearchRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, requireBoundDevice(), investorAdminRouter);
+app.use("/api/admin", adminAuthRouter);
+// Bare (no outer authMiddleware): impersonation/start and /end authenticate
+// via the admin's own token through requireAdmin regardless of whether an
+// impersonation cookie is also present, and /status reads only the
+// impersonation cookie itself — routing all three through authMiddleware
+// first would let its read-only enforcement block the very request that
+// ends an active impersonation session.
+app.use("/api/admin", impersonationRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
+app.use("/api/exports", exportsRouter);
+app.use("/api/keys", apiKeyUsageRouter);
 app.use("/api/webhooks/pagerduty", incidentWebhookRouter);
+app.use("/api/webhooks/chatops", chatOpsRouter);
+app.use("/api/webhooks/email-events", emailEventsRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
 app.use("/api/user", userRouter);
+app.use("/api/waitlist", waitlistRouter);
+app.use("/api/captcha", captchaRouter);
+app.use("/api/auth", credentialStuffingGuard, authRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// Unmatched routes — and, by design, admin requests blocked by the IP
+// allowlist — resolve to one identical 404 body. Must precede errorHandler.
+app.use(notFoundHandler);
 
 // Global error handler (must be after routes)
 Sentry.setupExpressErrorHandler(app);
 app.use(errorHandler);
 
+let eventIndexer: ReturnType<typeof startEventIndexer> | undefined;
+
 // ── Start Server ────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info("RemitMortgage API server started", {
     port: PORT,
     environment: process.env.NODE_ENV || "development",
@@ -213,32 +374,77 @@ app.listen(PORT, () => {
 
   // Start the Soroban contract event indexer alongside the HTTP server. It
   // polls /getEvents and persists borrower activity into PostgreSQL.
-  startEventIndexer();
+  eventIndexer = startEventIndexer();
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();
   startBackupCleanupScheduler();
   startWebhookKeyRotationScheduler();
+  startIpfsOrphanCleanupScheduler();
+  startWebhookAutoDisableScheduler();
+  startSecretsRotationScheduler();
+  startJwtKeyRotationScheduler();
   // Proactively monitor Soroban RPC node health and alert operators on
   // degradation, downtime or failover through the existing webhook mechanism.
   startRpcHealthMonitor();
   feeEstimator.start();
+
+  // Last startup step on purpose (issue #885): every module and every
+  // instrumentation library has finished patching by now, so sealing the
+  // shared prototypes cannot break them. Set PROTOTYPE_FREEZE=off to skip.
+  const frozenPrototypes = freezeCriticalPrototypes();
+  logger.info("Critical prototypes frozen", { prototypes: frozenPrototypes });
 });
 
-// ── Graceful Shutdown ─────────────────────────────────────────────────
+// ── Graceful Shutdown (issue #827) ──────────────────────────────────────
+// SIGTERM (rolling deploy / scale-down): fail readiness at once, stop accepting
+// connections, let in-flight requests and running jobs finish within their
+// timeouts, then close queues, Redis and the database. See
+// services/gracefulShutdown.ts.
+const shutdownTimeouts = loadShutdownTimeouts();
+
 async function shutdown(signal: string) {
-  logger.info(`[shutdown] received ${signal}, shutting down gracefully`);
-  await Promise.allSettled([
-    stopNotificationWorker(),
-    stopWebhookWorker(),
-    queueService.close(),
-    closeCluster(),
-  ]);
-  logger.info("[shutdown] complete");
-  process.exit(0);
+  // Last resort: if something wedges, still exit before the orchestrator's
+  // SIGKILL so the exit code reflects a failed shutdown.
+  const watchdog = setTimeout(() => {
+    logger.error("[shutdown] watchdog expired, forcing exit");
+    process.exit(1);
+  }, Math.max(shutdownTimeouts.requestTimeoutMs, shutdownTimeouts.jobTimeoutMs) + 5_000);
+  watchdog.unref();
+
+  const result = await gracefulShutdown(signal, {
+    server,
+    ...shutdownTimeouts,
+    stopSchedulers: [
+      stopScheduler,
+      stopNotificationScheduler,
+      stopIpfsOrphanCleanupScheduler,
+      stopWebhookAutoDisableScheduler,
+      stopWebhookKeyRotationScheduler,
+      stopSecretsRotationScheduler,
+      stopJwtKeyRotationScheduler,
+      () => eventIndexer?.stop(),
+      () => feeEstimator.stop(),
+    ],
+    drainWorkers: [
+      (timeout) => stopNotificationWorker(timeout),
+      (timeout) => stopWebhookWorker(timeout),
+      (timeout) => stopAnalyticsWorker(timeout),
+    ],
+    // Order matters: queues and Redis go before the database, and Sentry last
+    // so shutdown errors are still reported.
+    closeResources: [
+      { name: "queues", close: () => queueService.close() },
+      { name: "redis-cluster", close: () => closeCluster() },
+      { name: "redis", close: () => closeRedis() },
+      { name: "database", close: () => disconnectDatabase() },
+      { name: "sentry", close: () => Sentry.close(2_000) },
+    ],
+  });
+  process.exit(result.errors.length > 0 ? 1 : 0);
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
 
 export default app;

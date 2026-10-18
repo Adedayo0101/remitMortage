@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import request from "supertest";
 import { Keypair } from "@stellar/stellar-sdk";
 import app from "../index";
@@ -11,6 +14,8 @@ jest.mock("../services/db", () => ({
     },
   },
 }));
+// Provide other helper exports expected by app startup
+(jest.requireMock("../services/db") as any).loadIndexerState = jest.fn(async () => ({ lastProcessedLedger: 0, cursor: null }));
 
 describe("Proof Generator Service", () => {
   const mockReportId = "test-report-123";

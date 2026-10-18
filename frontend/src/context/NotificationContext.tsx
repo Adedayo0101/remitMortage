@@ -1,7 +1,10 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useWallet } from "./WalletContext";
+import { announceToast } from "@/lib/announcer";
 
 export type ToastVariant = "success" | "info" | "warning" | "error";
 
@@ -161,6 +164,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         message: input.message,
         duration: input.duration ?? DEFAULT_DURATION_MS,
       };
+
+      announceToast(toast.variant, toast.title, toast.message);
 
       setNotifications((current) => {
         const withoutDup = current.filter((n) => n.id !== id);

@@ -57,9 +57,31 @@ The protocol is designed around a core principle: **Separating Verification from
 
 ## Getting Started
 
-### Prerequisites
+### Dev Container (recommended — one command)
 
-To build and test the full suite, you will need:
+The fastest way to get a working environment is the
+[dev container](docs/DEV_CONTAINER.md). It pins Node.js 22, Rust (with the
+`wasm32-unknown-unknown` / `wasm32v1-none` targets), PostgreSQL and Redis, seeds
+the database automatically, and forwards the standard ports.
+
+1.  Install [Docker](https://docs.docker.com/get-docker/) and the VS Code
+    [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+2.  Open the repository and run **Dev Containers: Reopen in Container**.
+3.  Once it finishes setting up, run:
+
+    ```bash
+    make dev    # backend on :4000, frontend on :3000
+    make test   # backend + frontend + smart-contract tests
+    ```
+
+    Run `make help` to see every shortcut (`setup`, `db-migrate`, `db-seed`,
+    `build`, `up`, `down`, `logs`). The image is built in CI on every change to
+    `.devcontainer/`, so it cannot silently break.
+
+### Prerequisites (manual setup)
+
+If you prefer not to use the dev container, install the toolchains yourself:
+
 *   **Rust Toolchain:** Version 1.75+ (with `wasm32-unknown-unknown` target installed via `rustup target add wasm32-unknown-unknown`)
 *   **Soroban CLI:** Install via `cargo install --locked soroban-cli`
 *   **Node.js:** Version 18+ (with `npm` or `yarn`)
@@ -130,6 +152,31 @@ The frontend is built using Next.js, Tailwind CSS, and Freighter Wallet.
 *   Maintain clean TypeScript interfaces for all components.
 *   Follow our custom design tokens (supporting modern responsive dark mode with glassmorphic visuals).
 
+### License Header
+
+Every source file under `backend/src`, `frontend/src`, and `contracts/*/src` must start with the MIT license header:
+
+```text
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+```
+
+The `License Header` CI job (`.github/workflows/license-header.yml`) scans these paths on every PR and fails with the exact file path when the header is missing. Generated and vendored paths (`node_modules`, `.next`, `target`, `dist`, `build`, `coverage`, etc.) are excluded via the documented ignore list in `scripts/license-header-ignore.json` and the built-in defaults in `scripts/check-license-header.mjs`.
+
+**Check locally:**
+
+```bash
+node scripts/check-license-header.mjs
+```
+
+**Auto-fix locally (inserts the header without touching other content, preserves `"use client"` / `"use server"` and shebang placement):**
+
+```bash
+node scripts/check-license-header.mjs --fix
+```
+
+To exclude a generated or vendored path, add a glob to `scripts/license-header-ignore.json` and document why it is generated/vendored in the PR description.
+
 ---
 
 ## Git Workflow & Commit Standards
@@ -161,7 +208,7 @@ Ensure each commit is a **small, modular, and compilable unit of work**.
 ## Submitting a Pull Request
 
 1. **Keep it focused:** Try to limit each PR to a single feature, improvement, or bug fix.
-2. **Write tests:** Ensure new code is covered by robust unit or integration tests.
+2. **Write tests:** Ensure new code is covered by robust unit or integration tests. Build loans, applicants and milestones with the shared factories in `backend/src/test-utils/factories` rather than inline object literals (a ratcheted test, `noInlineFixtures.test.ts`, enforces this; see [Test Data Factories](docs/TEST_DATA_FACTORIES.md)).
 3. **Verify locally:** Run code formatting, linting, and test commands before pushing.
 4. **Draft details:** Explain the rationale behind your change in the PR description, including how it was tested.
 5. **Request review:** Assign at least one project maintainer to review your code.

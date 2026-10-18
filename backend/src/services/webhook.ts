@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 /**
  * Webhook Dispatcher Service
  *
@@ -45,6 +48,8 @@ import { correlationHeaders } from "../middleware/correlationId.js";
 
 /** Maximum delivery attempts before a delivery is moved to the DLQ. */
 export const MAX_ATTEMPTS = 5;
+export const CURRENT_WEBHOOK_SCHEMA_VERSION = 2;
+export const DEPRECATED_WEBHOOK_SCHEMA_VERSION = 1;
 
 /** How often a subscription's HMAC signing key is auto-rotated. */
 export const ROTATION_INTERVAL_DAYS = 90;
@@ -109,6 +114,18 @@ export interface CreateSubscriptionInput {
   /** Defaults to ["all"] when omitted. */
   topics?: EventTopic[];
   ownerAddress?: string;
+  webhookSchemaVersion?: number;
+}
+
+export function shapeWebhookPayload(
+  payload: WebhookPayload,
+  version: number
+): Record<string, unknown> {
+  if (version === 1) {
+    const { deliveryId, topic, timestamp, data } = payload;
+    return { deliveryId, topic, timestamp, data };
+  }
+  return { schemaVersion: CURRENT_WEBHOOK_SCHEMA_VERSION, ...payload };
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +160,7 @@ export function signPayload(
     .createHmac("sha256", secret)
     .update(signed)
     .digest("hex");
-  return `sha256=${hex}`;
+  return hex;
 }
 
 /**
@@ -168,16 +185,15 @@ export function verifySignature(
     return false;
   }
 
+  // Accept either raw hex or the "sha256=<hex>" form.
+  const sig = signature && signature.startsWith("sha256=") ? signature.slice(7) : signature;
   const expected = signPayload(secret, timestamp, rawBody);
 
-  // Constant-time comparison to prevent timing attacks.
   try {
-    return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected)
-    );
+    const sigBuf = Buffer.from(sig, "hex");
+    const expBuf = Buffer.from(expected, "hex");
+    return crypto.timingSafeEqual(sigBuf, expBuf);
   } catch {
-    // Buffers of different length throw — signatures don't match.
     return false;
   }
 }
@@ -248,6 +264,7 @@ export async function createSubscription(
       secret: encryptedSecret,
       topics,
       ownerAddress: input.ownerAddress ?? null,
+      webhookSchemaVersion: input.webhookSchemaVersion ?? CURRENT_WEBHOOK_SCHEMA_VERSION,
     },
   });
 
@@ -274,6 +291,16 @@ export async function listSubscriptions(ownerAddress?: string): Promise<any[]> {
       // lets admin tooling confirm rotations are landing on schedule.
       secretRotatedAt: true,
       previousSecretExpiresAt: true,
+      webhookSchemaVersion: true,
+      deprecationNotifiedAt: true,
+      // Lets admin tooling see a subscriber's failure streak before it hits
+      // the auto-disable threshold, and confirm whether a paused subscriber
+      // was disabled automatically or by an operator.
+      consecutiveFailedDispatches: true,
+      failingSinceAt: true,
+      lastFailureAt: true,
+      lastSuccessAt: true,
+      autoDisabledAt: true,
     },
   });
   return rows;
@@ -296,18 +323,40 @@ export async function getSubscription(id: string): Promise<any | null> {
       // lets admin tooling confirm rotations are landing on schedule.
       secretRotatedAt: true,
       previousSecretExpiresAt: true,
+      webhookSchemaVersion: true,
+      deprecationNotifiedAt: true,
+      consecutiveFailedDispatches: true,
+      failingSinceAt: true,
+      lastFailureAt: true,
+      lastSuccessAt: true,
+      autoDisabledAt: true,
     },
   });
 }
 
-/** Pause or revoke a subscription by id. */
+/**
+ * Pause, revoke, or (re-)activate a subscription by id. Re-activating
+ * clears its failure streak, giving it a clean slate for the auto-disable
+ * sweep (jobs/webhookAutoDisable.ts) rather than risking an immediate
+ * re-disable off stale counters from before the fix.
+ */
 export async function updateSubscriptionStatus(
   id: string,
   status: "active" | "paused" | "revoked"
 ): Promise<any> {
   return prisma.webhookSubscription.update({
     where: { id },
-    data: { status, updatedAt: new Date() },
+    data: {
+      status,
+      updatedAt: new Date(),
+      ...(status === "active"
+        ? {
+            consecutiveFailedDispatches: 0,
+            failingSinceAt: null,
+            autoDisabledAt: null,
+          }
+        : {}),
+    },
   });
 }
 
@@ -385,6 +434,39 @@ export async function verifySubscriptionSignature(
   }
 
   return false;
+}
+
+/**
+ * Confirms cutover to the new secret before the grace period would have
+ * expired it naturally (issue #834): once a subscriber has updated their
+ * receiver and verified the new secret works, they don't need to wait out
+ * the remaining {@link ROTATION_GRACE_PERIOD_DAYS} with the old one still
+ * live. Clears `previousSecret` immediately.
+ *
+ * Idempotent and safe to call when there is nothing to confirm — returns
+ * `{ confirmed: false }` rather than treating "no rotation in progress" as
+ * an error, since a subscriber may call this speculatively.
+ */
+export async function confirmSecretRotation(
+  id: string
+): Promise<{ confirmed: boolean }> {
+  const existing = await prisma.webhookSubscription.findUnique({
+    where: { id },
+    select: { previousSecret: true },
+  });
+  if (!existing) {
+    throw new Error(`Subscription ${id} not found`);
+  }
+  if (!existing.previousSecret) {
+    return { confirmed: false };
+  }
+
+  await prisma.webhookSubscription.update({
+    where: { id },
+    data: { previousSecret: null, previousSecretExpiresAt: null, updatedAt: new Date() },
+  });
+
+  return { confirmed: true };
 }
 
 /**
@@ -485,6 +567,7 @@ async function _dispatchEventAsync(
         encryptedSecret: sub.secret,
         topic,
         data,
+        webhookSchemaVersion: sub.webhookSchemaVersion,
       } as WebhookJobData, {
         attempts: MAX_ATTEMPTS,
         backoff: { type: "exponential", delay: BASE_BACKOFF_MS },
@@ -513,6 +596,7 @@ async function _deliverToSubscription(
   data: WebhookPayload["data"]
 ): Promise<void> {
   const plaintextSecret = decrypt(subscription.secret);
+  const dispatchedAt = new Date();
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const timestamp = String(Date.now());
@@ -561,6 +645,9 @@ async function _deliverToSubscription(
         success,
         attempt,
         nextRetryAt,
+        dispatchedAt,
+        completedAt: new Date(),
+        outcome: success ? "success" : isTerminal ? "dlq" : "retry",
       },
     });
 

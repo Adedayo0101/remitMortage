@@ -1,11 +1,20 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import crypto from "crypto";
 import { Worker, WorkerOptions } from "bullmq";
 import { getClusterClient } from "../services/redisCluster.js";
 import { WebhookJobData } from "../services/queueService.js";
 import { decrypt } from "../utils/crypto.js";
-import { signPayload } from "../services/webhook.js";
+import { signPayload, shapeWebhookPayload } from "../services/webhook.js";
 import { prisma } from "../services/db.js";
 import logger from "../utils/logger.js";
+import {
+  ActiveJobTracker,
+  drainWorker,
+  loadShutdownTimeouts,
+  type WorkerDrainResult,
+} from "../services/gracefulShutdown.js";
 
 function buildConnection(): WorkerOptions["connection"] {
   const client = getClusterClient();
@@ -29,6 +38,50 @@ const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 1_000;
 
 let worker: Worker<WebhookJobData> | null = null;
+// Jobs running right now, so a shutdown that outlasts its timeout can requeue them.
+const activeJobs = new ActiveJobTracker();
+
+/**
+ * Updates a subscriber's consecutive-failure streak after a dispatch reaches
+ * a terminal outcome (all retries exhausted, or a success). Feeds
+ * jobs/webhookAutoDisable.ts, which pauses subscribers that stay in a failing
+ * streak for too long instead of retrying a dead endpoint forever.
+ */
+async function recordDispatchOutcome(
+  subscriptionId: string,
+  outcome: "success" | "dlq",
+  at: Date
+): Promise<void> {
+  try {
+    if (outcome === "success") {
+      await prisma.webhookSubscription.update({
+        where: { id: subscriptionId },
+        data: { consecutiveFailedDispatches: 0, failingSinceAt: null, lastSuccessAt: at },
+      });
+      return;
+    }
+
+    const current = await prisma.webhookSubscription.findUnique({
+      where: { id: subscriptionId },
+      select: { failingSinceAt: true },
+    });
+
+    await prisma.webhookSubscription.update({
+      where: { id: subscriptionId },
+      data: {
+        consecutiveFailedDispatches: { increment: 1 },
+        lastFailureAt: at,
+        failingSinceAt: current?.failingSinceAt ?? at,
+      },
+    });
+  } catch (err) {
+    logger.error("[webhook-worker] failed to record dispatch outcome", {
+      subscriptionId,
+      outcome,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 async function attemptPost(
   url: string,
@@ -62,8 +115,8 @@ export async function startWebhookWorker(): Promise<void> {
 
   worker = new Worker<WebhookJobData>(
     "remitmortgage-webhooks",
-    async (job) => {
-      const { subscriptionId, url, encryptedSecret, topic, data } = job.data;
+    activeJobs.wrap(async (job) => {
+      const { subscriptionId, url, encryptedSecret, topic, data, webhookSchemaVersion } = job.data;
       const attempt = job.attemptsMade;
 
       logger.info("[webhook-worker] processing delivery", {
@@ -83,7 +136,7 @@ export async function startWebhookWorker(): Promise<void> {
         data,
       };
 
-      const body = JSON.stringify(payload);
+      const body = JSON.stringify(shapeWebhookPayload(payload, webhookSchemaVersion));
       const signature = signPayload(plaintextSecret, timestamp, body);
 
       const headers: Record<string, string> = {
@@ -95,11 +148,14 @@ export async function startWebhookWorker(): Promise<void> {
 
       const result = await attemptPost(url, headers, body);
 
+      const completedAt = new Date();
+
       const success =
         "statusCode" in result &&
         result.statusCode !== undefined &&
         result.statusCode >= 200 &&
         result.statusCode < 300;
+      const isLastAttempt = job.attemptsMade >= (job.opts?.attempts || 5) - 1;
 
       await prisma.webhookDelivery.create({
         data: {
@@ -114,6 +170,11 @@ export async function startWebhookWorker(): Promise<void> {
           success,
           attempt,
           nextRetryAt: null,
+          // job.timestamp is when the dispatch enqueued the job, so retries
+          // count toward the delivery latency.
+          dispatchedAt: new Date(job.timestamp),
+          completedAt,
+          outcome: success ? "success" : isLastAttempt ? "dlq" : "retry",
         },
       });
 
@@ -125,6 +186,7 @@ export async function startWebhookWorker(): Promise<void> {
           attempt: attempt + 1,
           statusCode: (result as any).statusCode,
         });
+        await recordDispatchOutcome(subscriptionId, "success", completedAt);
         return { success: true, deliveryId };
       }
 
@@ -141,7 +203,7 @@ export async function startWebhookWorker(): Promise<void> {
         error: errorMsg,
       });
 
-      if (job.attemptsMade >= (job.opts?.attempts || 5) - 1) {
+      if (isLastAttempt) {
         // last attempt - write to DLQ
         await prisma.webhookDLQ.create({
           data: {
@@ -159,10 +221,11 @@ export async function startWebhookWorker(): Promise<void> {
           topic,
           url,
         });
+        await recordDispatchOutcome(subscriptionId, "dlq", completedAt);
       }
 
       throw new Error(errorMsg);
-    },
+    }),
     {
       ...workerOptions,
       // Let BullMQ handle backoff via job options instead of custom delay
@@ -194,11 +257,19 @@ export async function startWebhookWorker(): Promise<void> {
   logger.info("[webhook-worker] started");
 }
 
-export async function stopWebhookWorker(): Promise<void> {
+/**
+ * Stops taking jobs and waits for running ones to finish; any still running at
+ * `timeoutMs` are requeued (see drainWorker).
+ */
+export async function stopWebhookWorker(
+  timeoutMs: number = loadShutdownTimeouts().jobTimeoutMs
+): Promise<WorkerDrainResult | void> {
   if (!worker) return;
-  await worker.close();
+  const closing = worker;
   worker = null;
-  logger.info("[webhook-worker] stopped");
+  const result = await drainWorker("webhooks", closing, timeoutMs, activeJobs);
+  logger.info("[webhook-worker] stopped", { forced: result.forced, requeued: result.requeued });
+  return result;
 }
 
 export function getWebhookWorker(): Worker<WebhookJobData> | null {

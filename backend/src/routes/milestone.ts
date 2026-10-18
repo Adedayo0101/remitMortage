@@ -1,10 +1,21 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { Router } from "express";
 import multer from "multer";
 import logger from "../utils/logger.js";
+import { idempotencyMiddleware } from "../middleware/idempotency.js";
 import { pinFileToIPFS, unpinFileFromIPFS } from "../services/ipfs.js";
 import { uploadToArweave } from "../services/arweave.js";
 import { logUnpinnedCid } from "../services/ipfsAudit.js";
 import { unpinEvidenceCid } from "../services/ipfsCleanup.js";
+import {
+  addMilestoneEvidenceReference,
+  hasMilestoneEvidenceReference,
+  markCidUnpinned,
+  removeMilestoneEvidenceReference,
+  trackCid,
+} from "../services/ipfsCidTracker.js";
 import {
   createProposal,
   getProposal,
@@ -12,6 +23,7 @@ import {
 } from "../services/milestoneProposalStore.js";
 import { verifyUploadAuthorization } from "../services/contractorAuth.js";
 import { logAudit } from "../services/audit.js";
+import { quarantineUpload, scanForMalware } from "../services/malwareScanner.js";
 
 export const milestoneRouter = Router();
 
@@ -107,6 +119,20 @@ milestoneRouter.post("/upload", (req, res, next) => {
     }
     next();
   });
+}, async (req, res, next) => {
+  if (!req.file) return next();
+  try {
+    const result = await scanForMalware(req.file.buffer);
+    if (result.status === "infected") {
+      const quarantineId = await quarantineUpload(req.file.buffer);
+      logger.error("[MilestoneUpload] Malware upload quarantined", { quarantineId, signature: result.signature });
+      return res.status(422).json({ error: "infected_file", message: "This file was quarantined because it failed a security scan." });
+    }
+    next();
+  } catch (error) {
+    logger.error("[MilestoneUpload] Malware scan unavailable; upload rejected", { error });
+    res.status(503).json({ error: "malware_scan_unavailable", message: "File scanning is temporarily unavailable. Please retry later." });
+  }
 }, async (req, res) => {
   try {
     // Authorize the caller before doing any work: only a whitelisted
@@ -155,6 +181,16 @@ milestoneRouter.post("/upload", (req, res, next) => {
     const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${cid}`;
     const arweaveUrl = arweaveTxId ? `https://arweave.net/${arweaveTxId}` : undefined;
 
+    // Record the CID so the orphan-cleanup job can track it.
+    // proposal ID is not yet known at upload time; the caller creates a
+    // proposal separately via POST /proposals — the CID is linked then.
+    // We use a temporary reference so the grace period starts from pin time.
+    await trackCid({
+      cid,
+      referenceType: "milestone_evidence",
+      referenceId: `upload:${cid}`, // updated when a proposal is created
+    }).catch(() => {/* non-fatal */});
+
     return res.status(201).json({
       cid,
       ipfsUrl,
@@ -200,6 +236,9 @@ milestoneRouter.delete("/unpin/:cid", async (req, res) => {
 
   try {
     const result = await unpinFileFromIPFS(cid);
+    await markCidUnpinned(cid).catch((trackerError) => {
+      logger.warn("[MilestoneUnpin] CID tracker update failed", { cid, trackerError });
+    });
     await logUnpinnedCid({
       cid,
       success: true,
@@ -230,7 +269,7 @@ milestoneRouter.delete("/unpin/:cid", async (req, res) => {
  *     tags:
  *       - Milestone
  */
-milestoneRouter.post("/proposals", async (req, res) => {
+milestoneRouter.post("/proposals", idempotencyMiddleware, async (req, res) => {
   const { milestoneId, evidenceCid, arweaveTxId } = req.body ?? {};
 
   if (!milestoneId || !evidenceCid) {
@@ -241,6 +280,15 @@ milestoneRouter.post("/proposals", async (req, res) => {
   }
 
   const proposal = createProposal(String(milestoneId), String(evidenceCid), arweaveTxId ? String(arweaveTxId) : undefined);
+
+  // Re-track the CID now that we have the real proposal ID so the cleanup job
+  // can find and verify the reference. Upsert is safe if already tracked.
+  await addMilestoneEvidenceReference(proposal.id, String(evidenceCid));
+  await trackCid({
+    cid: String(evidenceCid),
+    referenceType: "milestone_evidence",
+    referenceId: proposal.id,
+  }).catch(() => {/* non-fatal */});
 
   await logAudit({
     action: "milestone.proposal_created",
@@ -287,9 +335,19 @@ milestoneRouter.post("/proposals/:id/reject", async (req, res) => {
   });
 
   if (proposal.evidenceCid) {
-    unpinEvidenceCid(proposal.evidenceCid, id).catch((err) => {
-      logger.warn(`[MilestoneReject] Background unpin failed for proposal ${id}`, { err });
-    });
+    try {
+      await removeMilestoneEvidenceReference(id, proposal.evidenceCid);
+      const stillReferenced = await hasMilestoneEvidenceReference(
+        proposal.evidenceCid,
+        id
+      );
+      if (!stillReferenced) {
+        await unpinEvidenceCid(proposal.evidenceCid, id, { throwOnError: true });
+        await markCidUnpinned(proposal.evidenceCid);
+      }
+    } catch (err) {
+      logger.warn(`[MilestoneReject] Evidence cleanup failed for proposal ${id}`, { err });
+    }
   }
 
   return res.json(updated);

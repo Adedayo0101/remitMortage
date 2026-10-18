@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import crypto from "crypto";
 import { transporter, sendRepaymentReminder, sendDepositReceipt, sendLoanStatusUpdate } from "../services/email.js";
 import { sendWebhook } from "../services/webhook.js";
@@ -14,7 +17,9 @@ jest.mock("../services/db.js", () => ({
       findMany: jest.fn(),
       update: jest.fn(),
     },
+    getNotificationPreference: jest.fn(),
   },
+  getNotificationPreference: jest.fn(),
 }));
 
 describe("Notification Services and Dispatcher Tests", () => {

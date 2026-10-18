@@ -1,19 +1,589 @@
-import { Router, Request, Response } from "express";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
+import { Router, Response } from "express";
 import { prisma } from "../services/db.js";
 import { sendWebhook } from "../services/webhook.js";
 import { runEscrowReconciliation } from "../jobs/escrowReconciliation.js";
 import logger from "../utils/logger.js";
+import { requireAdmin, type AuthenticatedRequest } from "../middleware/auth.js";
+import { bulkReviewApplications, getApplication, type BulkReviewDecision } from "../services/loanStore.js";
+import { mergeApplicants, MergeValidationError } from "../services/applicantMerge.js";
+import { promoteWaitlistBatch } from "../services/inviteCode.js";
+import { runSuspiciousActivityScan } from "../services/suspiciousActivity.js";
+import { getTaxIdMatchesForApplication } from "../services/taxIdDedup.js";
+import {
+  initiateServicingTransfer,
+  getServicingHistory,
+  ServicingTransferError,
+} from "../services/loanServicing.js";
+import { listAutoRejectionRules, createAutoRejectionRule, updateAutoRejectionRule } from "../services/autoRejectionRuleStore.js";
+import {
+  getWebhookLatencyReport,
+  DEFAULT_LATENCY_SLA_MS,
+  DEFAULT_LATENCY_WINDOW_MINUTES,
+  MAX_LATENCY_WINDOW_MINUTES,
+} from "../services/webhookLatency.js";
+import { listSuppressedApplicants } from "../services/emailSuppression.js";
+import { runTableBloatScan, getLatestTableBloatSnapshots } from "../services/tableBloatMonitor.js";
+import { getApplicantCommunicationTimeline } from "../services/communicationTimeline.js";
+import { runUnusedIndexAuditJob } from "../jobs/unusedIndexAudit.js";
+import {
+  ForensicsReviewError,
+  listFlaggedDocuments,
+  reviewFlaggedDocument,
+} from "../services/kycDocumentForensics.js";
+import { loadConfig } from "../config.js";
+import { requiresFourEyesApproval } from "../services/fourEyesPolicy.js";
+import {
+  createApprovalRequest,
+  getApprovalRequest,
+  listPendingApprovalRequests,
+  markExecuted,
+  approveRequest,
+  rejectRequest,
+  FourEyesError,
+} from "../services/fourEyesApproval.js";
+import {
+  getModelConfig,
+  getShadowEvaluations,
+  getShadowMetrics,
+  updateModelConfig,
+} from "../services/scoring.js";
 
 export const adminRouter = Router();
 
-// Trigger manual retry of a DLQ job
-adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) => {
-  const { id } = req.params;
+adminRouter.get("/compliance/suspicious-activity", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const status = typeof req.query.status === "string" ? req.query.status : "OPEN";
+  try {
+    const alerts = await prisma.suspiciousActivityAlert.findMany({
+      where: { status: status as any },
+      include: { borrower: { select: { stellarAddress: true } } },
+      orderBy: { detectedAt: "desc" },
+      take: 200,
+    });
+    return res.json({ alerts });
+  } catch (error) {
+    logger.error("List suspicious activity alerts error", { error });
+    return res.status(500).json({ error: "failed_to_list_suspicious_activity" });
+  }
+});
+
+adminRouter.post("/compliance/suspicious-activity/scan", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json(await runSuspiciousActivityScan());
+  } catch (error) {
+    logger.error("Suspicious activity scan error", { error });
+    return res.status(500).json({ error: "suspicious_activity_scan_failed" });
+  }
+});
+
+adminRouter.patch("/compliance/suspicious-activity/:id", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { status, reviewNotes } = req.body ?? {};
+  if (!["OPEN", "CLEARED", "CONFIRMED"].includes(status)) {
+    return res.status(400).json({ error: "invalid_status" });
+  }
+  try {
+    const alert = await prisma.suspiciousActivityAlert.update({
+      where: { id: req.params.id },
+      data: { status, reviewNotes: reviewNotes ? String(reviewNotes) : null, reviewedAt: new Date(), reviewedBy: req.user?.walletAddress ?? "admin" },
+    });
+    return res.json(alert);
+  } catch (error) {
+    logger.error("Update suspicious activity alert error", { error });
+    return res.status(404).json({ error: "alert_not_found" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/loans/bulk-review:
+ *   post:
+ *     summary: Approve or reject multiple pending loan applications
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Batch review completed; per-application successes and failures are returned.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [processed, failed, results, failures]
+ *               properties:
+ *                 processed: { type: integer }
+ *                 failed: { type: integer }
+ *                 results: { type: array, items: { type: object } }
+ *                 failures: { type: array, items: { type: object } }
+ *       400:
+ *         description: The review list is missing, empty, or invalid.
+ *       403:
+ *         description: Reviewer identity is missing.
+ *       500:
+ *         description: The batch review could not be completed.
+ */
+/**
+ * @openapi
+ * /api/admin/applicants/merge:
+ *   post:
+ *     summary: Merge a duplicate applicant into a primary applicant
+ *     description: Re-points loan applications, verification results, KYC documents and credentials to the primary. Soft-deletes the duplicate.
+ *     tags: [Admin]
+ *     security: [bearerAuth: []]
+ */
+adminRouter.post("/applicants/merge", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { primaryApplicantId, duplicateApplicantId, reason } = req.body ?? {};
+  try {
+    const result = await mergeApplicants(primaryApplicantId, duplicateApplicantId, {
+      actorAddress: req.user?.walletAddress ?? null,
+      ipAddress: req.ip ?? null,
+      reason: typeof reason === "string" ? reason : undefined,
+    });
+    return res.status(200).json(result);
+  } catch (err: any) {
+    if (err instanceof MergeValidationError || (typeof err?.status === "number" && typeof err?.code === "string")) {
+      const status = typeof err.status === "number" ? err.status : 400;
+      const code = typeof err.code === "string" ? err.code : "invalid_request";
+      return res.status(status).json({ error: code, message: err.message });
+    }
+    logger.error("Applicant merge error", { error: err });
+    return res.status(500).json({ error: "merge_failed", message: err?.message ?? "merge failed" });
+  }
+});
+
+adminRouter.post("/loans/bulk-review", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  const rawItems = Array.isArray(body.reviews)
+    ? body.reviews
+    : Array.isArray(body.applicationIds) && typeof body.decision === "string"
+      ? body.applicationIds.map((applicationId: unknown) => ({ applicationId, decision: body.decision, reason: body.reason }))
+      : null;
+
+  if (!rawItems || rawItems.length === 0 || rawItems.length > 100) {
+    return res.status(400).json({ error: "invalid_request", message: "reviews must contain between 1 and 100 applications" });
+  }
+
+  const items = rawItems.map((item: any) => ({
+    applicationId: typeof item?.applicationId === "string" ? item.applicationId : item?.id,
+    decision: item?.decision,
+    reason: item?.reason,
+    // Optimistic lock (issue #846): optional per item so batched callers can
+    // stay backward compatible, strictly validated when supplied.
+    version: item?.version,
+  }));
+  if (items.some((item: any) => !item.applicationId || !["approve", "reject"].includes(item.decision))) {
+    return res.status(400).json({ error: "invalid_request", message: "Each review requires an applicationId and an approve or reject decision" });
+  }
+  if (
+    items.some(
+      (item: any) =>
+        item.version !== undefined &&
+        (typeof item.version !== "number" || !Number.isInteger(item.version) || item.version < 1)
+    )
+  ) {
+    return res
+      .status(400)
+      .json({ error: "invalid_request", message: "Each review's version must be an integer >= 1 when provided" });
+  }
+
+  const reviewerAddress = req.user?.walletAddress;
+  if (!reviewerAddress) {
+    return res.status(403).json({ error: "forbidden", message: "Reviewer identity is required" });
+  }
 
   try {
-    const dlqRecord = await prisma.webhookDLQ.findUnique({
-      where: { id },
+    const review = await bulkReviewApplications(
+      items as Array<{
+        applicationId: string;
+        decision: BulkReviewDecision;
+        reason?: string;
+        version?: number;
+      }>,
+      reviewerAddress,
+      req.ip,
+    );
+    const payload = {
+      processed: review.results.length,
+      failed: review.failures.length,
+      results: review.results,
+      failures: review.failures,
+    };
+    // Optimistic lock (issue #846): any stale decision turns the batch into a
+    // 409 so it can't be mistaken for a successful review — each conflicted
+    // failure carries the current state needed to re-read and retry.
+    const conflicts = review.failures.filter((f) => f.error === "version_conflict");
+    if (conflicts.length > 0) {
+      return res.status(409).json({
+        error: "version_conflict",
+        message: `${conflicts.length} review(s) targeted a stale version and were rejected`,
+        ...payload,
+      });
+    }
+    return res.status(200).json(payload);
+  } catch (error) {
+    logger.error("Bulk loan review error", { error });
+    return res.status(500).json({ error: "bulk_review_failed" });
+  }
+});
+
+// Reviewer context for applications held with DUPLICATE_TAX_ID: the other
+// applicants sharing the tax ID and their applications. The tax ID itself is
+// never returned.
+adminRouter.get("/loans/:id/tax-id-matches", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const result = await getTaxIdMatchesForApplication(String(req.params.id));
+    if (!result) {
+      return res.status(404).json({ error: "not_found", message: "Loan application not found" });
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error("Tax ID match lookup error", { error });
+    return res.status(500).json({ error: "failed_to_load_tax_id_matches" });
+  }
+});
+
+/**
+ * Unified email/SMS/in-app notification timeline for one applicant, so
+ * support staff can answer "did they actually receive our reminder?" without
+ * checking three separate logs. `:id` may be an applicant id or stellar address.
+ */
+adminRouter.get("/applicants/:id/communications", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const timeline = await getApplicantCommunicationTimeline(String(req.params.id));
+    if (!timeline) {
+      return res.status(404).json({ error: "not_found", message: "Applicant not found" });
+    }
+    return res.json(timeline);
+  } catch (error) {
+    logger.error("Applicant communication timeline error", { error });
+    return res.status(500).json({ error: "failed_to_load_communication_timeline" });
+  }
+});
+
+// ── Loan servicing transfer ──────────────────────────────────────────────
+
+adminRouter.post("/loans/:id/servicing-transfer", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  const loanId = String(req.params.id);
+  const requestedBy = req.user?.walletAddress ?? "admin-api-key";
+  try {
+    const loan = await getApplication(loanId);
+    if (!loan) {
+      return res.status(404).json({ error: "not_found", message: "Loan application not found" });
+    }
+
+    const amount = Number(loan.amount);
+    if (requiresFourEyesApproval("LOAN_SERVICING_TRANSFER", Number.isFinite(amount) ? amount : null)) {
+      const request = await createApprovalRequest({
+        actionType: "LOAN_SERVICING_TRANSFER",
+        payload: {
+          loanId,
+          toServicer: body.toServicer,
+          toServicerContact: body.toServicerContact,
+          effectiveDate: body.effectiveDate,
+          reason: body.reason,
+          investorAddresses: body.investorAddresses,
+          ipAddress: req.ip,
+        },
+        amount: Number.isFinite(amount) ? amount : null,
+        requestedBy,
+      });
+      return res.status(202).json({
+        fourEyesApprovalRequired: true,
+        approvalRequestId: request.id,
+        message: "This transfer exceeds the four-eyes approval threshold and will execute once a distinct second admin approves it.",
+      });
+    }
+
+    const transfer = await initiateServicingTransfer({
+      loanId,
+      toServicer: body.toServicer,
+      toServicerContact: body.toServicerContact,
+      effectiveDate: body.effectiveDate,
+      reason: body.reason,
+      investorAddresses: body.investorAddresses,
+      initiatedBy: requestedBy,
+      ipAddress: req.ip,
     });
+    return res.status(201).json(transfer);
+  } catch (error) {
+    if (error instanceof ServicingTransferError) {
+      return res.status(error.httpStatus).json({ error: error.code, message: error.message });
+    }
+    logger.error("Loan servicing transfer error", { error });
+    return res.status(500).json({ error: "servicing_transfer_failed" });
+  }
+});
+
+// ── Four-eyes approval queue (issue #841) ─────────────────────────────────
+
+adminRouter.get("/four-eyes/requests", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ requests: await listPendingApprovalRequests() });
+  } catch (error) {
+    logger.error("List four-eyes requests error", { error });
+    return res.status(500).json({ error: "failed_to_list_requests" });
+  }
+});
+
+adminRouter.get("/four-eyes/requests/:id", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const request = await getApprovalRequest(String(req.params.id));
+    if (!request) {
+      return res.status(404).json({ error: "not_found", message: "Approval request not found" });
+    }
+    return res.json({ request });
+  } catch (error) {
+    logger.error("Get four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_get_request" });
+  }
+});
+
+/**
+ * Executes a request's stored payload once approved. Each action type that
+ * can be routed through four-eyes is dispatched here; an unrecognized type
+ * (should never happen — it was only created by a route that knows how to
+ * execute it) is logged and left unexecuted rather than guessed at.
+ */
+async function executeApprovedRequest(request: { id: string; actionType: string; payload: unknown; approvedBy: string | null }) {
+  const payload = (request.payload ?? {}) as Record<string, any>;
+
+  if (request.actionType === "LOAN_SERVICING_TRANSFER") {
+    await initiateServicingTransfer({
+      loanId: payload.loanId,
+      toServicer: payload.toServicer,
+      toServicerContact: payload.toServicerContact,
+      effectiveDate: payload.effectiveDate,
+      reason: payload.reason,
+      investorAddresses: payload.investorAddresses,
+      initiatedBy: request.approvedBy ?? "four-eyes-approval",
+      ipAddress: payload.ipAddress,
+    });
+  } else {
+    logger.error("[four-eyes] No executor registered for action type", { actionType: request.actionType, requestId: request.id });
+    return;
+  }
+
+  await markExecuted(request.id);
+}
+
+adminRouter.post("/four-eyes/requests/:id/approve", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const approverAddress = req.user?.walletAddress ?? "admin-api-key";
+  try {
+    const approved = await approveRequest(String(req.params.id), approverAddress);
+    try {
+      await executeApprovedRequest(approved);
+    } catch (execError) {
+      logger.error("[four-eyes] Approved request failed to execute", { requestId: approved.id, execError });
+      return res.status(500).json({
+        error: "execution_failed",
+        message: "Approved but failed to execute — see server logs. The approval is recorded; it was not silently lost.",
+        request: approved,
+      });
+    }
+    return res.json({ request: approved });
+  } catch (error) {
+    if (error instanceof FourEyesError) {
+      const status = error.code === "not_found" ? 404 : 409;
+      return res.status(status).json({ error: error.code, message: error.message });
+    }
+    logger.error("Approve four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_approve_request" });
+  }
+});
+
+adminRouter.post("/four-eyes/requests/:id/reject", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const approverAddress = req.user?.walletAddress ?? "admin-api-key";
+  try {
+    const rejected = await rejectRequest(String(req.params.id), approverAddress, String(req.body?.reason ?? ""));
+    return res.json({ request: rejected });
+  } catch (error) {
+    if (error instanceof FourEyesError) {
+      const status = error.code === "not_found" ? 404 : error.code === "missing_reason" ? 400 : 409;
+      return res.status(status).json({ error: error.code, message: error.message });
+    }
+    logger.error("Reject four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_reject_request" });
+  }
+});
+
+adminRouter.get("/loans/:id/servicing-history", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const history = await getServicingHistory(String(req.params.id));
+    if (!history) {
+      return res.status(404).json({ error: "not_found", message: "Loan application not found" });
+    }
+    return res.json(history);
+  } catch (error) {
+    logger.error("Loan servicing history error", { error });
+    return res.status(500).json({ error: "failed_to_load_servicing_history" });
+  }
+});
+
+// ── Auto-rejection rules (configurable without redeploy) ─────────────────
+
+adminRouter.get("/auto-rejection-rules", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const rules = await listAutoRejectionRules(true);
+    return res.json(rules);
+  } catch (error) {
+    logger.error("List auto-rejection rules error", { error });
+    return res.status(500).json({ error: "failed_to_list_rules" });
+  }
+});
+
+adminRouter.post("/auto-rejection-rules", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { name, ruleType, config, active, priority } = req.body ?? {};
+  if (!name || !ruleType || !config) {
+    return res.status(400).json({
+      error: "invalid_request",
+      message: "name, ruleType, and config are required",
+    });
+  }
+
+  try {
+    const rule = await createAutoRejectionRule({
+      name: String(name),
+      ruleType,
+      config,
+      active,
+      priority,
+    });
+    return res.status(201).json(rule);
+  } catch (error) {
+    logger.error("Create auto-rejection rule error", { error });
+    return res.status(500).json({ error: "failed_to_create_rule" });
+  }
+});
+
+adminRouter.patch("/auto-rejection-rules/:id", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { name, config, active, priority } = req.body ?? {};
+
+  try {
+    const rule = await updateAutoRejectionRule(String(id), {
+      ...(name !== undefined ? { name: String(name) } : {}),
+      ...(config !== undefined ? { config } : {}),
+      ...(active !== undefined ? { active: Boolean(active) } : {}),
+      ...(priority !== undefined ? { priority: Number(priority) } : {}),
+    });
+    return res.json(rule);
+  } catch (error) {
+    logger.error("Update auto-rejection rule error", { error });
+    return res.status(404).json({ error: "rule_not_found" });
+  }
+});
+
+function positiveIntParam(raw: unknown, fallback: number): number | null {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * @openapi
+ * /api/admin/webhooks/latency:
+ *   get:
+ *     summary: Webhook delivery latency percentiles per endpoint
+ *     description: >-
+ *       Returns p50/p95/p99 dispatch-to-delivery latency for each subscriber
+ *       endpoint over a rolling window, with retry and DLQ counts. Endpoints
+ *       whose p95 exceeds the SLA threshold, or that only dead-lettered in the
+ *       window, are flagged with slaBreached.
+ *     tags:
+ *       - Admin
+ *     parameters:
+ *       - in: query
+ *         name: windowMinutes
+ *         schema: { type: integer, minimum: 1, maximum: 10080 }
+ *       - in: query
+ *         name: slaMs
+ *         schema: { type: integer, minimum: 1 }
+ *     responses:
+ *       200:
+ *         description: Latency report.
+ *       400:
+ *         description: Invalid windowMinutes or slaMs.
+ */
+/**
+ * Applicants whose notification email is on the suppression list (hard bounce,
+ * spam complaint, or inside a soft-bounce backoff window), so staff can prompt
+ * them to update their contact details.
+ */
+adminRouter.get("/email-suppressions", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ suppressions: await listSuppressedApplicants() });
+  } catch (error) {
+    logger.error("List email suppressions error", { error });
+    return res.status(500).json({ error: "failed_to_list_email_suppressions" });
+  }
+});
+
+/**
+ * Latest dead-tuple bloat snapshot per table, most bloated first, for the
+ * database health dashboard.
+ */
+adminRouter.get("/database/table-bloat", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ tables: await getLatestTableBloatSnapshots() });
+  } catch (error) {
+    logger.error("List table bloat snapshots error", { error });
+    return res.status(500).json({ error: "failed_to_list_table_bloat" });
+  }
+});
+
+/** Triggers an on-demand bloat scan, manually VACUUMing any table at or above the critical threshold. */
+adminRouter.post("/database/table-bloat/scan", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const result = await runTableBloatScan();
+    return res.json({
+      scannedAt: result.scannedAt,
+      tablesScanned: result.tablesScanned,
+      findings: result.findings.map((f) => ({
+        ...f,
+        liveTuples: f.liveTuples.toString(),
+        deadTuples: f.deadTuples.toString(),
+        tableSizeBytes: f.tableSizeBytes.toString(),
+      })),
+    });
+  } catch (error) {
+    logger.error("Table bloat scan error", { error });
+    return res.status(500).json({ error: "table_bloat_scan_failed" });
+  }
+});
+
+adminRouter.get("/webhooks/latency", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const config = loadConfig();
+  const windowMinutes = positiveIntParam(
+    req.query.windowMinutes,
+    config.webhookLatencyWindowMinutes || DEFAULT_LATENCY_WINDOW_MINUTES
+  );
+  const slaMs = positiveIntParam(req.query.slaMs, config.webhookLatencySlaMs || DEFAULT_LATENCY_SLA_MS);
+
+  if (windowMinutes === null || windowMinutes > MAX_LATENCY_WINDOW_MINUTES) {
+    return res.status(400).json({ error: "invalid_window_minutes" });
+  }
+  if (slaMs === null) {
+    return res.status(400).json({ error: "invalid_sla_ms" });
+  }
+
+  try {
+    return res.json(await getWebhookLatencyReport({ windowMinutes, slaMs }));
+  } catch (error) {
+    logger.error("Webhook latency report error", { error });
+    return res.status(500).json({ error: "webhook_latency_report_failed" });
+  }
+});
+
+// Trigger manual retry of a DLQ job
+adminRouter.post("/webhooks/dlq/:id/retry", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const rawId = req.params.id;
+  const id = Array.isArray(rawId) ? rawId[0] : rawId;
+
+  try {
+      const dlqRecord = await prisma.webhookDLQ.findUnique({ where: { id } });
 
     if (!dlqRecord) {
       res.status(404).json({ error: "DLQ record not found" });
@@ -28,20 +598,11 @@ adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) 
 
     if (webhookResult.success) {
       // If success, remove from DLQ
-      await prisma.webhookDLQ.delete({
-        where: { id },
-      });
+      await prisma.webhookDLQ.delete({ where: { id } });
       res.json({ success: true, message: "Webhook retry succeeded and removed from DLQ" });
     } else {
       // If still fails, update DLQ record with new error/status
-      await prisma.webhookDLQ.update({
-        where: { id },
-        data: {
-          statusCode: webhookResult.status,
-          responsePayload: webhookResult.responsePayload,
-          error: webhookResult.error,
-        },
-      });
+      await prisma.webhookDLQ.update({ where: { id }, data: { statusCode: webhookResult.status, responsePayload: webhookResult.responsePayload, error: webhookResult.error } });
       res.status(500).json({ 
         success: false, 
         error: "Webhook retry failed", 
@@ -72,7 +633,7 @@ adminRouter.post("/webhooks/dlq/:id/retry", async (req: Request, res: Response) 
  *       500:
  *         description: Reconciliation job threw an unexpected error.
  */
-adminRouter.post("/escrow/reconcile", async (req: Request, res: Response) => {
+adminRouter.post("/escrow/reconcile", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     logger.info("[AdminRouter] Manual escrow reconciliation triggered", {
       ip: req.ip,
@@ -94,3 +655,145 @@ adminRouter.post("/escrow/reconcile", async (req: Request, res: Response) => {
     res.status(500).json({ error: "Reconciliation job failed", message: err.message });
   }
 });
+
+/**
+ * @openapi
+ * /api/admin/waitlist/promote:
+ *   post:
+ *     summary: Generate and email invite codes to waitlisted users in batches
+ *     description: >-
+ *       Admin-only. Picks oldest pending waitlist entries, generates a unique
+ *       invite code per user, updates entry to invited, and emails the code.
+ *       Codes are single-use and validated at registration when gating is enabled.
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               count:
+ *                 type: integer
+ *                 description: Number of waitlisted users to promote (1-100, default 10)
+ *               limit:
+ *                 type: integer
+ *                 description: Alias for count
+ *     responses:
+ *       200:
+ *         description: Batch promotion complete
+ *       400:
+ *         description: Invalid count
+ */
+adminRouter.post("/waitlist/promote", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  const rawCount = body.count ?? body.limit ?? body.batchSize ?? 10;
+  const count = typeof rawCount === "string" ? parseInt(rawCount, 10) : Number(rawCount);
+  if (!Number.isFinite(count) || count < 1 || count > 100) {
+    return res.status(400).json({ error: "invalid_request", message: "count must be between 1 and 100" });
+  }
+  try {
+    const results = await promoteWaitlistBatch(count);
+    return res.json({ promoted: results.length, results });
+  } catch (err) {
+    logger.error("[AdminRouter] waitlist promote failed", { err });
+    return res.status(500).json({ error: "waitlist_promote_failed" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/scoring/models:
+ *   get:
+ *     summary: Retrieve active risk scoring model configuration and shadow mode evaluation metrics
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ */
+adminRouter.get("/scoring/models", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const config = getModelConfig();
+    const metrics = getShadowMetrics();
+    const shadowEvaluations = getShadowEvaluations();
+    return res.json({
+      config,
+      metrics,
+      recentShadowEvaluations: shadowEvaluations.slice(-20),
+    });
+  } catch (error) {
+    logger.error("Failed to fetch scoring model configuration", { error });
+    return res.status(500).json({ error: "failed_to_fetch_scoring_models" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/scoring/models:
+ *   post:
+ *     summary: Update active or shadow model version and toggle shadow mode
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ */
+adminRouter.post("/scoring/models", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const body = req.body ?? {};
+  const { activeVersion, shadowVersion, shadowModeEnabled } = body;
+
+  if (activeVersion !== undefined && (typeof activeVersion !== "string" || !activeVersion.trim())) {
+    return res.status(400).json({ error: "invalid_request", message: "activeVersion must be a non-empty string" });
+  }
+
+  try {
+    const updated = updateModelConfig({
+      ...(activeVersion ? { activeVersion: activeVersion.trim() } : {}),
+      ...(shadowVersion !== undefined ? { shadowVersion: typeof shadowVersion === "string" ? shadowVersion.trim() : undefined } : {}),
+      ...(shadowModeEnabled !== undefined ? { shadowModeEnabled: Boolean(shadowModeEnabled) } : {}),
+    });
+    logger.info("Scoring model configuration updated by admin", { config: updated });
+    return res.json(updated);
+  } catch (error) {
+    logger.error("Failed to update scoring model configuration", { error });
+    return res.status(500).json({ error: "failed_to_update_scoring_models" });
+  }
+});
+
+// ── KYC document forgery review (issue #813) ─────────────────────────────
+// Documents whose metadata looked tampered with are queued here for a human;
+// each entry carries the specific signals that triggered the flag.
+
+adminRouter.get("/kyc/flagged-documents", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ documents: await listFlaggedDocuments() });
+  } catch (error) {
+    logger.error("List flagged KYC documents error", { error });
+    return res.status(500).json({ error: "failed_to_list_flagged_documents" });
+  }
+});
+
+adminRouter.post(
+  "/kyc/flagged-documents/:documentId/review",
+  requireAdmin,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const reviewed = await reviewFlaggedDocument({
+        documentId: String(req.params.documentId),
+        reviewedBy: req.user?.walletAddress ?? "admin-api-key",
+        outcome: req.body?.outcome,
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+      return res.json({ document: reviewed });
+    } catch (error) {
+      if (error instanceof ForensicsReviewError) {
+        const status = error.code === "not_found" ? 404 : error.code === "invalid_outcome" ? 400 : 409;
+        return res.status(status).json({ error: error.code, message: error.message });
+      }
+      logger.error("Review flagged KYC document error", { error });
+      return res.status(500).json({ error: "failed_to_review_document" });
+    }
+  }
+);

@@ -1,10 +1,13 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 #![cfg(test)]
 extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    vec, Address, BytesN, Env, Vec,
+    testutils::{Address as _, Events, Ledger},
+    vec, Address, BytesN, Env, Symbol, TryFromVal, Vec,
 };
 
 fn key(env: &Env, b: u8) -> BytesN<32> {
@@ -12,7 +15,10 @@ fn key(env: &Env, b: u8) -> BytesN<32> {
 }
 
 fn signer(env: &Env, b: u8, weight: u32) -> Signer {
-    Signer { key: key(env, b), weight }
+    Signer {
+        key: key(env, b),
+        weight,
+    }
 }
 
 /// Register a 3-signer account with weights {A:2, B:1, C:1} and threshold 3.
@@ -62,8 +68,7 @@ fn test_exceeds_threshold() {
     let (account, client) = setup(&env);
 
     // A(2) + B(1) + C(1) = 4 > 3.
-    let keys: Vec<BytesN<32>> =
-        vec![&env, key(&env, 0xA1), key(&env, 0xB2), key(&env, 0xC3)];
+    let keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2), key(&env, 0xC3)];
     assert_eq!(client.tally_weight(&account, &keys), 4u32);
     assert!(client.verify_threshold(&account, &keys));
 }
@@ -549,8 +554,7 @@ fn test_verify_signatures_meets_threshold() {
     let env = Env::default();
     env.mock_all_auths();
     let (_admin, signers, client) = setup_admin(&env);
-    let presented: Vec<Address> =
-        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    let presented: Vec<Address> = vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
     assert_eq!(client.count_valid_signers(&presented), 2u32);
     assert!(client.verify_signatures(&presented));
     client.enforce_signatures(&presented); // does not panic
@@ -575,8 +579,8 @@ fn test_count_valid_signers_ignores_duplicates_and_unknowns() {
     let presented: Vec<Address> = vec![
         &env,
         signers.get_unchecked(0),
-        signers.get_unchecked(0),   // duplicate -> counted once
-        Address::generate(&env),    // unknown -> ignored
+        signers.get_unchecked(0), // duplicate -> counted once
+        Address::generate(&env),  // unknown -> ignored
     ];
     assert_eq!(client.count_valid_signers(&presented), 1u32);
 }
@@ -586,11 +590,11 @@ fn test_set_quorum_threshold_success() {
     let env = Env::default();
     env.mock_all_auths();
     let (_admin, _signers, client) = setup_admin(&env);
-    
+
     // Initial config has threshold 2 with 3 signers
     let config = client.get_signer_config();
     assert_eq!(config.threshold, 2u32);
-    
+
     // Update threshold to 3
     client.set_quorum_threshold(&3u32);
     let updated = client.get_signer_config();
@@ -602,13 +606,12 @@ fn test_set_quorum_threshold_blocks_below_threshold() {
     let env = Env::default();
     env.mock_all_auths();
     let (_admin, signers, client) = setup_admin(&env);
-    
+
     // Set threshold to 3 (max with 3 signers)
     client.set_quorum_threshold(&3u32);
-    
+
     // Try to present only 2 signatures -> should fail
-    let presented: Vec<Address> =
-        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    let presented: Vec<Address> = vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
     assert!(!client.verify_signatures(&presented));
 }
 
@@ -635,18 +638,24 @@ fn test_quorum_threshold_update_enforces_new_requirement() {
     let env = Env::default();
     env.mock_all_auths();
     let (_admin, signers, client) = setup_admin(&env);
-    
+
     // Initial: 2-of-3 signers, 2 signatures should pass
-    let two_sigs: Vec<Address> =
-        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
+    let two_sigs: Vec<Address> = vec![&env, signers.get_unchecked(0), signers.get_unchecked(1)];
     assert!(client.verify_signatures(&two_sigs));
-    
-    // Same 2 signatures should now fail
+
+    // Raise the quorum threshold to require all 3 signers.
+    client.set_quorum_threshold(&3u32);
+
+    // Same 2 signatures should now fail under the new, stricter threshold.
     assert!(!client.verify_signatures(&two_sigs));
-    
+
     // But all 3 should pass
-    let three_sigs: Vec<Address> =
-        vec![&env, signers.get_unchecked(0), signers.get_unchecked(1), signers.get_unchecked(2)];
+    let three_sigs: Vec<Address> = vec![
+        &env,
+        signers.get_unchecked(0),
+        signers.get_unchecked(1),
+        signers.get_unchecked(2),
+    ];
     assert!(client.verify_signatures(&three_sigs));
 }
 
@@ -702,7 +711,8 @@ fn test_duplicate_admin_signer_ignored_in_count() {
     let (_admin, signers, client) = setup_admin(&env); // 2-of-3 threshold
 
     // Presenting duplicate signer S0 twice: counted only once (count = 1 < 2)
-    let dup_presented: Vec<Address> = vec![&env, signers.get_unchecked(0), signers.get_unchecked(0)];
+    let dup_presented: Vec<Address> =
+        vec![&env, signers.get_unchecked(0), signers.get_unchecked(0)];
     assert_eq!(client.count_valid_signers(&dup_presented), 1u32);
     assert!(!client.verify_signatures(&dup_presented));
 
@@ -760,7 +770,7 @@ fn test_proposal_expiry_blocks_partially_signed_proposal_approval() {
 
     // Submit proposal expiring at ledger 100
     client.submit_action(&pid, &100u32);
-    env.ledger().set_sequence(50);
+    env.ledger().set_sequence_number(50);
 
     // Partially-signed: weight 1 < threshold 3 fails
     let partial_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xC3)];
@@ -768,7 +778,7 @@ fn test_proposal_expiry_blocks_partially_signed_proposal_approval() {
     assert_eq!(res_partial, Err(Ok(ValidatorError::InsufficientWeight)));
 
     // Advance past expiration ledger (seq 101 > 100)
-    env.ledger().set_sequence(101);
+    env.ledger().set_sequence_number(101);
 
     // Submitting full signatures now fails with ProposalExpired
     let full_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
@@ -784,21 +794,518 @@ fn test_proposal_expiry_blocks_execution_of_locked_proposal() {
     let pid = proposal_id(&env, 0x88);
 
     // Submit proposal expiring at ledger 100
-    env.ledger().set_sequence(10);
+    env.ledger().set_sequence_number(10);
     client.submit_action(&pid, &100u32);
 
     // Approve proposal at ledger 50 -> transitions to Locked
-    env.ledger().set_sequence(50);
+    env.ledger().set_sequence_number(50);
     let full_keys: Vec<BytesN<32>> = vec![&env, key(&env, 0xA1), key(&env, 0xB2)];
     client.approve_action(&account, &pid, &full_keys);
     assert_eq!(client.get_proposal(&pid).state, ProposalState::Locked);
 
     // Advance timestamp so timelock elapses, but sequence passes expiration (ledger 105 > 100)
     env.ledger().set_timestamp(1_000_015);
-    env.ledger().set_sequence(105);
+    env.ledger().set_sequence_number(105);
 
     // Execution fails because the proposal expired
     let res = client.try_execute_action(&pid);
     assert_eq!(res, Err(Ok(ValidatorError::ProposalExpired)));
 }
 
+// ── Slashing: Missed Vote Penalty Tests ──────────────────────────────────────
+
+#[test]
+fn test_configure_slashing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+
+    client.configure_slashing(&5u32, &25u32, &3u32);
+
+    let config = client.get_slashing_config();
+    assert_eq!(config.missed_vote_threshold, 5u32);
+    assert_eq!(config.penalty_weight_reduction_pct, 25u32);
+    assert_eq!(config.recovery_active_votes, 3u32);
+}
+
+#[test]
+fn test_configure_slashing_defaults() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MultisigValidator, ());
+    let client = MultisigValidatorClient::new(&env, &contract_id);
+
+    let config = client.get_slashing_config();
+    assert_eq!(config.missed_vote_threshold, 3u32);
+    assert_eq!(config.penalty_weight_reduction_pct, 50u32);
+    assert_eq!(config.recovery_active_votes, 3u32);
+}
+
+#[test]
+fn test_configure_slashing_rejects_zero_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+
+    let res = client.try_configure_slashing(&0u32, &50u32, &3u32);
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_configure_slashing_rejects_over_100_pct() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _signers, client) = setup_admin(&env);
+
+    let res = client.try_configure_slashing(&3u32, &101u32, &3u32);
+    assert_eq!(res, Err(Ok(ValidatorError::InvalidThreshold)));
+}
+
+#[test]
+fn test_get_signer_vote_record_default() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+
+    let record =
+        client.get_signer_vote_record(&signers.get_unchecked(0), &signers.get_unchecked(1));
+    assert_eq!(record.consecutive_missed, 0u32);
+    assert_eq!(record.consecutive_active, 0u32);
+    assert!(!record.penalized);
+}
+
+#[test]
+fn test_effective_weight_normal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+
+    let weight = client.effective_weight(&signers.get_unchecked(0), &signers.get_unchecked(1));
+    // Base weight is 100 (fixed lookup, 10000 bps)
+    assert_eq!(weight, 100u32);
+}
+
+#[test]
+fn test_effective_weight_penalized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+
+    // Configure slashing: 50% reduction
+    client.configure_slashing(&2u32, &50u32, &3u32);
+
+    // Mark missed votes to trigger penalty (threshold=2)
+    // We need to manually set the vote record to penalized state
+    // by calling mark_missed_votes with expired proposals
+
+    // Submit a proposal
+    let pid = proposal_id(&env, 0xAA);
+    client.submit_action(&pid, &0u32);
+
+    // Mark it as expired
+    env.ledger().set_sequence_number(1001); // Past default expiry in test mode
+
+    // Mark missed votes for all signers
+    let expired: Vec<BytesN<32>> = vec![&env, pid];
+    client.mark_missed_votes(&signers.get_unchecked(0), &expired);
+
+    // Check vote record
+    let record =
+        client.get_signer_vote_record(&signers.get_unchecked(0), &signers.get_unchecked(1));
+    assert_eq!(record.consecutive_missed, 1u32);
+    assert!(!record.penalized); // Not yet at threshold
+
+    // Mark another miss
+    let pid2 = proposal_id(&env, 0xBB);
+    client.submit_action(&pid2, &0u32);
+    // pid2 is submitted at ledger 1001, so it expires at 1001 + 1000 = 2001;
+    // is_expired uses a strict `>` check, so the boundary itself (2001)
+    // does not yet count as expired.
+    env.ledger().set_sequence_number(2002);
+    let expired2: Vec<BytesN<32>> = vec![&env, pid2];
+    client.mark_missed_votes(&signers.get_unchecked(0), &expired2);
+
+    let record2 =
+        client.get_signer_vote_record(&signers.get_unchecked(0), &signers.get_unchecked(1));
+    assert_eq!(record2.consecutive_missed, 2u32);
+    assert!(record2.penalized); // At threshold
+
+    // Effective weight should be reduced (100 * 50% = 50)
+    let weight = client.effective_weight(&signers.get_unchecked(0), &signers.get_unchecked(1));
+    assert_eq!(weight, 50u32);
+}
+
+#[test]
+fn test_penalty_recovery_after_active_votes() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, signers, client) = setup_admin(&env);
+
+    // Configure slashing: threshold=2, 50% reduction, recovery=3
+    client.configure_slashing(&2u32, &50u32, &3u32);
+
+    // Manually set a signer as penalized with consecutive_missed=3
+    let now = env.ledger().sequence();
+    let record = SignerVoteRecord {
+        consecutive_missed: 3,
+        consecutive_active: 0,
+        penalized: true,
+        last_vote_ledger: now,
+    };
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &DataKey::SignerVoteRecord(
+                signers.get_unchecked(0).clone(),
+                signers.get_unchecked(1).clone(),
+            ),
+            &record,
+        );
+    });
+
+    // Verify penalized
+    let weight_before =
+        client.effective_weight(&signers.get_unchecked(0), &signers.get_unchecked(1));
+    assert_eq!(weight_before, 50u32); // 50% penalty on base 100
+
+    // Simulate 3 active votes to trigger recovery
+    for _ in 0..3 {
+        env.as_contract(&client.address, || {
+            let current: SignerVoteRecord = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SignerVoteRecord(
+                    signers.get_unchecked(0).clone(),
+                    signers.get_unchecked(1).clone(),
+                ))
+                .unwrap();
+
+            let updated = SignerVoteRecord {
+                consecutive_missed: 0,
+                consecutive_active: current.consecutive_active + 1,
+                penalized: current.consecutive_active + 1 < 3,
+                last_vote_ledger: current.last_vote_ledger,
+            };
+            env.storage().persistent().set(
+                &DataKey::SignerVoteRecord(
+                    signers.get_unchecked(0).clone(),
+                    signers.get_unchecked(1).clone(),
+                ),
+                &updated,
+            );
+        });
+    }
+
+    // Verify recovery
+    let weight_after =
+        client.effective_weight(&signers.get_unchecked(0), &signers.get_unchecked(1));
+    assert_eq!(weight_after, 100u32); // Back to full weight
+}
+
+fn extend_multisig_ttls(env: &Env) {
+    env.ledger().with_mut(|li| {
+        li.max_entry_ttl = 40_000_001;
+        li.min_persistent_entry_ttl = 40_000_000;
+    });
+}
+
+#[test]
+fn test_decay_inside_grace_no_decay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    extend_multisig_ttls(&env);
+    let (_admin, signers, client) = setup_admin(&env);
+    let account = signers.get_unchecked(0).clone();
+    let signer = signers.get_unchecked(1).clone();
+
+    env.ledger().set_sequence_number(1);
+    client.cast_vote(&account, &signer);
+    // Default grace is 1000 ledgers
+    assert_eq!(client.effective_weight(&account, &signer), 100u32);
+    env.ledger().set_sequence_number(500);
+    assert_eq!(client.effective_weight(&account, &signer), 100u32);
+    env.ledger().set_sequence_number(1000);
+    assert_eq!(client.effective_weight(&account, &signer), 100u32);
+}
+
+#[test]
+fn test_decay_linear_progression() {
+    let env = Env::default();
+    env.mock_all_auths();
+    extend_multisig_ttls(&env);
+    let (_admin, signers, client) = setup_admin(&env);
+    let account = signers.get_unchecked(0).clone();
+    let signer = signers.get_unchecked(1).clone();
+
+    env.ledger().set_sequence_number(1);
+    // Record initial vote to anchor last_vote_ledger
+    client.cast_vote(&account, &signer);
+    let anchor = env.ledger().sequence();
+
+    // One period past grace: 10% loss -> 90
+    env.ledger().set_sequence_number(anchor + 1000 + 1000);
+    assert_eq!(client.effective_weight(&account, &signer), 90u32);
+
+    // Two periods: 20% -> 80
+    env.ledger().set_sequence_number(anchor + 1000 + 2000);
+    assert_eq!(client.effective_weight(&account, &signer), 80u32);
+
+    // Nine periods: 90% -> floor 10
+    env.ledger().set_sequence_number(anchor + 1000 + 9000);
+    assert_eq!(client.effective_weight(&account, &signer), 10u32);
+
+    // Further -> stays at floor
+    env.ledger().set_sequence_number(anchor + 1000 + 20000);
+    assert_eq!(client.effective_weight(&account, &signer), 10u32);
+}
+
+#[test]
+fn test_decay_restoration_on_vote() {
+    let env = Env::default();
+    env.mock_all_auths();
+    extend_multisig_ttls(&env);
+    let (_admin, signers, client) = setup_admin(&env);
+    let account = signers.get_unchecked(0).clone();
+    let signer = signers.get_unchecked(1).clone();
+
+    env.ledger().set_sequence_number(1);
+    client.cast_vote(&account, &signer);
+    let anchor = env.ledger().sequence();
+    env.ledger().set_sequence_number(anchor + 1000 + 3000);
+    assert_eq!(client.effective_weight(&account, &signer), 70u32);
+
+    // Casting a vote restores full weight and resets clock
+    client.cast_vote(&account, &signer);
+    assert_eq!(client.effective_weight(&account, &signer), 100u32);
+
+    // Grace restarts from new anchor
+    let new_anchor = env.ledger().sequence();
+    env.ledger().set_sequence_number(new_anchor + 500);
+    assert_eq!(client.effective_weight(&account, &signer), 100u32);
+    env.ledger().set_sequence_number(new_anchor + 1000 + 1000);
+    assert_eq!(client.effective_weight(&account, &signer), 90u32);
+}
+
+#[test]
+fn test_decay_interaction_with_slashing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    extend_multisig_ttls(&env);
+    let (_admin, signers, client) = setup_admin(&env);
+    let account = signers.get_unchecked(0).clone();
+    let signer = signers.get_unchecked(1).clone();
+
+    client.configure_slashing(&2u32, &50u32, &3u32);
+    // Trigger penalty
+    let pid = proposal_id(&env, 0xCC);
+    client.submit_action(&pid, &0u32);
+    env.ledger().set_sequence_number(1001);
+    let expired: Vec<BytesN<32>> = vec![&env, pid];
+    client.mark_missed_votes(&account, &expired);
+    let pid2 = proposal_id(&env, 0xDD);
+    client.submit_action(&pid2, &0u32);
+    env.ledger().set_sequence_number(2002);
+    let expired2: Vec<BytesN<32>> = vec![&env, pid2];
+    client.mark_missed_votes(&account, &expired2);
+
+    // Penalized weight is 50, decay anchor is still initial (now 0 -> now)
+    // Need to anchor decay by casting a vote first, then penalize, then decay
+    // Reset and do decay+penalty interaction
+    env.ledger().set_sequence_number(3000);
+    client.cast_vote(&account, &signer); // resets penalty? Actually need 3 active to recover, so still penalized
+                                         // Manually set penalized again for interaction test
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &DataKey::SignerVoteRecord(account.clone(), signer.clone()),
+            &SignerVoteRecord {
+                consecutive_missed: 2,
+                consecutive_active: 0,
+                penalized: true,
+                last_vote_ledger: 3000,
+            },
+        );
+    });
+    assert_eq!(client.effective_weight(&account, &signer), 50u32);
+
+    // Decay on top of penalty: 1 period past grace -> 10% of 50 = 5 -> 45, floor 10% of base (10) still above
+    env.ledger().set_sequence_number(3000 + 1000 + 1000);
+    // decay_bps = 1000, base after slash is 50, decay reduces 50*1000/10000=5 -> 45
+    assert_eq!(client.effective_weight(&account, &signer), 45u32);
+
+    // Voting restores both
+    client.cast_vote(&account, &signer);
+    // Need 3 votes to clear penalized, but decay clock resets immediately
+    // After one vote, still penalized but decay reset to 0
+    // Weight = 50 (still penalized, no decay)
+    assert_eq!(client.effective_weight(&account, &signer), 50u32);
+    client.cast_vote(&account, &signer);
+    client.cast_vote(&account, &signer);
+    // After 3, penalized cleared -> 100
+    assert_eq!(client.effective_weight(&account, &signer), 100u32);
+}
+
+// ── Atomic multi-action proposals ───────────────────────────────────────────
+
+fn action(env: &Env, id_byte: u8, label: &str) -> Action {
+    Action {
+        action_id: key(env, id_byte),
+        label: Symbol::new(env, label),
+    }
+}
+
+fn approve_with_full_set(env: &Env, client: &MultisigValidatorClient<'_>, account: &Address, pid: &BytesN<32>) {
+    let keys: Vec<BytesN<32>> = vec![env, key(env, 0xA1), key(env, 0xB2)];
+    client.approve_action(account, pid, &keys);
+}
+
+#[test]
+fn test_submit_proposal_stores_ordered_actions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x01);
+
+    let actions: Vec<Action> = vec![
+        &env,
+        action(&env, 0x10, "set_fee"),
+        action(&env, 0x11, "set_rate"),
+    ];
+    client.submit_proposal(&pid, &0u32, &actions);
+
+    let proposal = client.get_proposal(&pid);
+    assert_eq!(proposal.state, ProposalState::Pending);
+    assert_eq!(proposal.actions.len(), 2u32);
+    assert_eq!(proposal.actions.get_unchecked(0).action_id, key(&env, 0x10));
+    assert_eq!(proposal.actions.get_unchecked(1).action_id, key(&env, 0x11));
+}
+
+#[test]
+fn test_submit_proposal_rejects_too_many_actions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x02);
+
+    let mut actions: Vec<Action> = Vec::new(&env);
+    for i in 0..(MAX_ACTIONS_PER_PROPOSAL + 1) {
+        actions.push_back(action(&env, i as u8, "a"));
+    }
+
+    let res = client.try_submit_proposal(&pid, &0u32, &actions);
+    assert_eq!(res, Err(Ok(ValidatorError::TooManyActions)));
+}
+
+#[test]
+fn test_submit_proposal_accepts_exactly_the_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x03);
+
+    let mut actions: Vec<Action> = Vec::new(&env);
+    for i in 0..MAX_ACTIONS_PER_PROPOSAL {
+        actions.push_back(action(&env, i as u8, "a"));
+    }
+
+    client.submit_proposal(&pid, &0u32, &actions);
+    assert_eq!(client.get_proposal(&pid).actions.len(), MAX_ACTIONS_PER_PROPOSAL);
+}
+
+#[test]
+fn test_execute_proposal_emits_per_action_and_summary_events_in_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x04);
+
+    let actions: Vec<Action> = vec![
+        &env,
+        action(&env, 0x20, "set_fee"),
+        action(&env, 0x21, "set_rate"),
+        action(&env, 0x22, "set_cap"),
+    ];
+    client.submit_proposal(&pid, &0u32, &actions);
+    approve_with_full_set(&env, &client, &account, &pid);
+    env.ledger().set_timestamp(1_000_011);
+
+    // Only events from this call matter — note how many exist beforehand
+    // (submit_proposal already published one) and check from there.
+    let before = env.events().all().len();
+    client.execute_action(&pid);
+    let all_events = env.events().all();
+
+    assert_eq!(client.get_proposal(&pid).state, ProposalState::Executed);
+    // Three per-action events plus one summary event.
+    assert_eq!(all_events.len(), before + 4);
+
+    for (offset, expected_id) in [(0u32, 0x20u8), (1u32, 0x21u8), (2u32, 0x22u8)] {
+        let (_, topics, data) = all_events.get(before + offset).unwrap();
+        assert_eq!(
+            Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap(),
+            symbol_short!("act_exec")
+        );
+        let topic_pid: BytesN<32> = TryFromVal::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+        assert_eq!(topic_pid, pid);
+        let (index, action_id, _label): (u32, BytesN<32>, Symbol) =
+            TryFromVal::try_from_val(&env, &data).unwrap();
+        assert_eq!(index, offset);
+        assert_eq!(action_id, key(&env, expected_id));
+    }
+
+    let (_, summary_topics, summary_data) = all_events.get(before + 3).unwrap();
+    assert_eq!(
+        Symbol::try_from_val(&env, &summary_topics.get(0).unwrap()).unwrap(),
+        symbol_short!("mprop_exe")
+    );
+    let (summary_pid, count): (BytesN<32>, u32) =
+        TryFromVal::try_from_val(&env, &summary_data).unwrap();
+    assert_eq!(summary_pid, pid);
+    assert_eq!(count, 3u32);
+}
+
+#[test]
+fn test_execute_proposal_with_duplicate_action_id_reverts_with_no_partial_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x05);
+
+    // Action at index 2 duplicates the action_id at index 0 — the failure is
+    // in the middle/end of the list, after two individually-valid entries.
+    let actions: Vec<Action> = vec![
+        &env,
+        action(&env, 0x30, "set_fee"),
+        action(&env, 0x31, "set_rate"),
+        action(&env, 0x30, "set_cap"),
+    ];
+    client.submit_proposal(&pid, &0u32, &actions);
+    approve_with_full_set(&env, &client, &account, &pid);
+    env.ledger().set_timestamp(1_000_011);
+
+    let before = env.events().all().len();
+    let res = client.try_execute_action(&pid);
+    assert_eq!(res, Err(Ok(ValidatorError::DuplicateActionId)));
+
+    // No partial state: the proposal is still Locked, not Executed, and no
+    // new events (not even for the two individually-valid earlier actions)
+    // were published by the failed call.
+    assert_eq!(client.get_proposal(&pid).state, ProposalState::Locked);
+    assert_eq!(env.events().all().len(), before);
+}
+
+#[test]
+fn test_submit_action_still_works_as_a_zero_action_proposal() {
+    // Backward compatibility: the original single-id submit_action path is
+    // unchanged and simply carries an empty action list.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x06);
+
+    client.submit_action(&pid, &0u32);
+    assert_eq!(client.get_proposal(&pid).actions.len(), 0u32);
+
+    approve_with_full_set(&env, &client, &account, &pid);
+    env.ledger().set_timestamp(1_000_011);
+    client.execute_action(&pid);
+    assert_eq!(client.get_proposal(&pid).state, ProposalState::Executed);
+}

@@ -57,6 +57,27 @@ A complete simulation script that demonstrates end-to-end functionality of the c
 
 ---
 
+### 5. License Header Enforcement (`scripts/check-license-header.mjs`)
+
+Ensures every `backend/src`, `frontend/src`, and `contracts/*/src` source file carries the required MIT license header. The `License Header` CI job (`.github/workflows/license-header.yml`) runs this check on every PR and fails with the exact file path when the header is missing.
+
+- **Check:** `node scripts/check-license-header.mjs`
+- **Auto-fix (local):** `node scripts/check-license-header.mjs --fix` — inserts the two-line header at the top of each missing file without altering other content. Correctly handles `"use client"` / `"use server"` directives and `#!` shebangs by inserting after them, and is idempotent.
+- **Ignore list:** `scripts/license-header-ignore.json` (`{ "ignore": ["glob/**"] }`) plus built-in defaults (`node_modules`, `.next`, `target`, `dist`, `build`, `coverage`, `.terraform`, `next-env.d.ts`, `*.wasm`, etc.) — see `DEFAULT_IGNORE_PATTERNS` in the script. Document any added pattern as generated/vendored in the PR.
+- **Required header (first lines of file):**
+  ```
+  // Copyright (c) 2026 RemitMortgage Protocol Contributors
+  // SPDX-License-Identifier: MIT
+  ```
+
+### 6. Reproducible Builds (`scripts/reproducible-build.sh`, `scripts/verify-deployed-contract.sh`)
+
+Builds each contract from a clean `git archive` of a commit with a pinned toolchain so the same commit yields byte-identical WASM, and verifies a deployed contract against its source commit. CI (`.github/workflows/reproducible-build.yml`) builds twice and fails on any hash difference.
+
+- **Build:** `scripts/reproducible-build.sh --commit <sha> --out dist/reproducible`
+- **Verify a deployment:** `scripts/verify-deployed-contract.sh --contract escrow --commit <sha> --contract-id <C...> --network testnet`
+- **Details:** [`docs/REPRODUCIBLE_BUILDS.md`](../docs/REPRODUCIBLE_BUILDS.md)
+
 ## Execution Walkthrough
 
 To perform a clean build, deploy, initialize, and test the contracts from scratch:

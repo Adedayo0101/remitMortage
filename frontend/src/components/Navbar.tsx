@@ -1,10 +1,13 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useWallet } from "../context/WalletContext";
+import { useDemoMode } from "../context/DemoModeContext";
 import { useNotifications } from "@/context/NotificationContext";
 import { useKeyboardShortcuts } from "@/context/KeyboardShortcutsContext";
 import { describeNetworkMismatch } from "../lib/wallet-errors";
@@ -34,6 +37,8 @@ const OPERATIONS_LINKS = [
   { href: "/protocol", labelKey: "protocol" },
 ];
 
+const SUPPORT_LINKS = [{ href: "/help", labelKey: "help" }];
+
 function InnerNavbar() {
   const {
     publicKey,
@@ -48,10 +53,13 @@ function InnerNavbar() {
     clearError,
     isConnecting,
   } = useWallet();
+  const { isDemoMode, exitDemoMode } = useDemoMode();
   const { unreadCount, togglePanel } = useNotifications();
   const { openCheatSheet } = useKeyboardShortcuts();
   const t = useTranslations("nav");
-  const pathname = usePathname();
+  // usePathname() can return null (e.g. outside an active route render), and
+  // every active-link check below does pathname.startsWith(...).
+  const pathname = usePathname() ?? "";
   const [menuOpen, setMenuOpen] = useState(false);
 
   const showDisconnectNotice = !!walletError && !isConnected;
@@ -59,10 +67,16 @@ function InnerNavbar() {
 
   return (
     <>
-      <header role="banner" className="rm-navbar fixed top-0 start-0 end-0 z-50 bg-[#060913]/85 backdrop-blur-xl border-b border-slate-800/80 shadow-lg shadow-black/40">
+      <header
+        role="banner"
+        className="rm-navbar fixed top-0 start-0 end-0 z-50 bg-[#060913]/85 backdrop-blur-xl border-b border-slate-800/80 shadow-lg shadow-black/40"
+      >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 sm:h-20 flex items-center justify-between gap-3">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2.5 hover:opacity-90 transition-all group shrink-0">
+          <Link
+            href="/"
+            className="flex items-center gap-2.5 hover:opacity-90 transition-all group shrink-0"
+          >
             <div className="rm-brand-mark w-9 h-9 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center transition-all">
               <Landmark className="w-[18px] h-[18px] sm:w-5 sm:h-5" strokeWidth={2.2} />
             </div>
@@ -72,37 +86,70 @@ function InnerNavbar() {
           </Link>
 
           {/* Desktop Nav Links */}
-          <nav role="navigation" className="hidden xl:flex items-center gap-1 text-sm" aria-label="Primary navigation">
+          <nav
+            role="navigation"
+            className="hidden xl:flex items-center gap-1 text-sm"
+            aria-label="Primary navigation"
+          >
             {PRIMARY_LINKS.map(({ href, labelKey }) => {
               const active = pathname === href || pathname.startsWith(`${href}/`);
               return (
-              <Link
-                key={href}
-                href={href}
-                aria-current={active ? "page" : undefined}
-                className={`rm-nav-link text-slate-300 font-medium hover:text-cyan-400 transition-colors whitespace-nowrap relative px-3 py-2 group ${active ? "is-active" : ""}`}
-              >
-                {t(labelKey)}
-              </Link>
+                <Link
+                  key={href}
+                  href={href}
+                  aria-current={active ? "page" : undefined}
+                  className={`rm-nav-link text-slate-300 font-medium hover:text-cyan-400 transition-colors whitespace-nowrap relative px-3 py-2 group ${active ? "is-active" : ""}`}
+                >
+                  {t(labelKey)}
+                </Link>
               );
             })}
             {[
               { label: "Financing", links: FINANCE_LINKS },
               { label: "Operations", links: OPERATIONS_LINKS },
             ].map((group) => {
-              const groupActive = group.links.some(({ href }) => pathname === href || pathname.startsWith(`${href}/`));
+              const groupActive = group.links.some(
+                ({ href }) => pathname === href || pathname.startsWith(`${href}/`)
+              );
               return (
                 <div className="rm-nav-menu group relative" key={group.label}>
-                  <button type="button" className={`rm-nav-menu-trigger ${groupActive ? "is-active" : ""}`} aria-haspopup="true">
-                    {group.label}<ChevronDown size={14} />
+                  <button
+                    type="button"
+                    className={`rm-nav-menu-trigger ${groupActive ? "is-active" : ""}`}
+                    aria-haspopup="true"
+                  >
+                    {group.label}
+                    <ChevronDown size={14} />
                   </button>
                   <div className="rm-nav-menu-panel">
                     {group.links.map(({ href, labelKey }) => {
                       const active = pathname === href || pathname.startsWith(`${href}/`);
-                      return <Link key={href} href={href} aria-current={active ? "page" : undefined} className={active ? "is-active" : ""}>{t(labelKey)}</Link>;
+                      return (
+                        <Link
+                          key={href}
+                          href={href}
+                          aria-current={active ? "page" : undefined}
+                          className={active ? "is-active" : ""}
+                        >
+                          {t(labelKey)}
+                        </Link>
+                      );
                     })}
                   </div>
                 </div>
+              );
+            })}
+            {SUPPORT_LINKS.map(({ href, labelKey }) => {
+              const active = pathname === href || pathname.startsWith(`${href}/`);
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  aria-current={active ? "page" : undefined}
+                  className={`rm-nav-link text-slate-300 font-medium hover:text-cyan-400 transition-colors whitespace-nowrap relative px-3 py-2 group ${active ? "is-active" : ""}`}
+                >
+                  {t(labelKey)}
+                </Link>
               );
             })}
           </nav>
@@ -117,7 +164,9 @@ function InnerNavbar() {
               aria-label="Open keyboard shortcuts cheat-sheet"
             >
               <Keyboard className="w-4 h-4 text-emerald-400" />
-              <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 text-slate-300 rounded border border-slate-700">?</kbd>
+              <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 text-slate-300 rounded border border-slate-700">
+                ?
+              </kbd>
             </button>
             <LocaleSwitcher />
             <NotificationButton unreadCount={unreadCount} onClick={togglePanel} />
@@ -130,6 +179,8 @@ function InnerNavbar() {
                 isConnecting={isConnecting}
                 connect={connect}
                 disconnect={disconnect}
+                isDemoMode={isDemoMode}
+                onExitDemo={exitDemoMode}
               />
             </span>
           </div>
@@ -138,7 +189,11 @@ function InnerNavbar() {
           <div className="hidden lg:flex xl:hidden items-center gap-2">
             <LocaleSwitcher />
             <NotificationButton unreadCount={unreadCount} onClick={togglePanel} compact />
-            <button aria-label={menuOpen ? "Close menu" : "Open menu"} onClick={() => setMenuOpen((prev) => !prev)} className="rm-menu-button">
+            <button
+              aria-label={menuOpen ? "Close menu" : "Open menu"}
+              onClick={() => setMenuOpen((prev) => !prev)}
+              className="rm-menu-button"
+            >
               {menuOpen ? <X size={20} /> : <Menu size={20} />}
             </button>
             <WalletButton
@@ -149,6 +204,8 @@ function InnerNavbar() {
               isConnecting={isConnecting}
               connect={connect}
               disconnect={disconnect}
+              isDemoMode={isDemoMode}
+              onExitDemo={exitDemoMode}
               compact
             />
           </div>
@@ -163,7 +220,11 @@ function InnerNavbar() {
               onClick={() => setMenuOpen((prev) => !prev)}
               className="p-2 rounded-lg text-slate-200 hover:bg-slate-800/80 transition-colors border border-slate-700/60 bg-slate-900/50"
             >
-              {menuOpen ? <X className="w-5 h-5 sm:w-6 sm:h-6" /> : <Menu className="w-5 h-5 sm:w-6 sm:h-6" />}
+              {menuOpen ? (
+                <X className="w-5 h-5 sm:w-6 sm:h-6" />
+              ) : (
+                <Menu className="w-5 h-5 sm:w-6 sm:h-6" />
+              )}
             </button>
           </div>
         </div>
@@ -191,7 +252,9 @@ function InnerNavbar() {
         {/* Drawer header with quick actions */}
         <div className="pt-20 pb-4 px-6 border-b border-slate-800/60 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Wallet</span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              Wallet
+            </span>
             <LocaleSwitcher />
           </div>
           <WalletButton
@@ -202,34 +265,43 @@ function InnerNavbar() {
             isConnecting={isConnecting}
             connect={connect}
             disconnect={disconnect}
+            isDemoMode={isDemoMode}
+            onExitDemo={exitDemoMode}
             fullWidth
           />
         </div>
 
         {/* Nav links */}
-        <nav role="navigation" aria-label="Mobile navigation" className="flex-1 overflow-y-auto py-4 px-4">
+        <nav
+          role="navigation"
+          aria-label="Mobile navigation"
+          className="flex-1 overflow-y-auto py-4 px-4"
+        >
           {[
             { label: "Borrower", links: PRIMARY_LINKS },
             { label: "Financing", links: FINANCE_LINKS },
             { label: "Operations", links: OPERATIONS_LINKS },
-          ].map((group) => <div className="rm-mobile-nav-group" key={group.label}>
-            <span>{group.label}</span>
-            {group.links.map(({ href, labelKey }) => {
-              const active = pathname === href || pathname.startsWith(`${href}/`);
-              return (
-              <Link
-                key={href}
-                href={href}
-                onClick={() => setMenuOpen(false)}
-                aria-current={active ? "page" : undefined}
-                className={`rm-mobile-nav-link py-3 px-4 rounded-lg text-slate-200 hover:text-cyan-400 hover:bg-slate-800/60 transition-colors text-sm font-medium flex items-center gap-3 group ${active ? "is-active" : ""}`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-700 group-hover:bg-cyan-400 transition-colors" />
-                {t(labelKey)}
-              </Link>
-              );
-            })}
-          </div>)}
+            { label: "Support", links: SUPPORT_LINKS },
+          ].map((group) => (
+            <div className="rm-mobile-nav-group" key={group.label}>
+              <span>{group.label}</span>
+              {group.links.map(({ href, labelKey }) => {
+                const active = pathname === href || pathname.startsWith(`${href}/`);
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    onClick={() => setMenuOpen(false)}
+                    aria-current={active ? "page" : undefined}
+                    className={`rm-mobile-nav-link py-3 px-4 rounded-lg text-slate-200 hover:text-cyan-400 hover:bg-slate-800/60 transition-colors text-sm font-medium flex items-center gap-3 group ${active ? "is-active" : ""}`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-slate-700 group-hover:bg-cyan-400 transition-colors" />
+                    {t(labelKey)}
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         {/* Drawer footer */}
@@ -292,6 +364,8 @@ interface WalletButtonProps {
   isConnecting: boolean;
   connect: () => Promise<string | null>;
   disconnect: () => void;
+  isDemoMode?: boolean;
+  onExitDemo?: () => void;
   compact?: boolean;
   fullWidth?: boolean;
 }
@@ -304,10 +378,29 @@ function WalletButton({
   isConnecting,
   connect,
   disconnect,
+  isDemoMode = false,
+  onExitDemo,
   compact = false,
   fullWidth = false,
 }: WalletButtonProps) {
   const t = useTranslations("nav");
+
+  // Demo mode never calls the real `connect()` — exiting is the only action
+  // available so sandbox exploration can't accidentally touch a real wallet.
+  if (isDemoMode && !isConnected) {
+    return (
+      <button
+        onClick={onExitDemo}
+        data-testid="exit-demo-button"
+        className={`inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 font-semibold hover:bg-cyan-500/20 transition-colors ${
+          compact ? "!py-2 !px-3 !text-xs" : "!py-2.5 !px-4 !text-xs md:!text-sm"
+        } ${fullWidth ? "!w-full justify-center" : ""}`}
+      >
+        Demo Mode · Exit
+      </button>
+    );
+  }
+
   if (!isConnected) {
     return (
       <button

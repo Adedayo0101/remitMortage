@@ -1,0 +1,145 @@
+# AlertManager configuration for routing synthetic monitoring alerts.
+#
+# Routes alerts to the appropriate channels based on severity:
+#   - critical/page: PagerDuty + Slack on-call channel
+#   - warning: Slack ops channel
+#   - info: Slack dev channel (optional)
+#
+# Deploy with: alertmanager --config.file=alertmanager.yml
+
+global:
+  resolve_timeout: 5m
+
+route:
+  # Default receiver for unmatched alerts
+  receiver: slack-ops
+  group_by: ["alertname", "severity", "region"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # Critical and page-level alerts → PagerDuty + Slack
+    - match:
+        severity: critical
+      receiver: pagerduty-critical
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 15m
+      continue: true
+
+    - match:
+        severity: page
+      receiver: pagerduty-critical
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 15m
+      continue: true
+
+    # Falco runtime detections (via falcosidekick). Only CRITICAL rules page
+    # (shell in a prod container, sensitive file read); ERROR/WARNING go to
+    # Slack only. Known-benign activity is excluded in Falco itself
+    # (devops/falco/exceptions.yaml) so it never reaches this route.
+    - match:
+        source: falco
+        severity: critical
+      receiver: pagerduty-critical
+      group_by: ["rule", "k8s_pod_name"]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      continue: true
+
+    - match:
+        source: falco
+      receiver: slack-ops
+      group_by: ["rule", "k8s_pod_name"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    # SLO slow burns → lower-severity ticket (see slo-burn-rate-alerts.yml).
+    # Fast burns use severity "page" and are routed to PagerDuty above.
+    - match:
+        severity: ticket
+      receiver: ticket-queue
+      group_by: ["alertname", "slo"]
+      group_wait: 5m
+      group_interval: 1h
+      repeat_interval: 24h
+
+    # Warning alerts → Slack ops channel
+    - match:
+        severity: warning
+      receiver: slack-ops
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+
+receivers:
+  - name: pagerduty-critical
+    pagerduty_configs:
+      - service_key: "${PAGERDUTY_SERVICE_KEY}"
+        description: "{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}"
+        details:
+          severity: "{{ .CommonLabels.severity }}"
+          region: "{{ .CommonLabels.region }}"
+          endpoint: "{{ .CommonAnnotations.endpoint }}"
+          instance: "{{ .CommonAnnotations.instance }}"
+          runbook_url: "{{ .CommonAnnotations.runbook_url }}"
+
+  # Opens a ticket (via the tracker's inbound webhook) and mirrors it to Slack.
+  - name: ticket-queue
+    webhook_configs:
+      - url: "${TICKET_WEBHOOK_URL}"
+        send_resolved: true
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#ops-alerts"
+        send_resolved: false
+        title: "[TICKET] {{ .GroupLabels.alertname }}"
+        text: >-
+          *{{ .CommonAnnotations.summary }}*
+
+          {{ .CommonAnnotations.description }}
+
+          Runbook: {{ .CommonAnnotations.runbook_url | default "N/A" }}
+
+  - name: slack-ops
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#ops-alerts"
+        send_resolved: true
+        title: "[{{ .CommonLabels.severity | toUpper }}] {{ .GroupLabels.alertname }}"
+        text: >-
+          *{{ .CommonAnnotations.summary }}*
+
+          {{ .CommonAnnotations.description }}
+
+          Region: {{ .CommonLabels.region | default "unknown" }}
+
+          Endpoint: {{ .CommonAnnotations.endpoint | default "unknown" }}
+
+          Runbook: {{ .CommonAnnotations.runbook_url | default "N/A" }}
+
+inhibit_rules:
+  # If a global outage is firing, suppress individual region alerts
+  - source_match:
+      alertname: SyntheticGlobalOutage
+    target_match_re:
+      alertname: Synthetic(Health|Auth|Loan)EndpointDown
+    equal: ["instance", "endpoint"]
+
+  # A paging burn on an SLO suppresses the ticket-level burn for the same SLO
+  - source_match:
+      severity: page
+    target_match:
+      severity: ticket
+    equal: ["slo"]
+
+  # Critical alerts suppress warnings for the same endpoint
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ["alertname", "instance", "endpoint"]

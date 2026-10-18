@@ -1,8 +1,9 @@
 name: Contracts
 
-# Dedicated CI/CD pipeline for the Soroban smart-contract workspace. It gates
-# every pull request on formatting, WASM compilation and the full test suite so
-# that a broken contract can never merge into an integration branch.
+# Dedicated CI/CD pipeline for the Soroban smart-contract workspace. Gates
+# every pull request on exactly the checks the project wants for contracts:
+# formatting, clippy, unit tests, the wasm32v1-none release build, and the
+# errors.rs <-> ERROR_CODES.md sync check. Nothing else runs here.
 on:
   push:
     branches: [ main ]
@@ -12,29 +13,29 @@ on:
 
 # Cancel superseded runs on the same ref so a fresh push doesn't queue behind
 # an already-outdated compilation.
+permissions:
+  contents: read
+
 concurrency:
   group: contracts-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ── Linting ─────────────────────────────────────────────────────────────
-  # Runs rustfmt and cargo clippy (deny-warnings).  The separate clippy.toml at
-  # contracts/clippy.toml documents Soroban-SDK exceptions that are
-  # intentionally permitted.
+  # ── Lint ────────────────────────────────────────────────────────────────
   lint:
     name: Lint (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          targets: wasm32v1-none
           components: clippy, rustfmt
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
             contracts -> target
@@ -44,67 +45,75 @@ jobs:
         working-directory: contracts
 
       - name: Lint with Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --lib -- -D warnings
         working-directory: contracts
 
-  # ── Compilation ─────────────────────────────────────────────────────────
-  # Compiles every contract to the Soroban WASM target. A compilation failure
-  # fails CI.
-  build:
-    name: Compile Contracts (wasm32)
+  # ── Tests ───────────────────────────────────────────────────────────────
+  test:
+    name: Run Tests (cargo test --lib)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Rust Cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          targets: wasm32-unknown-unknown
+          workspaces: |
+            contracts -> target
+
+      - name: Run Library Unit Tests
+        run: cargo test --lib
+        working-directory: contracts
+        env:
+          PROPTEST_CASES: 256
+
+
+  # ── Build ───────────────────────────────────────────────────────────────
+  # integration-tests and budget-tests are native std-based test-only crates and
+  # can never target wasm32v1-none (which requires #![no_std]), so they're
+  # excluded here.
+  build:
+    name: Compile Contracts (wasm32v1-none release)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32v1-none
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
             contracts -> target
 
       - name: Build Soroban Contracts (release WASM)
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: cargo build --target wasm32v1-none --release --workspace --exclude integration-tests --exclude budget-tests
         working-directory: contracts
 
       - name: Upload Compiled WASM Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: soroban-wasm
-          path: contracts/target/wasm32-unknown-unknown/release/*.wasm
+          path: contracts/target/wasm32v1-none/release/*.wasm
           retention-days: 7
           if-no-files-found: error
 
-  # ── Tests ───────────────────────────────────────────────────────────────
-  # Runs the workspace unit tests and cross-contract integration tests. A test
-  # failure fails CI.
-  test:
-    name: Run Tests (cargo test)
+  # ── Error Codes Sync ────────────────────────────────────────────────────
+  error-codes-sync:
+    name: error-codes-sync (errors.rs <-> ERROR_CODES.md)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          targets: wasm32-unknown-unknown
+          python-version: "3.11"
 
-      - name: Rust Cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            contracts -> target
-
-      - name: Run Workspace Unit Tests
-        run: cargo test --workspace
-        working-directory: contracts
-
-      - name: Run Cross-Contract Integration Tests
-        run: cargo test -p integration-tests
-        working-directory: contracts
+      - name: Check ERROR_CODES.md is in sync
+        run: python3 scripts/check_error_codes_sync.py

@@ -1,6 +1,11 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { Router } from "express";
 import { validateBorrowerParams } from "../middleware/validate.js";
 import { getApplicant, getBorrowerStatus } from "../services/db.js";
+import { requireBorrowerAddressOwnership } from "../security/requireResourceOwnership.js";
+import type { AuthenticatedRequest } from "../middleware/auth.js";
 
 export const borrowerRouter = Router();
 
@@ -43,6 +48,24 @@ export const borrowerRouter = Router();
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/BorrowerStatusResponse'
+ *       400:
+ *         description: The address parameter is missing or not a Stellar G-address.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ValidationErrorResponse'
+ *       401:
+ *         description: No authenticated caller.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       403:
+ *         description: Borrowers may only read their own status bundle (admins exempt).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
  *       502:
  *         description: On-chain query failed (RPC unreachable or contract error).
  *         content:
@@ -60,6 +83,9 @@ borrowerRouter.get("/:address/status", validateBorrowerParams, async (req, res) 
   const address = Array.isArray(req.params.address)
     ? req.params.address[0]
     : req.params.address;
+
+  // Issue #760: borrowers may only read their own status bundle (admins exempt).
+  if (!requireBorrowerAddressOwnership(req as AuthenticatedRequest, res, String(address))) return;
 
   try {
     const borrower = await getBorrowerStatus(address);

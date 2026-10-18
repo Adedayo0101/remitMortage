@@ -1,3 +1,6 @@
+/**
+ * @jest-environment node
+ */
 import { describe, expect, it } from "@jest/globals";
 
 describe("Next.js content security policy headers", () => {

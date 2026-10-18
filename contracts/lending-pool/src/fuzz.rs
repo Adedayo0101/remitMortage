@@ -1,9 +1,29 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 #![cfg(test)]
 extern crate std;
 
 use crate::{types::Tranche, LendingPoolContract, LendingPoolContractClient, PoolError};
 use proptest::prelude::*;
-use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, BytesN, Env};
+use soroban_sdk::{
+    contract, contractimpl, testutils::Address as _, token::StellarAssetClient, Address, BytesN,
+    Env,
+};
+
+/// mark_default calls <escrow>.seize_collateral(...) for real (see the
+/// crate-dependency note above `premium_for` in lib.rs), so the fuzzed pool
+/// needs a real registered contract at the escrow address, not a bare
+/// generated Address.
+#[contract]
+pub struct ZeroSeizureEscrow;
+
+#[contractimpl]
+impl ZeroSeizureEscrow {
+    pub fn seize_collateral(_env: Env, _borrower: Address, _lending_pool_address: Address) -> i128 {
+        0
+    }
+}
 
 fn setup_pool_with_rates(
     env: &Env,
@@ -22,7 +42,7 @@ fn setup_pool_with_rates(
     let token_admin = Address::generate(env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin);
     let token_addr = token_id.address();
-    let escrow = Address::generate(env);
+    let escrow = env.register(ZeroSeizureEscrow, ());
 
     let cid = env.register(LendingPoolContract, ());
     let client = LendingPoolContractClient::new(env, &cid);
@@ -54,7 +74,7 @@ proptest! {
         amounts in proptest::collection::vec(1i128..1_000_0000000i128, 1..20)
     ) {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (_admin, investor, _treasury, token_addr, client) = setup_pool_with_rates(&env, 800, 400);
         let sac = StellarAssetClient::new(&env, &token_addr);
 
@@ -79,7 +99,7 @@ proptest! {
         rate_bps in 1u32..10_000u32,
     ) {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (_admin, investor, _treasury, token_addr, client) = setup_pool_with_rates(&env, rate_bps, 400);
         let sac = StellarAssetClient::new(&env, &token_addr);
 
@@ -99,7 +119,7 @@ proptest! {
         repay_amounts in proptest::collection::vec(1i128..50_000_0000000i128, 1..5)
     ) {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (_admin, investor, _treasury, token_addr, client) = setup_pool_with_rates(&env, 800, 400);
         let sac = StellarAssetClient::new(&env, &token_addr);
         let borrower = Address::generate(&env);
@@ -111,6 +131,7 @@ proptest! {
         let loan_id = BytesN::from_array(&env, &[2; 32]);
         client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
         client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
         client.disburse(&loan_id, &borrower, &10_000_0000000i128);
 
         for amount in repay_amounts {
@@ -132,7 +153,7 @@ proptest! {
         disburse_amounts in proptest::collection::vec(1i128..50_000_0000000i128, 1..5)
     ) {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (_admin, investor, _treasury, token_addr, client) = setup_pool_with_rates(&env, 800, 400);
         let sac = StellarAssetClient::new(&env, &token_addr);
         let borrower = Address::generate(&env);
@@ -161,7 +182,7 @@ proptest! {
         amounts in proptest::collection::vec(1i128..10_000_0000000i128, 1..15)
     ) {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (_admin, investor, _treasury, token_addr, client) = setup_pool_with_rates(&env, 800, 400);
         let sac = StellarAssetClient::new(&env, &token_addr);
 
@@ -169,6 +190,9 @@ proptest! {
 
         let borrower = Address::generate(&env);
         sac.mint(&borrower, &100_000_000_0000000i128);
+        // disburse only pays out to whitelisted contractors; whitelist this
+        // fixed borrower once so the disburse action (case 1) can succeed.
+        client.add_contractor(&borrower);
 
         let mut loan_counter = 0u8;
         let mut current_loan_id = BytesN::from_array(&env, &[loan_counter; 32]);

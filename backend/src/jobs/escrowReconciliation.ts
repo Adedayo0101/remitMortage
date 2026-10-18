@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 /**
  * Escrow Balance Reconciliation Job
  *
@@ -131,6 +134,7 @@ export async function runEscrowReconciliation(
   logger.info("[escrow-reconciliation] Starting sweep", { autoCorrect, toleranceStoops: toleranceStoops.toString() });
 
   const borrowers = await prisma.borrower.findMany({
+    where: { deletedAt: null },
     select: { id: true, stellarAddress: true, escrowBalance: true },
   });
 

@@ -1,4 +1,6 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { useWallet } from "./WalletContext";
@@ -29,7 +31,7 @@ export function IdleSessionProvider({
   warningDurationMs?: number;
 }) {
   const { isConnected, disconnectAll } = useWallet();
-  const { addToast } = useToast();
+  const { toast } = useToast();
 
   const [isWarningOpen, setIsWarningOpen] = useState(false);
   const [remainingSeconds, setRemainingSeconds] = useState(Math.floor(warningDurationMs / 1000));
@@ -64,8 +66,12 @@ export function IdleSessionProvider({
       clearInterval(countdownIntervalRef.current);
       countdownIntervalRef.current = null;
     }
-    addToast("Session Expired", "You have been logged out automatically due to inactivity.", "warning");
-  }, [disconnectAll, clearSensitiveData, addToast]);
+    toast({
+      variant: "warning",
+      title: "Session Expired",
+      message: "You have been logged out automatically due to inactivity.",
+    });
+  }, [disconnectAll, clearSensitiveData, toast]);
 
   const extendSession = useCallback(() => {
     lastActivityRef.current = Date.now();
