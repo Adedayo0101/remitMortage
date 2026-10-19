@@ -12,22 +12,7 @@ import { runApplicationSlaMonitorJob } from "./applicationSlaMonitor.js";
 import { runAdminPortfolioDigestJob } from "./adminPortfolioDigest.js";
 import { runSlowQueryDigestJob } from "./slowQueryDigest.js";
 import { runSessionTokenPurgeJob } from "./sessionTokenPurge.js";
-import { runOrphanedRecordCleanupJob } from "./orphanedRecordCleanup.js";
-import { startAnalyticsRefreshScheduler, stopAnalyticsRefreshScheduler } from "./analyticsRefresh.js";
-import { runSuspiciousActivityScan } from "../services/suspiciousActivity.js";
-import { runRateLimitAuditJob } from "./rateLimitAudit.js";
-import { runDeadlockDetectionJob } from "./deadlockDetection.js";
-import { runTableBloatMonitorJob } from "./tableBloatMonitor.js";
-import { runUnusedIndexAuditJob } from "./unusedIndexAudit.js";
-import { runQueryKillerJob } from "./queryKiller.js";
-import { runFourEyesApprovalExpiryJob } from "./fourEyesApprovalExpiry.js";
-import { applyDueServicingTransfers } from "../services/loanServicing.js";
-import { prisma } from "../services/db.js";
-import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
-import { runDataQualityAuditJob } from "./dataQualityAudit.js";
-import { runAuditChainVerificationJob } from "./auditChainVerification.js";
-import { runOutboxCleanupOnce, runOutboxRelayOnce } from "./outboxRelay.js";
-import { scheduledJob } from "../services/jobLeaderElection.js";
+import { runInvestorPositionReconciliation } from "./investorPositionReconciliation.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
@@ -37,21 +22,7 @@ let applicationSlaTask: ReturnType<typeof cron.schedule> | null = null;
 let adminDigestTask: ReturnType<typeof cron.schedule> | null = null;
 let slowQueryDigestTask: ReturnType<typeof cron.schedule> | null = null;
 let sessionTokenPurgeTask: ReturnType<typeof cron.schedule> | null = null;
-let orphanedRecordCleanupTask: ReturnType<typeof cron.schedule> | null = null;
-let staleDraftCleanupTask: ReturnType<typeof cron.schedule> | null = null;
-let suspiciousActivityTask: ReturnType<typeof cron.schedule> | null = null;
-let rateLimitAuditTask: ReturnType<typeof cron.schedule> | null = null;
-let deadlockDetectionTask: ReturnType<typeof cron.schedule> | null = null;
-let unusedIndexAuditTask: ReturnType<typeof cron.schedule> | null = null;
-let staleFlagAuditTask: ReturnType<typeof cron.schedule> | null = null;
-let servicingTransferTask: ReturnType<typeof cron.schedule> | null = null;
-let tableBloatMonitorTask: ReturnType<typeof cron.schedule> | null = null;
-let queryKillerTask: ReturnType<typeof cron.schedule> | null = null;
-let fourEyesApprovalExpiryTask: ReturnType<typeof cron.schedule> | null = null;
-let dataQualityAuditTask: ReturnType<typeof cron.schedule> | null = null;
-let auditChainVerificationTask: ReturnType<typeof cron.schedule> | null = null;
-let outboxRelayTask: ReturnType<typeof cron.schedule> | null = null;
-let outboxCleanupTask: ReturnType<typeof cron.schedule> | null = null;
+let investorPositionReconciliationTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -243,8 +214,14 @@ export function startScheduler() {
   // Start the materialized view refresh scheduler (every 5 minutes by default)
   startAnalyticsRefreshScheduler();
 
+  const investorSchedule = process.env.INVESTOR_POSITION_RECONCILIATION_CRON_SCHEDULE || "30 1 * * *";
+  investorPositionReconciliationTask = cron.schedule(investorSchedule, async () => {
+    console.log("[Scheduler] Triggering investor position reconciliation job...");
+    await runInvestorPositionReconciliation();
+  }, { timezone: "UTC" });
+
   console.log(
-    "[Scheduler] Started: repayment audit, session token purge, orphaned record cleanup, KYC expiry reminder, escrow reconciliation, application SLA monitor, admin portfolio digest, slow query digest, suspicious activity scan, rate limit audit, deadlock detection, loan servicing transfer, table bloat monitor, and analytics refresh jobs scheduled."
+    "[Scheduler] Started: repayment audit, session purge, KYC expiry reminder, escrow reconciliation, investor reconciliation, application SLA monitor, and admin portfolio digest jobs scheduled."
   );
 }
 
@@ -281,62 +258,9 @@ export function stopScheduler() {
     adminDigestTask.stop();
     adminDigestTask = null;
   }
-  if (slowQueryDigestTask) {
-    slowQueryDigestTask.stop();
-    slowQueryDigestTask = null;
+  if (investorPositionReconciliationTask) {
+    investorPositionReconciliationTask.stop();
+    investorPositionReconciliationTask = null;
   }
-  if (suspiciousActivityTask) {
-    suspiciousActivityTask.stop();
-    suspiciousActivityTask = null;
-  }
-  if (rateLimitAuditTask) {
-    rateLimitAuditTask.stop();
-    rateLimitAuditTask = null;
-  }
-  if (deadlockDetectionTask) {
-    deadlockDetectionTask.stop();
-    deadlockDetectionTask = null;
-  }
-  if (unusedIndexAuditTask) {
-    unusedIndexAuditTask.stop();
-    unusedIndexAuditTask = null;
-  }
-  if (staleFlagAuditTask) {
-    staleFlagAuditTask.stop();
-    staleFlagAuditTask = null;
-  }
-  if (servicingTransferTask) {
-    servicingTransferTask.stop();
-    servicingTransferTask = null;
-  }
-  if (tableBloatMonitorTask) {
-    tableBloatMonitorTask.stop();
-    tableBloatMonitorTask = null;
-  }
-  if (queryKillerTask) {
-    queryKillerTask.stop();
-    queryKillerTask = null;
-  }
-  if (fourEyesApprovalExpiryTask) {
-    fourEyesApprovalExpiryTask.stop();
-    fourEyesApprovalExpiryTask = null;
-  }
-  if (auditChainVerificationTask) {
-    auditChainVerificationTask.stop();
-    auditChainVerificationTask = null;
-  }
-  if (dataQualityAuditTask) {
-    dataQualityAuditTask.stop();
-    dataQualityAuditTask = null;
-  }
-  if (outboxRelayTask) {
-    outboxRelayTask.stop();
-    outboxRelayTask = null;
-  }
-  if (outboxCleanupTask) {
-    outboxCleanupTask.stop();
-    outboxCleanupTask = null;
-  }
-  stopAnalyticsRefreshScheduler();
   console.log("[Scheduler] Stopped.");
 }
