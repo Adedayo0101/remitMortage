@@ -6,6 +6,7 @@ import jwt from "jsonwebtoken";
 import { verifySessionToken } from "../services/jwtKeyRing.js";
 import { loadConfig } from "../config.js";
 import { IMPERSONATION_COOKIE, isImpersonationSessionActive } from "../services/impersonation.js";
+import { tenantRateLimitMiddleware } from "./tenantRateLimit.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -79,12 +80,12 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
       }
 
       req.user = decoded;
-      next();
-      return;
     } catch (err) {
       res.status(401).json({ error: "unauthorized", message: "Invalid or expired impersonation session" });
       return;
     }
+    tenantRateLimitMiddleware(req, res, next);
+    return;
   }
 
   // Accept token from HTTP-only cookie or Authorization: Bearer <token> header
@@ -104,11 +105,11 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
       network: string;
     };
     req.user = { ...decoded, deviceFingerprint: deviceFingerprintOf(decoded) };
-    next();
   } catch (err) {
     res.status(401).json({ error: "unauthorized", message: "Invalid or expired token" });
     return;
   }
+  tenantRateLimitMiddleware(req, res, next);
 }
 
 /** Populate a verified wallet identity when present, without requiring login. */
@@ -128,7 +129,7 @@ export function optionalAuthMiddleware(
       // Public endpoints remain available to anonymous callers.
     }
   }
-  next();
+  tenantRateLimitMiddleware(req, _res, next);
 }
 
 /**
@@ -144,7 +145,7 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
   // require a wallet identity.
   if (bearer && bearer === adminApiKey) {
     req.adminAuth = { via: "api_key" };
-    next();
+    tenantRateLimitMiddleware(req, res, next);
     return;
   }
 
@@ -173,9 +174,9 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
       return;
     }
 
-    next();
   } catch (err) {
     res.status(401).json({ error: "unauthorized", message: "Invalid or expired token" });
     return;
   }
+  tenantRateLimitMiddleware(req, res, next);
 }

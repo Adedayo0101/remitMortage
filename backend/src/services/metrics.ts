@@ -265,6 +265,26 @@ export const apiKeyQuotaExceededTotal = new Counter({
 });
 
 // ---------------------------------------------------------------------------
+// Tenant request rate-limit metrics
+// ---------------------------------------------------------------------------
+
+/** Current request-window usage for each tenant and plan. */
+export const tenantRateLimitUsage = new Gauge({
+  name: "remitmortgage_tenant_rate_limit_usage",
+  help: "Authenticated requests used by each tenant in the current rate-limit window.",
+  labelNames: ["tenant_id", "plan"] as const,
+  registers: [metricsRegistry],
+});
+
+/** Requests rejected after exceeding a tenant's plan-based request budget. */
+export const tenantRateLimitExceededTotal = new Counter({
+  name: "remitmortgage_tenant_rate_limit_exceeded_total",
+  help: "Authenticated tenant requests rejected for exceeding the plan-based request budget.",
+  labelNames: ["tenant_id", "plan"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
 // Request payload limit metrics
 // ---------------------------------------------------------------------------
 
