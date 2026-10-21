@@ -193,7 +193,9 @@ impl EscrowContract {
     }
 
     fn get_pending_attestor_change(env: &Env) -> Option<PendingAttestorChangeProposal> {
-        env.storage().instance().get(&DataKey::PendingAttestorChange)
+        env.storage()
+            .instance()
+            .get(&DataKey::PendingAttestorChange)
     }
 
     fn attestors(env: &Env) -> Result<crate::types::BeneficiaryAttestorConfig, EscrowError> {
@@ -794,9 +796,10 @@ impl EscrowContract {
             return Err(EscrowError::InvalidAmount);
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::HardshipApprovalWindowLedgers, &approval_window_ledgers);
+        env.storage().instance().set(
+            &DataKey::HardshipApprovalWindowLedgers,
+            &approval_window_ledgers,
+        );
         env.storage()
             .instance()
             .set(&DataKey::HardshipCapPerPeriod, &cap_per_period);
@@ -893,7 +896,11 @@ impl EscrowContract {
 
         env.events().publish(
             (symbol_short!("hs_appr"), goal_id.clone()),
-            (borrower.clone(), config.admin.clone(), request.reason_hash.clone()),
+            (
+                borrower.clone(),
+                config.admin.clone(),
+                request.reason_hash.clone(),
+            ),
         );
 
         Self::extend_instance_ttl(&env);
@@ -1174,7 +1181,10 @@ impl EscrowContract {
             }
             env.storage()
                 .persistent()
-                .remove(&DataKey::PendingReleaseTime(borrower.clone(), goal_id.clone()));
+                .remove(&DataKey::PendingReleaseTime(
+                    borrower.clone(),
+                    goal_id.clone(),
+                ));
 
             Self::extend_instance_ttl(&env);
 
