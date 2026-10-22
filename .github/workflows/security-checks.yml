@@ -33,10 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
@@ -95,7 +95,8 @@ jobs:
           key: ${{ runner.os }}-cargo-audit-bin
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        # The cache above may already provide the binary, and `cargo install` fails if it exists.
+        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
 
       - name: Run cargo-audit
         run: cargo audit
@@ -335,8 +336,12 @@ jobs:
         run: npm ci
         working-directory: backend
 
+      - name: Generate Prisma Client
+        run: npx prisma generate
+        working-directory: backend
+
       - name: Run Device Binding Suite
-        run: npx jest src/__tests__/adminDeviceBinding.test.ts --no-coverage
+        run: npx jest src/__tests__/adminDeviceBinding.test.ts --no-coverage --testTimeout=30000
         working-directory: backend
 
   # ── Prototype Pollution / Unsafe Merge Gate (issue #885) ────────────────

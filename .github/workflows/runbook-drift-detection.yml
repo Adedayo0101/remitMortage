@@ -18,6 +18,10 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   check-runbook-drift:
     name: Check runbook references against live infrastructure

@@ -29,6 +29,10 @@ on:
       - 'backend/src/index.ts'
       - 'backend/scripts/detect-cors-drift.sh'
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   cors-drift:
     name: CORS Drift Check — ${{ matrix.environment }}

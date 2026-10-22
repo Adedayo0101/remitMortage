@@ -13,6 +13,10 @@ jobs:
   bulk-approval-staging-load-test:
     name: Run concurrent admin bulk approval load test
     runs-on: ubuntu-latest
+    # Needs a live staging API. The secrets context cannot be read in a step
+    # `if`, so expose only whether the credentials are configured.
+    env:
+      STAGING_CONFIGURED: ${{ secrets.STAGING_ADMIN_JWT != '' && secrets.BULK_APPROVAL_APPLICATION_IDS != '' }}
 
     steps:
       - name: Checkout repository
@@ -28,7 +32,12 @@ jobs:
         working-directory: backend
         run: npm ci
 
+      - name: Skip load test (staging credentials not configured)
+        if: env.STAGING_CONFIGURED != 'true'
+        run: echo "STAGING_ADMIN_JWT / BULK_APPROVAL_APPLICATION_IDS are not set; skipping the staging load test."
+
       - name: Run concurrent bulk approval test
+        if: env.STAGING_CONFIGURED == 'true'
         working-directory: backend
         run: npm run load-test:bulk-approval
         env:

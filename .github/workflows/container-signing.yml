@@ -17,7 +17,23 @@ env:
   REGISTRY: public.ecr.aws/remitmortgage
 
 jobs:
+  # Pushing to ECR needs AWS credentials. The secrets context cannot be read in
+  # a job-level `if`, so detect them here and let `sign` run only when present.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    env:
+      HAS_AWS_CREDENTIALS: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+    steps:
+      - id: check
+        run: |
+          echo "configured=${HAS_AWS_CREDENTIALS}" >> "$GITHUB_OUTPUT"
+          if [ "${HAS_AWS_CREDENTIALS}" != "true" ]; then echo "AWS credentials are not configured; skipping image build, signing and attestation."; fi
+
   sign:
+    needs: preflight
+    if: needs.preflight.outputs.configured == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:

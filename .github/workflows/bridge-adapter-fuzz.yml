@@ -13,6 +13,9 @@ concurrency:
   group: bridge-adapter-fuzz-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   deep-fuzz:
     name: Deep Fuzz Testing (bridge-adapter)
