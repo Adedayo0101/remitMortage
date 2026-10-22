@@ -23,8 +23,24 @@ env:
   INFRACOST_THRESHOLD_USD: "50"
 
 jobs:
+  # Infracost needs an API key. The secrets context cannot be read in a job-level
+  # `if`, so detect it here and let the dependent job run only when present.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    env:
+      HAS_INFRACOST_KEY: ${{ secrets.INFRACOST_API_KEY != '' }}
+    steps:
+      - id: check
+        run: |
+          echo "configured=${HAS_INFRACOST_KEY}" >> "$GITHUB_OUTPUT"
+          if [ "${HAS_INFRACOST_KEY}" != "true" ]; then echo "INFRACOST_API_KEY is not configured; skipping the Infracost job."; fi
+
   infracost:
     name: Terraform Cost Estimate
+    needs: preflight
+    if: needs.preflight.outputs.configured == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Setup Infracost
