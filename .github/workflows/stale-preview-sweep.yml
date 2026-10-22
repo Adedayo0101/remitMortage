@@ -42,12 +42,7 @@ jobs:
         id: sweep
         env:
           AWS_REGION: ${{ env.AWS_REGION }}
-          STALE_ENV_MAX_AGE_DAYS: >-
-            ${{
-              inputs.max-age-days != null && inputs.max-age-days != ''
-              ? inputs.max-age-days
-              : env.STALE_ENV_MAX_AGE_DAYS
-            }}
+          STALE_ENV_MAX_AGE_DAYS: ${{ inputs.max-age-days || env.STALE_ENV_MAX_AGE_DAYS }}
         run: |
           chmod +x scripts/teardown-preview-env.sh
           scripts/teardown-preview-env.sh sweep "${STALE_ENV_MAX_AGE_DAYS}" \

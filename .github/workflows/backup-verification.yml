@@ -36,9 +36,6 @@ on:
 permissions:
   contents: read
 
-permissions:
-  contents: read
-
 jobs:
   verify-restore:
     name: Restore Drill (Sandbox Postgres)

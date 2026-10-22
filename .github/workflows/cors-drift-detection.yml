@@ -12,12 +12,12 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Limit check to a single environment (leave blank for all)'
+        description: 'Limit check to a single environment (all = every environment)'
         required: false
-        default: ''
+        default: all
         type: choice
         options:
-          - ''
+          - all
           - staging
           - production
   push:
@@ -33,14 +33,13 @@ jobs:
   cors-drift:
     name: CORS Drift Check — ${{ matrix.environment }}
     runs-on: ubuntu-latest
-    if: >
-      github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.environment == '' ||
-      github.event.inputs.environment == matrix.environment
     strategy:
       fail-fast: false
       matrix:
-        environment: [staging, production]
+        # Every environment, unless a manual run pinned a single one. (The
+        # matrix context is not available in a job-level `if`, so the
+        # selection happens here instead.)
+        environment: ${{ fromJSON((github.event_name != 'workflow_dispatch' || github.event.inputs.environment == 'all') && '["staging","production"]' || format('["{0}"]', github.event.inputs.environment)) }}
 
     steps:
       - name: Checkout Code

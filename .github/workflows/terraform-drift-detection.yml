@@ -12,12 +12,12 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Limit check to a single environment (leave blank for all)'
+        description: 'Limit check to a single environment (all = every environment)'
         required: false
-        default: ''
+        default: all
         type: choice
         options:
-          - ''
+          - all
           - dev
           - staging
           - production
@@ -38,15 +38,13 @@ jobs:
     permissions:
       contents: read
       issues: write
-    # Run all three unless the caller pinned a specific environment
-    if: >
-      github.event_name == 'schedule' ||
-      github.event.inputs.environment == '' ||
-      github.event.inputs.environment == matrix.environment
     strategy:
       fail-fast: false
       matrix:
-        environment: [dev, staging, production]
+        # All three unless a manual run pinned a specific environment. (The
+        # matrix context is not available in a job-level `if`, so the
+        # selection happens here instead.)
+        environment: ${{ fromJSON((github.event_name != 'workflow_dispatch' || github.event.inputs.environment == 'all') && '["dev","staging","production"]' || format('["{0}"]', github.event.inputs.environment)) }}
 
     env:
       TF_WORKSPACE_DIR: devops
@@ -172,8 +170,8 @@ jobs:
       contents: read
       issues: write
     if: >
-      github.event_name == 'schedule' ||
-      github.event.inputs.environment == '' ||
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.environment == 'all' ||
       github.event.inputs.environment == 'production'
 
     env:
