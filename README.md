@@ -6,7 +6,7 @@ RemitMortgage enables diaspora communities to leverage their verified remittance
 It's the bridge between consistent remittance behavior and real homeownership.
 
 ## Motivation
-Millions of people in the global diaspora send money home every month — consistently, reliably, for years. Yet this financial track record is invisible to traditional lenders. Banks don't recognize cross-border remittance history as proof of creditworthiness, leaving hardworking families locked out of property ownership in their home countries.
+Millions of people in the global diaspora send money home every month — consistently, reliably, for years. Yet this financial track record is invisible to traditional lenders. Banks don't recognize cross-border remittance history as proof of creditworthiness, leaving hardworking families locked out of property ownership in their home countries
 
 RemitMortgage makes remittance history count:
 
