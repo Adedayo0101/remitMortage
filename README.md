@@ -12,7 +12,7 @@ RemitMortgage makes remittance history count:
 
 *   **Prove Your Track Record:** Verify ownership of wallets used to send remittances and let the protocol analyze your Stellar payment history for consistency and reliability.
 *   **Save Toward Ownership:** Contribute 30% down payment over 6–12 months into a Soroban escrow contract, earning yield on pooled funds while you save.
-*   **Build With Accountability:** The remaining 70% is disbursed from a lending pool in milestone-based tranches to vetted contractors — gated by photo/video evidence on IPFS and multisig governance approval.
+*   **Build With Accountability:** The remaining 70% is disbursed from a lending pool in milestone-based tranches to vetted contractors — gated by photo/video evidence on IPFS and multisig governance Consent.
 
 ## Features
 *   **Remittance Verification** — Off-chain scoring service analyzes Stellar payment history for recurring amounts, regular intervals, and sustained sending patterns to establish borrower eligibility.
