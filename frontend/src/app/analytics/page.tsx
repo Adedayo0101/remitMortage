@@ -19,6 +19,10 @@ import {
   Cell,
 } from "recharts";
 import { useDataSaver } from "@/context/DataSaverContext";
+import AccessibleChart from "@/components/charts/AccessibleChart";
+import ChartExportControls from "@/components/charts/ChartExportControls";
+import type { ChartExportData, ChartSeries } from "@/lib/chart-export";
+import { summarizeShares, summarizeTrend } from "@/lib/chart-summary";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 const RateBenchmarkWidget = dynamic(() => import("../../components/RateBenchmarkWidget"), {

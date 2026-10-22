@@ -25,6 +25,7 @@ import { LiveRegionAnnouncer } from "@/components/LiveRegionAnnouncer";
 import Footer from "@/components/Footer";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
+import { THEME_BOOT_SCRIPT } from "./lib/theme-boot";
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? "https://remitmortgage.com";
 

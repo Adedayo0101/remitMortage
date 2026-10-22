@@ -18,6 +18,10 @@ import useTransactionHistoryFilters, {
   type TxCategory,
 } from "@/hooks/useTransactionHistoryFilters";
 import DateRangePicker from "@/components/DateRangePicker";
+import ColumnManager from "@/components/tables/ColumnManager";
+import ColumnResizeHandle from "@/components/tables/ColumnResizeHandle";
+import { useColumnPreferences } from "@/hooks/useColumnPreferences";
+import type { ColumnDefinition } from "@/lib/column-preferences";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 
