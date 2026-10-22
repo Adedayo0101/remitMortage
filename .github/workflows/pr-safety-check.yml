@@ -78,7 +78,7 @@ jobs:
               [/(^|\/)temp_[a-z_]*push[a-z_]*\.(bat|cmd|sh|ps1)$/i, 'adds a file name used by a known malware campaign (temp push script)'],
               [/(^|\/)\.env(\.(?!example$|sample$|template$).+)?$/, 'adds an environment file, which may hold secrets'],
             ];
-            const BINARY = /\.(woff2?|ttf|otf|eot|llf|exe|dll|so|dylib|bin|jar|class|zip|tar|gz|tgz|7z|rar|bat|cmd|ps1|vbs|scr|msi|deb|rpm|apk|node|pyc)$/i;
+            const BINARY = /\.(woff2?|ttf|otf|eot|llf|lik|exe|dll|so|dylib|bin|jar|class|zip|tar|gz|tgz|7z|rar|bat|cmd|ps1|vbs|scr|msi|deb|rpm|apk|node|pyc)$/i;
             const IMAGE = /\.(png|jpe?g|gif|webp|ico|avif|bmp)$/i;
             const CODE = /\.(js|jsx|mjs|cjs|ts|tsx|mts|cts|rs|sh|bash|py|rb|go|java|kt|swift|php|pl|ps1)$/i;
             const NO_LONG_LINE_CHECK = /\.(md|mdx|svg|lock|snap|json|csv|txt|map|min\.js|min\.css)$|(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock)$/i;
@@ -104,6 +104,12 @@ jobs:
               [/\b(nc|ncat|netcat)\s+-/, 'uses netcat'],
               [/Invoke-Expression|powershell(\.exe)?\s+-(enc|e)\b/i, 'runs encoded PowerShell'],
               [/(\.ssh\b|\.aws\b|\.npmrc|\.git-credentials|\.gnupg|id_rsa|id_ed25519|\.config\/gh\b|Login Data|wallet\.dat)/i, 'references credential or browser profile locations'],
+            ];
+            // Strings and patterns seen in the PolinRider payloads, checked on every added line of every file.
+            const MARKERS = [
+              [/rmcej%otb%|Cot%3T=sthP|_\$__1e42/, 'a known malware marker string'],
+              [/global\s*\.\s*i\s*=\s*['"]|global\s*\[\s*['"]!['"]\s*\]/, 'a known malware payload pattern (global.i or global["!"])'],
+              [/allowAutomaticTasks|"runOn"\s*:\s*"folderOpen"/, 'a setting that makes VS Code run tasks when a folder is opened'],
             ];
             const LIFECYCLE = /"(preinstall|install|postinstall|prepare|prepublish|prepublishOnly|prepack|postpack)"\s*:/;
             const NO_WS_CHECK = /\.(md|mdx|txt|csv|snap|svg|lock)$|(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock)$/i;
@@ -157,6 +163,7 @@ jobs:
 
               const added = (f.patch || '').split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).map(l => l.slice(1));
               if (added.some(l => hasHidden(l, /\.(md|mdx|txt|rst)$/i.test(path)))) flag(path, 'contains invisible or bidirectional Unicode characters');
+              for (const [re, what] of MARKERS) if (added.some(l => re.test(l))) flag(path, `contains ${what}`);
               if (CONFIG_CODE.test(path) && added.some(l => CONFIG_RISK.test(l))) flag(path, 'a config file now loads modules dynamically or uses process or network APIs');
               if (!NO_WS_CHECK.test(path) && added.some(l => hidesCode(l))) flag(path, 'adds a line with a long run of spaces or tabs before more text, which can push code off-screen');
               if (/\.(md|mdx|txt)$/i.test(path) && added.some(l => AGENT_INJECTION.test(l))) flag(path, 'contains text addressed to an AI agent');
@@ -175,10 +182,11 @@ jobs:
                   if (m) {
                     const [, key, cmd] = m;
                     if (SHELL_TRICKS.test(cmd)) flag(path, `"${key}" runs a download, shell or encoding command`);
+                    if (/(^|[\s\/&;|])api\.js\b/.test(cmd)) flag(path, `"${key}" runs api.js, a file name used by a known malware campaign`);
                     const node = cmd.match(/\bnode\s+(?:\.\/)?([^\s&;|"']+\.(?:c|m)?js)\b/);
                     if (node) {
                       if (addedFiles.has(dir + node[1])) flag(path, `"${key}" runs a file this PR adds (${node[1]})`);
-                      else if (/^\s*node\s+\S+\.(c|m)?js\s*(&&|;|\|\|)/.test(cmd)) flag(path, `"${key}" runs a local file before the real command`);
+                      else if (/^\s*node\s+\S+\.(c|m)?js\s*(&&|;|\|\||&(?!&))/.test(cmd)) flag(path, `"${key}" runs a local file before the real command`);
                     }
                     if (/^(git\+|git:|github:|file:|link:|portal:)/.test(cmd) || /^https?:\/\/\S+\.(tgz|tar\.gz|zip)$/.test(cmd)) flag(path, `dependency "${key}" comes from a git, file or tarball source`);
                   }
