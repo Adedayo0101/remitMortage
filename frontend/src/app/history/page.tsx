@@ -9,6 +9,7 @@ import {
   downloadStatementPdf,
   type StatementRow,
 } from "@/lib/statementExport";
+import VirtualizedTable from "../../components/VirtualizedTable";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -82,6 +83,9 @@ export default function HistoryPage() {
   const [walletChecked, setWalletChecked] = useState(false);
 
   const [records, setRecords] = useState<TxRecord[]>([]);
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -433,10 +437,20 @@ export default function HistoryPage() {
                   </div>
                 ) : (
                   <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-[var(--border-color)] text-[var(--text-muted)] text-xs uppercase tracking-wider">
+                    <VirtualizedTable
+                      items={filtered}
+                      getItemKey={(tx) => tx.id}
+                      ariaLabel="Transaction audit log"
+                      columnCount={6}
+                      selectedKeys={selectedTransactionIds}
+                      className="w-full text-sm"
+                      header={
+                        <thead className="sticky top-0 z-10 bg-[var(--bg-card)]">
+                          <tr
+                            aria-rowindex={1}
+                            className="border-b border-[var(--border-color)] text-[var(--text-muted)] text-xs uppercase tracking-wider"
+                          >
+                            <th className="px-3 py-3 text-left font-medium">Select</th>
                             <th className="px-5 py-3 text-left font-medium">Date</th>
                             <th className="px-5 py-3 text-left font-medium">Type</th>
                             <th className="px-5 py-3 text-right font-medium">Amount</th>
@@ -444,60 +458,80 @@ export default function HistoryPage() {
                             <th className="px-5 py-3 text-left font-medium">Transaction</th>
                           </tr>
                         </thead>
-                        <tbody>
-                          {filtered.map((tx) => (
-                            <tr
-                              key={tx.id}
-                              className="border-b border-[var(--border-color)]/40 last:border-0 hover:bg-[var(--bg-card-hover)] transition-colors"
+                      }
+                      renderRow={(tx, index, tabIndex, ariaRowIndex, selected) => (
+                        <tr
+                          aria-rowindex={ariaRowIndex}
+                          key={tx.id}
+                          style={{ height: 58 }}
+                          className={`border-b border-[var(--border-color)]/40 last:border-0 hover:bg-[var(--bg-card-hover)] transition-colors ${
+                            selected ? "bg-[var(--bg-card-hover)]" : ""
+                          }`}
+                        >
+                          <td className="px-3 py-4 text-center">
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={(event) => {
+                                setSelectedTransactionIds((previous) => {
+                                  const next = new Set(previous);
+                                  if (event.target.checked) next.add(tx.id);
+                                  else next.delete(tx.id);
+                                  return next;
+                                });
+                              }}
+                              aria-label={`Select transaction ${shorten(tx.hash)}`}
+                              className="accent-[var(--accent-primary)]"
+                            />
+                          </td>
+                          <td className="px-5 py-4 text-[var(--text-secondary)] whitespace-nowrap">
+                            {formatDate(tx.date)}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${CATEGORY_STYLES[tx.category]}`}
                             >
-                              <td className="px-5 py-4 text-[var(--text-secondary)] whitespace-nowrap">
-                                {formatDate(tx.date)}
-                              </td>
+                              {tx.category.slice(0, -1)}
+                            </span>
+                          </td>
 
-                              <td className="px-5 py-4">
-                                <span
-                                  className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${CATEGORY_STYLES[tx.category]}`}
-                                >
-                                  {tx.category.slice(0, -1)}
-                                </span>
-                              </td>
+                          <td className="px-5 py-4 text-right font-medium tabular-nums">
+                            <span
+                              className={
+                                tx.from === publicKey
+                                  ? "text-[var(--text-primary)]"
+                                  : "text-emerald-400"
+                              }
+                            >
+                              {tx.from === publicKey ? "−" : "+"}
+                              {tx.amount} USDC
+                            </span>
+                          </td>
 
-                              <td className="px-5 py-4 text-right font-medium tabular-nums">
-                                <span
-                                  className={
-                                    tx.from === publicKey
-                                      ? "text-[var(--text-primary)]"
-                                      : "text-emerald-400"
-                                  }
-                                >
-                                  {tx.from === publicKey ? "−" : "+"}
-                                  {tx.amount} USDC
-                                </span>
-                              </td>
+                          <td className="px-5 py-4">
+                            <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                              {tx.status}
+                            </span>
+                          </td>
 
-                              <td className="px-5 py-4">
-                                <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                                  {tx.status}
-                                </span>
-                              </td>
-
-                              <td className="px-5 py-4">
-                                <a
-                                  href={`${STELLARCHAIN_BASE}${tx.hash}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="font-mono text-[var(--accent-primary-light)] hover:underline text-xs"
-                                  title={tx.hash}
-                                >
-                                  {shorten(tx.hash)}
-                                </a>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          <td className="px-5 py-4">
+                            <a
+                              href={`${STELLARCHAIN_BASE}${tx.hash}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-mono text-[var(--accent-primary-light)] hover:underline text-xs"
+                              title={tx.hash}
+                              data-virtualized-row-index={index}
+                              tabIndex={tabIndex}
+                            >
+                              {shorten(tx.hash)}
+                            </a>
+                          </td>
+                        </tr>
+                      )}
+                    />
 
                     {hasMore && (
                       <div className="px-5 py-4 border-t border-[var(--border-color)]">
