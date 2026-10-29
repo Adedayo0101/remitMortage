@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { Request, Response, NextFunction } from "express";
 import { getCacheValue, setCacheValue } from "../services/redis.js";
 import logger from "../utils/logger.js";
@@ -9,7 +12,9 @@ import logger from "../utils/logger.js";
  */
 export function cacheMiddleware(ttlSeconds: number = 60) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    if (req.method !== "GET") {
+    // Shared analytics cache entries may predate this authenticated session's
+    // write. Let the read-your-writes router choose the correct database.
+    if (req.method !== "GET" || (req as Request & { user?: unknown }).user) {
       next();
       return;
     }

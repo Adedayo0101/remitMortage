@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import React from "react";
 
 interface QuorumProgressBarProps {
@@ -21,7 +24,7 @@ export const QuorumProgressBar: React.FC<QuorumProgressBarProps> = ({
           {currentVotes}/{requiredVotes} votes cast
         </span>
         <span
-          className={`${isQuorumMet ? "text-emerald-400" : "text-zinc-500"} font-semibold tracking-wide`}
+          className={`${isQuorumMet ? "text-emerald-400" : "text-zinc-400"} font-semibold tracking-wide`}
         >
           {isQuorumMet
             ? `${quorumThresholdPercent}% quorum met`

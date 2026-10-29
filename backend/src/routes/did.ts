@@ -1,4 +1,8 @@
-import { Router } from "express";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
+import { Router, Response } from "express";
+import { AuthenticatedRequest } from "../middleware/auth.js";
 import jwt from "jsonwebtoken";
 import logger from "../utils/logger.js";
 import { validateMultiChainOwnership } from "../middleware/validate.js";
@@ -9,6 +13,7 @@ import {
   createDidChallenge,
 } from "../services/did.js";
 import { prisma } from "../services/db.js";
+import { requireBorrowerAddressOwnership } from "../security/requireResourceOwnership.js";
 
 export const didRouter = Router();
 
@@ -18,7 +23,7 @@ didRouter.post("/challenge", validateMultiChainOwnership, (req, res) => {
   res.json({ challenge });
 });
 
-didRouter.post("/verify", authMiddleware, async (req, res) => {
+didRouter.post("/verify", authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { didDocument, proof } = req.body;
 
@@ -63,8 +68,8 @@ didRouter.post("/verify", authMiddleware, async (req, res) => {
     const user = req.user as { walletAddress: string } | undefined;
     const walletAddress = user?.walletAddress ?? proof.signerAddress;
 
-    const applicant = await prisma.applicant.findUnique({
-      where: { stellarAddress: walletAddress },
+    const applicant = await prisma.applicant.findFirst({
+      where: { stellarAddress: walletAddress, deletedAt: null },
     });
 
     if (!applicant) {
@@ -121,9 +126,9 @@ didRouter.post("/verify", authMiddleware, async (req, res) => {
   }
 });
 
-didRouter.get("/credential/:did", authMiddleware, async (req, res) => {
+didRouter.get("/credential/:did", authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { did } = req.params;
+    const { did } = req.params as { did: string };
     const credential = await prisma.borrowerCredential.findUnique({
       where: { did },
       include: { applicant: true },
@@ -149,11 +154,13 @@ didRouter.get("/credential/:did", authMiddleware, async (req, res) => {
   }
 });
 
-didRouter.get("/applicant/:address", authMiddleware, async (req, res) => {
+didRouter.get("/applicant/:address", authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { address } = req.params;
-    const applicant = await prisma.applicant.findUnique({
-      where: { stellarAddress: address },
+    const { address } = req.params as { address: string };
+    // Issue #760: applicants may only read their own credential bundle (admins exempt).
+    if (!requireBorrowerAddressOwnership(req, res, address)) return;
+    const applicant = await prisma.applicant.findFirst({
+      where: { stellarAddress: address, deletedAt: null },
       include: { borrowerCredentials: true },
     });
 

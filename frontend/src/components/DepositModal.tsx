@@ -1,16 +1,25 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Loader2, AlertCircle, CheckCircle2, WalletMinimal } from "lucide-react";
 import { useWallet } from "../context/WalletContext";
 import { useTransactionMonitor } from "../hooks/useTransactionMonitor";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 import {
   buildDepositTx,
   peekCachedEstimate,
+  previewTransaction,
   signAndSubmit,
   WalletSignatureError,
   type SimulationEstimate,
-} from "../lib/soroban";
+} from "../lib/soroban-client";
+import {
+  SimulationBlockedError,
+  type TransactionPreview,
+} from "../lib/transaction-preview";
+import TransactionPreviewPanel from "./tx/TransactionPreviewPanel";
 import {
   formatTransactionErrorMessage,
   type TransactionModalPhase,
@@ -20,6 +29,7 @@ import GasFeeAdjuster from "./tx/GasFeeAdjuster";
 import { useXlmPrice } from "../hooks/useXlmPrice";
 import { baselineFeeStroops, feeToUsd, formatFee } from "../lib/gas-fees";
 import { WALLET_ERROR_MESSAGES } from "../lib/wallet-errors";
+import { track } from "../lib/analytics";
 
 type Props = {
   isOpen: boolean;
@@ -43,6 +53,10 @@ export default function DepositModal({ isOpen, onClose }: Props) {
   const [maxFeeStroops, setMaxFeeStroops] = useState<number | null>(null);
   const [estimating, setEstimating] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
+  // Issue #884: what the transaction will actually do, shown before the wallet
+  // prompt. `null` means "not simulated yet" — the sign button stays disabled.
+  const [preview, setPreview] = useState<TransactionPreview | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [txPhase, setTxPhase] = useState<TransactionModalPhase>("idle");
   const [txHash, setTxHash] = useState<string | null>(null);
@@ -51,6 +65,9 @@ export default function DepositModal({ isOpen, onClose }: Props) {
   const [canRetry, setCanRetry] = useState(false);
   const txMonitor = useTransactionMonitor(txHash ?? undefined);
   const xlmPrice = useXlmPrice();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const amountInputRef = useRef<HTMLInputElement>(null);
+  useFocusTrap(dialogRef, isOpen, { onEscape: onClose, initialFocusRef: amountInputRef });
 
   const balanceNum = parseFloat(usdcBalance || "0");
   const amountNum = parseFloat(debouncedAmount) || 0;
@@ -79,20 +96,40 @@ export default function DepositModal({ isOpen, onClose }: Props) {
     let active = true;
     setEstimating(true);
     setBuildError(null);
+    setPreview(null);
+    setAcknowledged(false);
 
     buildDepositTx(
       publicKey,
       debouncedAmount,
       maxFeeStroops !== null ? { maxFeeStroops: String(maxFeeStroops) } : {}
     )
-      .then((result) => {
+      .then(async (result) => {
         if (!active) return;
         setTxXdr(result.xdr);
         setEstimate(result.estimate);
+
+        // Simulate and describe before the user can reach the wallet prompt.
+        // The intent is what the form says; the preview warns when the
+        // envelope disagrees with it.
+        const built = await previewTransaction(result.xdr, {
+          intent: {
+            account: publicKey,
+            amount: debouncedAmount,
+            asset: "USDC",
+            balance: usdcBalance || undefined,
+            expectedRecipients: [process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID || ""].filter(
+              Boolean
+            ),
+          },
+          xlmPriceUsd: xlmPrice,
+        });
+        if (active) setPreview(built);
       })
       .catch((error) => {
         if (!active) return;
         setTxXdr(null);
+        setPreview(null);
         setBuildError(formatTransactionErrorMessage(error));
       })
       .finally(() => {
@@ -102,13 +139,14 @@ export default function DepositModal({ isOpen, onClose }: Props) {
     return () => {
       active = false;
     };
-  }, [isOpen, debouncedAmount, publicKey, valid, maxFeeStroops]);
+  }, [isOpen, debouncedAmount, publicKey, valid, maxFeeStroops, usdcBalance, xlmPrice]);
 
   useEffect(() => {
     if (txPhase !== "pending" || !txHash) return;
 
     if (txMonitor.phase === "confirmed") {
       setTxPhase("success");
+      track("escrow_deposit_completed");
       return;
     }
 
@@ -140,6 +178,11 @@ export default function DepositModal({ isOpen, onClose }: Props) {
 
   const submit = useCallback(async () => {
     if (!valid || !publicKey || !txXdr) return;
+    // No preview, a blocked preview, or an unacknowledged warning must never
+    // reach the wallet. signAndSubmit enforces this again server-side of the
+    // UI, but the button should not have been reachable either.
+    if (!preview?.ok) return;
+    if (preview.requiresAcknowledgement && !acknowledged) return;
     const xdr = txXdr;
 
     setSubmitting(true);
@@ -150,11 +193,19 @@ export default function DepositModal({ isOpen, onClose }: Props) {
     setTxPhase("signing");
 
     try {
-      const hash = await signAndSubmit(xdr);
+      const hash = await signAndSubmit(xdr, { preview });
       setTxHash(hash);
       setTxPhase("pending");
     } catch (error) {
-      if (error instanceof WalletSignatureError) {
+      if (error instanceof SimulationBlockedError) {
+        // The transaction became unsignable between preview and submit (a
+        // changed ledger state, a stale envelope). Nothing was signed.
+        setPreview(error.preview);
+        setTxError(error.message);
+        setRecoveryHint("Nothing was signed and no fee was charged. Adjust the amount and retry.");
+        setCanRetry(true);
+        setTxPhase("error");
+      } else if (error instanceof WalletSignatureError) {
         setTxError(error.wallet.message);
         setRecoveryHint(
           error.wallet.kind === "rejected"
@@ -172,7 +223,7 @@ export default function DepositModal({ isOpen, onClose }: Props) {
     } finally {
       setSubmitting(false);
     }
-  }, [publicKey, txXdr, valid]);
+  }, [acknowledged, preview, publicKey, txXdr, valid]);
 
   function resetTransactionState() {
     setTxPhase("idle");
@@ -190,6 +241,8 @@ export default function DepositModal({ isOpen, onClose }: Props) {
       setAmount("");
       setDebouncedAmount("");
       setTxXdr(null);
+      setPreview(null);
+      setAcknowledged(false);
       setMaxFeeStroops(null);
       onClose();
     }
@@ -210,13 +263,23 @@ export default function DepositModal({ isOpen, onClose }: Props) {
   const walletBlocked = !isConnected || wrongNetwork;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="deposit-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+    >
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
-      <div className="relative w-full max-w-md bg-[var(--bg-card)] border border-[var(--border-color)] shadow-2xl rounded-2xl overflow-hidden">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="relative w-full max-w-md bg-[var(--bg-card)] border border-[var(--border-color)] shadow-2xl rounded-2xl overflow-hidden"
+      >
         <div className="flex items-center justify-between p-5 border-b border-[var(--border-color)]">
-          <h2 className="text-lg font-bold text-[var(--text-primary)]">Deposit USDC</h2>
+          <h2 id="deposit-modal-title" className="text-lg font-bold text-[var(--text-primary)]">Deposit USDC</h2>
           <button
             onClick={onClose}
+            aria-label="Close deposit dialog"
             className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
@@ -257,6 +320,7 @@ export default function DepositModal({ isOpen, onClose }: Props) {
             </label>
             <div className="relative">
               <input
+                ref={amountInputRef}
                 id="deposit-amount"
                 type="number"
                 min="0"
@@ -298,6 +362,15 @@ export default function DepositModal({ isOpen, onClose }: Props) {
             </p>
           )}
 
+          {valid && !buildError && (
+            <TransactionPreviewPanel
+              preview={preview}
+              loading={estimating}
+              acknowledged={acknowledged}
+              onAcknowledgedChange={setAcknowledged}
+            />
+          )}
+
           <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
             <span>Max network fee</span>
             <span className="font-mono text-[var(--text-secondary)]">
@@ -308,7 +381,17 @@ export default function DepositModal({ isOpen, onClose }: Props) {
 
           <button
             onClick={submit}
-            disabled={!valid || estimating || !usableXdr || submitting || walletBlocked}
+            disabled={
+              !valid ||
+              estimating ||
+              !usableXdr ||
+              submitting ||
+              walletBlocked ||
+              // Issue #884: not simulated, simulation failed, or a danger
+              // warning the user has not acknowledged.
+              !preview?.ok ||
+              (preview.requiresAcknowledgement && !acknowledged)
+            }
             className="w-full btn-primary justify-center disabled:opacity-40"
           >
             {submitting || estimating ? (

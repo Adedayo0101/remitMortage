@@ -9,11 +9,7 @@ import {
   parseTransactionType,
 } from "../src/lib/transaction-status";
 
-const RPC_STATUS = {
-  SUCCESS: "SUCCESS",
-  NOT_FOUND: "NOT_FOUND",
-  FAILED: "FAILED",
-} as const;
+import { rpc } from "@stellar/stellar-sdk";
 
 jest.mock("next/font/google", () => ({
   Inter: () => ({ variable: "--font-inter", className: "inter" }),
@@ -21,11 +17,11 @@ jest.mock("next/font/google", () => ({
 
 describe("transaction status utilities", () => {
   it("maps RPC status to UI phases based on poll count", () => {
-    expect(mapToUiPhase(RPC_STATUS.NOT_FOUND, 1)).toBe("submitted");
-    expect(mapToUiPhase(RPC_STATUS.NOT_FOUND, 2)).toBe("simulating");
-    expect(mapToUiPhase(RPC_STATUS.NOT_FOUND, 5)).toBe("pending_confirmation");
-    expect(mapToUiPhase(RPC_STATUS.SUCCESS, 3)).toBe("confirmed");
-    expect(mapToUiPhase(RPC_STATUS.FAILED, 3)).toBe("failed");
+    expect(mapToUiPhase(rpc.Api.GetTransactionStatus.NOT_FOUND, 1)).toBe("submitted");
+    expect(mapToUiPhase(rpc.Api.GetTransactionStatus.NOT_FOUND, 2)).toBe("simulating");
+    expect(mapToUiPhase(rpc.Api.GetTransactionStatus.NOT_FOUND, 5)).toBe("pending_confirmation");
+    expect(mapToUiPhase(rpc.Api.GetTransactionStatus.SUCCESS, 3)).toBe("confirmed");
+    expect(mapToUiPhase(rpc.Api.GetTransactionStatus.FAILED, 3)).toBe("failed");
   });
 
   it("converts phases to step indices", () => {
@@ -103,14 +99,14 @@ describe("TransactionDetails", () => {
 describe("extractContractError", () => {
   it("returns fallback message when no diagnostics are available", () => {
     const response = {
-      status: RPC_STATUS.FAILED,
+      status: rpc.Api.GetTransactionStatus.FAILED,
       diagnosticEventsXdr: [],
       resultXdr: {
         result: () => ({
           switch: () => ({ name: "txSuccess" }),
         }),
       },
-    } as Parameters<typeof extractContractError>[0];
+    } as unknown as Parameters<typeof extractContractError>[0];
 
     expect(extractContractError(response)).toContain("reverted on-chain");
   });

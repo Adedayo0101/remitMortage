@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
+import createNextIntlPlugin from "next-intl/plugin";
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? "https://remitmortgage.com";
 const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL ?? "https://horizon-testnet.stellar.org";
@@ -40,6 +41,11 @@ const reportTo = JSON.stringify({
 });
 
 const nextConfig: NextConfig = {
+  // The production Dockerfile copies .next/standalone, so the build must emit it.
+  output: "standalone",
+  // Browser source maps are only emitted for the CI client-bundle secret scan
+  // (scripts/client-bundle-secret-scan.mjs); they are never shipped to users.
+  productionBrowserSourceMaps: process.env.CLIENT_BUNDLE_SOURCEMAPS === "true",
   turbopack: {
     root: process.cwd(),
   },
@@ -62,11 +68,15 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default withSentryConfig(nextConfig, {
+const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+
+export default withSentryConfig(withNextIntl(nextConfig), {
   org: process.env.SENTRY_ORG,
   project: process.env.SENTRY_PROJECT,
   silent: !process.env.CI,
   widenClientFileUpload: true,
-  hideSourceMaps: true,
+  sourcemaps: {
+    disable: true,
+  },
   disableLogger: true,
 });

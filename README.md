@@ -6,13 +6,13 @@ RemitMortgage enables diaspora communities to leverage their verified remittance
 It's the bridge between consistent remittance behavior and real homeownership.
 
 ## Motivation
-Millions of people in the global diaspora send money home every month — consistently, reliably, for years. Yet this financial track record is invisible to traditional lenders. Banks don't recognize cross-border remittance history as proof of creditworthiness, leaving hardworking families locked out of property ownership in their home countries.
+Millions of people in the global diaspora send money home every month — consistently, reliably, for years. Yet this financial track record is invisible to traditional lenders. Banks don't recognize cross-border remittance history as proof of creditworthiness, leaving hardworking families locked out of property ownership in their home countries
 
 RemitMortgage makes remittance history count:
 
 *   **Prove Your Track Record:** Verify ownership of wallets used to send remittances and let the protocol analyze your Stellar payment history for consistency and reliability.
 *   **Save Toward Ownership:** Contribute 30% down payment over 6–12 months into a Soroban escrow contract, earning yield on pooled funds while you save.
-*   **Build With Accountability:** The remaining 70% is disbursed from a lending pool in milestone-based tranches to vetted contractors — gated by photo/video evidence on IPFS and multisig governance approval.
+*   **Build With Accountability:** The remaining 70% is disbursed from a lending pool in milestone-based tranches to vetted contractors — gated by photo/video evidence on IPFS and multisig governance Consent.
 
 ## Features
 *   **Remittance Verification** — Off-chain scoring service analyzes Stellar payment history for recurring amounts, regular intervals, and sustained sending patterns to establish borrower eligibility.
@@ -32,6 +32,21 @@ RemitMortgage makes remittance history count:
 *   **Storage:** IPFS via Pinata (milestone evidence)
 
 ## Running it locally
+
+### Recommended: dev container (one command)
+
+Open the repository in a [dev container](docs/DEV_CONTAINER.md) and run the app
+and tests with no host setup:
+
+```bash
+make dev    # backend on :4000, frontend on :3000
+make test   # backend + frontend + smart-contract tests
+```
+
+The container pins Node.js, Rust (with the wasm target), PostgreSQL and Redis,
+seeds the database, and is built in CI so it cannot silently break.
+
+### Manual setup
 
 For local offline testing, you can spin up a local mock Stellar network (including Horizon, Soroban RPC, and Friendbot) in a Docker container using Docker Compose. Refer to the [Stellar Quickstart Docker Sandbox Guide](docs/LOCAL_SANDBOX.md) for detailed instructions on setting up and deploying contracts locally.
 
@@ -102,4 +117,4 @@ Refer to those guides to deploy contracts, fund wallets, and exercise the full b
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file

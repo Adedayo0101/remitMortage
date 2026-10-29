@@ -1,7 +1,12 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import { Router } from "express";
-import { requireAdmin } from "../middleware/auth.js";
+import { requireAdmin, authMiddleware, AuthenticatedRequest } from "../middleware/auth.js";
 import { prisma } from "../services/db.js";
 import logger from "../utils/logger.js";
+import { exportAuditLogToSiem, SIEM_MAX_WINDOW_DAYS } from "../services/auditSiemExport.js";
+import { verifyAuditRange } from "../services/auditChain.js";
 
 export const auditRouter = Router();
 
@@ -78,7 +83,7 @@ auditRouter.get("/", requireAdmin, async (req, res) => {
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit + 1,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      ...(cursor ? ({ cursor: ({ id: cursor } as any), skip: 1 } as any) : {}),
     });
 
     const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
@@ -110,3 +115,123 @@ auditRouter.get("/", requireAdmin, async (req, res) => {
     return res.status(500).json({ error: "Failed to query audit logs" });
   }
 });
+
+/**
+ * GET /api/audit-logs/verify
+ *
+ * Recomputes the tamper-evident hash chain (issue #861) over an optional
+ * time range and reports whether the entries link up and match their stored
+ * hashes. Returns 409 when the chain is broken so a monitoring check can alert
+ * on it. Admin-only.
+ */
+auditRouter.get("/verify", requireAdmin, async (req, res) => {
+  try {
+    const parse = (value: unknown): Date | undefined => {
+      if (typeof value !== "string" || !value) return undefined;
+      const date = new Date(value);
+      return isNaN(date.getTime()) ? undefined : date;
+    };
+    const from = parse(req.query.from);
+    const to = parse(req.query.to);
+
+    const result = await verifyAuditRange({ from, to });
+    return res.status(result.ok ? 200 : 409).json({
+      ok: result.ok,
+      verified: result.verified,
+      head: result.head,
+      ...(result.brokenAt ? { brokenAt: result.brokenAt } : {}),
+    });
+  } catch (error) {
+    logger.error("Audit chain verification failed", { error });
+    return res.status(500).json({ error: "Failed to verify audit chain" });
+  }
+});
+
+/**
+ * POST /api/audit-logs/siem-export
+ *
+ * Streams a time-windowed audit export suitable for ingestion by an external
+ * SIEM (Splunk, Elastic, Datadog, etc.).  The response is streamed as NDJSON
+ * or CEF lines; a trailing `X-Export-Chain-Hash` header carries the HMAC-SHA256
+ * integrity fingerprint so the consumer can verify the payload end-to-end.
+ *
+ * Admin-only.  Maximum window: 90 days.
+ */
+auditRouter.post(
+  "/siem-export",
+  authMiddleware,
+  requireAdmin,
+  async (req: AuthenticatedRequest, res) => {
+    const { from, to, actions, actorAddress, format } = req.body as {
+      from?: string;
+      to?: string;
+      actions?: string[];
+      actorAddress?: string;
+      format?: "ndjson" | "cef";
+    };
+
+    if (!from || !to) {
+      return res.status(400).json({ error: "'from' and 'to' are required" });
+    }
+
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+
+    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
+
+    const windowDays =
+      (toDate.getTime() - fromDate.getTime()) / (1_000 * 60 * 60 * 24);
+    if (windowDays <= 0) {
+      return res.status(400).json({ error: "'to' must be after 'from'" });
+    }
+    if (windowDays > SIEM_MAX_WINDOW_DAYS) {
+      return res
+        .status(400)
+        .json({ error: `Export window cannot exceed ${SIEM_MAX_WINDOW_DAYS} days` });
+    }
+
+    const resolvedFormat: "ndjson" | "cef" =
+      format === "cef" ? "cef" : "ndjson";
+
+    const contentType =
+      resolvedFormat === "cef" ? "text/plain" : "application/x-ndjson";
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Transfer-Encoding", "chunked");
+    res.setHeader("X-Export-Format", resolvedFormat);
+
+    const hmacSecret =
+      process.env.SIEM_EXPORT_HMAC_SECRET ?? "default_siem_secret";
+
+    try {
+      const result = await exportAuditLogToSiem(
+        {
+          from: fromDate,
+          to: toDate,
+          actions: Array.isArray(actions) ? actions : undefined,
+          actorAddress: actorAddress ?? undefined,
+          format: resolvedFormat,
+          requestorAddress: req.user?.walletAddress,
+        },
+        hmacSecret,
+        async (lines) => {
+          for (const line of lines) {
+            res.write(line + "\n");
+          }
+        }
+      );
+
+      res.setHeader("X-Export-Id", result.exportId);
+      res.setHeader("X-Export-Total-Events", String(result.totalEvents));
+      res.setHeader("X-Export-Chain-Hash", result.chainHash);
+      res.end();
+    } catch (err) {
+      if (!res.headersSent) {
+        return res.status(500).json({ error: "Export failed" });
+      }
+      res.end();
+    }
+  }
+);

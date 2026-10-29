@@ -1,4 +1,9 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import rateLimit from "express-rate-limit";
+
+export const GLOBAL_RATE_LIMIT_MAX = 300;
 
 /**
  * Strict rate limiter for wallet-verification endpoints: 10 requests per
@@ -49,7 +54,7 @@ function tooManyRequestsHandler(windowMs: number) {
  */
 export const globalRateLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 300,
+  max: GLOBAL_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   handler: tooManyRequestsHandler(60 * 1000),

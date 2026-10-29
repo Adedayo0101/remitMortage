@@ -1,6 +1,8 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -11,7 +13,9 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import { announce } from "../../lib/announcer";
 import {
+  describeTransactionAnnouncement,
   formatTransactionErrorMessage,
   getTransactionExplorerLinks,
   shortenAddress,
@@ -19,6 +23,7 @@ import {
   type TransactionModalPhase,
   type TransactionType,
 } from "../../lib/transaction-status";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 
 interface TransactionModalProps {
   isOpen: boolean;
@@ -96,6 +101,12 @@ export default function TransactionModal({
   recoveryHint,
   onClose,
 }: TransactionModalProps) {
+  const canClose = phase === "success" || phase === "error";
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, isOpen && phase !== "idle", {
+    onEscape: canClose ? onClose : undefined,
+  });
+
   useEffect(() => {
     if (!isOpen) return;
 
@@ -107,9 +118,16 @@ export default function TransactionModal({
     };
   }, [isOpen]);
 
+  // Announce each phase transition (including success/failure) to screen
+  // readers without moving focus out of the dialog.
+  useEffect(() => {
+    if (!isOpen) return;
+    const announcement = describeTransactionAnnouncement(transactionType, phase, errorMessage);
+    if (announcement) announce(announcement.message, { priority: announcement.priority });
+  }, [isOpen, phase, transactionType, errorMessage]);
+
   if (!isOpen || phase === "idle") return null;
 
-  const canClose = phase === "success" || phase === "error";
   const copy = PHASE_COPY[phase];
   const activeStep = phaseToStepIndex(phase);
   const displayError = errorMessage ? formatTransactionErrorMessage(errorMessage) : null;
@@ -130,6 +148,8 @@ export default function TransactionModal({
       />
 
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="transaction-modal-title"

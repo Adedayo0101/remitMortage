@@ -1,6 +1,10 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import cron from "node-cron";
 import { createBackupService } from "../services/databaseBackup.js";
 import logger from "../utils/logger.js";
+import { scheduledJob } from "../services/jobLeaderElection.js";
 
 /**
  * Automated Database Backup Scheduler
@@ -27,7 +31,7 @@ export function startBackupScheduler(): void {
 
   cron.schedule(
     schedule,
-    async () => {
+    scheduledJob("database-backup", async () => {
       logger.info("Executing scheduled database backup");
 
       try {
@@ -48,7 +52,7 @@ export function startBackupScheduler(): void {
         // TODO: Send alert notification (email, Slack, PagerDuty, etc.)
         // await sendBackupFailureAlert(error);
       }
-    },
+    }),
     {
       timezone: "UTC",
     }
@@ -70,4 +74,47 @@ export async function executeImmediateBackup(): Promise<void> {
     backupKey: result.backupKey,
     sizeMB: (result.size / (1024 * 1024)).toFixed(2),
   });
+}
+
+/**
+ * Weekly cleanup of backups older than 30 days. Archives them to cold
+ * storage (AWS Glacier / GCS Archive) and removes from hot storage.
+ * Runs every Sunday at 3:00 AM UTC by default.
+ */
+export function startBackupCleanupScheduler(): void {
+  const schedule = process.env.BACKUP_CLEANUP_CRON_SCHEDULE || "0 3 * * 0";
+  const retentionDays = Number(process.env.BACKUP_RETENTION_DAYS) || 30;
+
+  const enabled = process.env.ENABLE_BACKUP_CLEANUP !== "false";
+
+  if (!enabled) {
+    logger.info("Automated backup cleanup is disabled");
+    return;
+  }
+
+  logger.info("Starting backup cleanup scheduler", { schedule, retentionDays });
+
+  cron.schedule(
+    schedule,
+    scheduledJob("database-backup-cleanup", async () => {
+      logger.info("Executing scheduled backup cleanup");
+
+      try {
+        const backupService = createBackupService();
+        const result = await backupService.cleanupOldBackups(retentionDays);
+
+        logger.info("Backup cleanup completed", {
+          archived: result.archived,
+          failed: result.failed,
+        });
+      } catch (error) {
+        logger.error("Backup cleanup failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }),
+    { timezone: "UTC" },
+  );
+
+  logger.info("Backup cleanup scheduler started successfully");
 }

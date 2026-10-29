@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import {
   baselineFeeStroops,
   buildFeeOptions,
@@ -8,7 +11,7 @@ import {
   isFeeBelowMinimum,
   matchFeeTier,
 } from "../gas-fees";
-import type { SimulationEstimate } from "../soroban";
+import type { SimulationEstimate } from "../soroban-client";
 
 const ESTIMATE: SimulationEstimate = {
   minResourceFeeStroops: "50000",

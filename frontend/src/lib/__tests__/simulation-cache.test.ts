@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import {
   buildSimulationCacheKey,
   clearSimulationCache,
@@ -6,7 +9,7 @@ import {
   SIMULATION_CACHE_TTL_MS,
   writeCachedSimulation,
 } from "../simulation-cache";
-import type { SimulationEstimate } from "../soroban";
+import type { SimulationEstimate } from "../soroban-client";
 
 const ESTIMATE: SimulationEstimate = {
   minResourceFeeStroops: "51234",

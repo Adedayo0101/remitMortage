@@ -1,0 +1,29 @@
+# Shared CodeQL configuration for the backend and frontend analyses.
+#
+# The workflow passes `queries: security-extended` and sets `source-root` per
+# component, so this file only carries what is common to both: the paths worth
+# analysing and the ones that would only add noise.
+
+name: remitMortgage CodeQL config
+
+paths:
+  - src
+
+paths-ignore:
+  # Vendored and generated code — findings here are not actionable in this repo.
+  - '**/node_modules'
+  - '**/dist'
+  - '**/.next'
+  - '**/coverage'
+  - '**/*.min.js'
+  # Test and load-test code. These deliberately construct hostile input and
+  # talk to throwaway fixtures, which produces false positives that drown out
+  # findings in shipped code.
+  - '**/__tests__'
+  - '**/__mocks__'
+  - '**/*.test.ts'
+  - '**/*.test.tsx'
+  - '**/*.spec.ts'
+  - '**/*.spec.tsx'
+  - '**/e2e'
+  - '**/load-tests'

@@ -357,6 +357,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "last_verified_ledger"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "report_hash"
                       },
                       "val": {

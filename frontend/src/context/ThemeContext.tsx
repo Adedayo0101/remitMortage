@@ -1,69 +1,68 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
-import React, { createContext, useContext, useEffect, useState } from "react";
-
-type Theme = "light" | "dark";
+import React, { createContext, useContext, useEffect } from "react";
+import { useThemeStore } from "@/app/stores/useThemeStore";
+import { msUntilNextSwitch } from "@/app/lib/theme-schedule";
+import type { Theme } from "@/app/lib/theme";
 
 type ThemeContextType = {
   theme: Theme;
-  setTheme: (theme: Theme) => void;
-  toggleTheme: () => void;
 };
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-const STORAGE_KEY = "remitmortgage-theme";
+// setTimeout stores its delay as a 32-bit int; longer delays fire immediately.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("dark");
+  const theme = useThemeStore((s) => s.theme);
+  const mode = useThemeStore((s) => s.mode);
+  const schedule = useThemeStore((s) => s.schedule);
 
+  // Apply once on mount (covers the case where the boot script could not run)
+  // and follow the OS while in System mode.
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    if (stored === "light" || stored === "dark") {
-      applyTheme(stored);
-      setThemeState(stored);
-      return;
-    }
-    // Fall back to system preference
-    const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const resolved: Theme = systemDark ? "dark" : "light";
-    applyTheme(resolved);
-    setThemeState(resolved);
-  }, []);
-
-  useEffect(() => {
+    useThemeStore.getState().syncTheme();
+    if (typeof window.matchMedia !== "function") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => {
-      // Only follow system changes when the user has no stored preference
-      if (!localStorage.getItem(STORAGE_KEY)) {
-        const resolved: Theme = e.matches ? "dark" : "light";
-        applyTheme(resolved);
-        setThemeState(resolved);
-      }
-    };
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
+    const onChange = () => useThemeStore.getState().syncTheme();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  function applyTheme(t: Theme) {
-    document.documentElement.setAttribute("data-theme", t);
-  }
+  // Scheduled mode: flip at the next boundary without a reload, and re-check
+  // when the tab wakes up (timers are throttled/suspended while hidden).
+  useEffect(() => {
+    if (mode !== "scheduled") return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      const now = new Date();
+      const wait = msUntilNextSwitch(now, useThemeStore.getState().schedule);
+      if (wait === null) return;
+      timer = setTimeout(() => {
+        useThemeStore.getState().syncTheme();
+        arm();
+      }, Math.min(wait + 250, MAX_TIMEOUT_MS));
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "hidden") return;
+      useThemeStore.getState().syncTheme();
+      arm();
+    };
+    arm();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [mode, schedule]);
 
-  function setTheme(t: Theme) {
-    localStorage.setItem(STORAGE_KEY, t);
-    applyTheme(t);
-    setThemeState(t);
-  }
-
-  function toggleTheme() {
-    setTheme(theme === "dark" ? "light" : "dark");
-  }
-
-  return (
-    <ThemeContext.Provider value={{ theme, setTheme, toggleTheme }}>
-      {children}
-    </ThemeContext.Provider>
-  );
+  return <ThemeContext.Provider value={{ theme }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme() {

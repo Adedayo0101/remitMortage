@@ -136,3 +136,72 @@ self.addEventListener('message', (event) => {
     );
   }
 });
+
+// ── Web Push ────────────────────────────────────────────────────────────────
+// The backend filters deliveries against each subscriber's topic preferences,
+// so anything arriving here is already something the user opted into. The
+// topic is still read off the payload to route the click and tag the toast.
+
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    // Some push services deliver plain text; fall back to showing it as the body.
+    payload = { body: event.data ? event.data.text() : '' };
+  }
+
+  const title = payload.title || 'RemitMortgage';
+  const options = {
+    body: payload.body || '',
+    icon: payload.icon || '/globe.svg',
+    badge: payload.badge || '/globe.svg',
+    // Tagging by topic collapses repeat alerts of the same kind instead of
+    // stacking a notification per event.
+    tag: payload.topic || 'remitmortgage',
+    renotify: Boolean(payload.renotify),
+    timestamp: payload.timestamp || Date.now(),
+    data: {
+      url: payload.url || '/dashboard',
+      topic: payload.topic || null,
+    },
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  const target = (event.notification.data && event.notification.data.url) || '/dashboard';
+
+  // Focus an existing tab on the same origin rather than opening a duplicate.
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then((clientList) => {
+        for (const client of clientList) {
+          const sameOrigin = new URL(client.url).origin === self.location.origin;
+          if (sameOrigin && 'focus' in client) {
+            if ('navigate' in client) {
+              return client.navigate(target).then((navigated) => navigated && navigated.focus());
+            }
+            return client.focus();
+          }
+        }
+        return self.clients.openWindow(target);
+      })
+  );
+});
+
+// A subscription can be rotated by the push service without user action; tell
+// the app so it can re-register the new endpoint on next load.
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        client.postMessage({ type: 'PUSH_SUBSCRIPTION_CHANGED' });
+      }
+    })
+  );
+});

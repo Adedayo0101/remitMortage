@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 export type SignerVoteStatus = "approved" | "pending";
 
 export interface MilestoneSigner {
@@ -43,6 +46,40 @@ export async function fetchMilestoneSigningStatus(
   const res = await fetch(`/api/milestone/proposals/${proposalId}/signing-status`);
   if (!res.ok) {
     throw new Error("Failed to fetch signing status");
+  }
+  return res.json();
+}
+
+/** Casts a vote for the connected signer on a milestone proposal. */
+export async function castMilestoneVote(
+  proposalId: string,
+  signerAddress: string,
+  transactionEnvelope: string
+): Promise<MilestoneSigningStatus> {
+  const res = await fetch(`/api/milestone/proposals/${proposalId}/vote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ signerAddress, transactionEnvelope }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Vote failed" }));
+    throw new Error(err.error || "Failed to cast vote");
+  }
+  return res.json();
+}
+
+/** Submits a fully-signed transaction envelope to the network. */
+export async function submitSignedEnvelope(
+  envelope: string
+): Promise<{ txHash: string }> {
+  const res = await fetch("/api/milestone/proposals/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ envelope }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Submission failed" }));
+    throw new Error(err.error || "Failed to submit transaction");
   }
   return res.json();
 }

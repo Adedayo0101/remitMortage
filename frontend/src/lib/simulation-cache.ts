@@ -1,4 +1,7 @@
-import type { SimulationEstimate } from "./soroban";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
+import type { SimulationEstimate } from "./soroban-client";
 
 /**
  * Session-scoped cache of Soroban simulation results.

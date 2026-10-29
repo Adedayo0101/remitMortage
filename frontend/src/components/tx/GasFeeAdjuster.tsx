@@ -1,4 +1,6 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 /**
  * GasFeeAdjuster
@@ -15,7 +17,7 @@
 
 import React, { useId, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Fuel, RotateCcw } from "lucide-react";
-import type { SimulationEstimate } from "../../lib/soroban";
+import type { SimulationEstimate } from "../../lib/soroban-client";
 import {
   baselineFeeStroops,
   buildFeeOptions,
@@ -221,7 +223,15 @@ export default function GasFeeAdjuster({
             >
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               This fee is below the simulated resource fee. The network will
-              reject the transaction unless you raise it.
+              reject the transaction unless you raise it.{" "}
+              <a
+                href="/docs/gas-optimization"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-amber-200"
+              >
+                Learn more
+              </a>
             </p>
           )}
         </div>

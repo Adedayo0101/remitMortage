@@ -2,12 +2,15 @@
 resolver = "2"
 members = [
     "escrow",
+    "bridge-adapter",
+    "budget-tests",
     "governance",
     "insurance-pool",
     "integration-tests",
     "lending-pool",
     "milestone",
     "multisig-validator",
+    "oracle-price",
     "staking-pool",
     "verification-registry",
     "yield-vault",

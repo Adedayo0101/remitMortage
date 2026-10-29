@@ -1,4 +1,6 @@
 "use client";
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "react-hot-toast";
@@ -14,11 +16,17 @@ import { useTransactionMonitor } from "../hooks/useTransactionMonitor";
 import {
   buildWithdrawTx,
   peekCachedEstimate,
+  previewTransaction,
   queryEscrowConfig,
   signAndSubmit,
   WalletSignatureError,
   type SimulationEstimate,
-} from "../lib/soroban";
+} from "../lib/soroban-client";
+import {
+  SimulationBlockedError,
+  type TransactionPreview,
+} from "../lib/transaction-preview";
+import TransactionPreviewPanel from "./tx/TransactionPreviewPanel";
 import {
   formatTransactionErrorMessage,
   type TransactionModalPhase,
@@ -28,6 +36,7 @@ import GasFeeAdjuster from "./tx/GasFeeAdjuster";
 import { useXlmPrice } from "../hooks/useXlmPrice";
 import { baselineFeeStroops, feeToUsd, formatFee } from "../lib/gas-fees";
 import { WALLET_ERROR_MESSAGES } from "../lib/wallet-errors";
+import { track } from "../lib/analytics";
 
 type Props = {
   isOpen: boolean;
@@ -51,6 +60,9 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
   const [maxFeeStroops, setMaxFeeStroops] = useState<number | null>(null);
   const [estimatingTx, setEstimatingTx] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
+  // Issue #884: the plain-language preview, simulated before the wallet prompt.
+  const [preview, setPreview] = useState<TransactionPreview | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const txMonitor = useTransactionMonitor(txHash ?? undefined);
   const xlmPrice = useXlmPrice();
 
@@ -96,19 +108,37 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
     let active = true;
     setEstimatingTx(true);
     setBuildError(null);
+    setPreview(null);
+    setAcknowledged(false);
 
     buildWithdrawTx(
       publicKey,
       maxFeeStroops !== null ? { maxFeeStroops: String(maxFeeStroops) } : {}
     )
-      .then((result) => {
+      .then(async (result) => {
         if (!active) return;
         setTxXdr(result.xdr);
         setEstimate(result.estimate);
+
+        // The penalty is part of what the user is approving, so it goes into
+        // the intent and comes back out as a preview line and a warning.
+        const built = await previewTransaction(result.xdr, {
+          intent: {
+            account: publicKey,
+            asset: "USDC",
+            penaltyBps: penaltyBps ?? undefined,
+            expectedRecipients: [process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID || ""].filter(
+              Boolean
+            ),
+          },
+          xlmPriceUsd: xlmPrice,
+        });
+        if (active) setPreview(built);
       })
       .catch((error) => {
         if (!active) return;
         setTxXdr(null);
+        setPreview(null);
         setBuildError(formatTransactionErrorMessage(error));
       })
       .finally(() => {
@@ -118,13 +148,14 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
     return () => {
       active = false;
     };
-  }, [isOpen, publicKey, maxFeeStroops]);
+  }, [isOpen, publicKey, maxFeeStroops, penaltyBps, xlmPrice]);
 
   useEffect(() => {
     if (txPhase !== "pending" || !txHash) return;
 
     if (txMonitor.phase === "confirmed") {
       setTxPhase("success");
+      track("escrow_withdrawal_completed");
       return;
     }
 
@@ -156,6 +187,8 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
 
   const submit = useCallback(async () => {
     if (!publicKey || !confirmed || !txXdr) return;
+    if (!preview?.ok) return;
+    if (preview.requiresAcknowledgement && !acknowledged) return;
     const xdr = txXdr;
 
     setSubmitting(true);
@@ -166,11 +199,19 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
     setTxPhase("signing");
 
     try {
-      const hash = await signAndSubmit(xdr);
+      const hash = await signAndSubmit(xdr, { preview });
       setTxHash(hash);
       setTxPhase("pending");
     } catch (error) {
-      if (error instanceof WalletSignatureError) {
+      if (error instanceof SimulationBlockedError) {
+        setPreview(error.preview);
+        setTxError(error.message);
+        setRecoveryHint(
+          "Nothing was signed and no penalty was charged. Close and retry in a moment."
+        );
+        setCanRetry(true);
+        setTxPhase("error");
+      } else if (error instanceof WalletSignatureError) {
         setTxError(error.wallet.message);
         setRecoveryHint(
           error.wallet.kind === "rejected"
@@ -186,7 +227,7 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
     } finally {
       setSubmitting(false);
     }
-  }, [confirmed, publicKey, txXdr]);
+  }, [acknowledged, confirmed, preview, publicKey, txXdr]);
 
   function resetTransactionState() {
     setTxPhase("idle");
@@ -223,13 +264,19 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
   const walletBlocked = !isConnected || wrongNetwork;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="withdraw-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+    >
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
       <div className="relative w-full max-w-md bg-[var(--bg-card)] border border-[var(--border-color)] shadow-2xl rounded-2xl overflow-hidden">
         <div className="flex items-center justify-between p-5 border-b border-[var(--border-color)]">
-          <h2 className="text-lg font-bold text-[var(--text-primary)]">Early Withdrawal</h2>
+          <h2 id="withdraw-modal-title" className="text-lg font-bold text-[var(--text-primary)]">Early Withdrawal</h2>
           <button
             onClick={onClose}
+            aria-label="Close withdrawal dialog"
             className="p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
@@ -328,6 +375,15 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
                 </p>
               )}
 
+              {!buildError && (
+                <TransactionPreviewPanel
+                  preview={preview}
+                  loading={estimatingTx}
+                  acknowledged={acknowledged}
+                  onAcknowledgedChange={setAcknowledged}
+                />
+              )}
+
               <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20">
                 <div className="flex items-start gap-3">
                   <AlertTriangle className="w-5 h-5 text-[var(--warning)] shrink-0 mt-0.5" />
@@ -354,7 +410,15 @@ export default function WithdrawModal({ isOpen, onClose, deposited }: Props) {
               <button
                 onClick={submit}
                 disabled={
-                  !confirmed || submitting || estimatingTx || !usableXdr || walletBlocked
+                  !confirmed ||
+                  submitting ||
+                  estimatingTx ||
+                  !usableXdr ||
+                  walletBlocked ||
+                  // Issue #884: no signing prompt without a successful
+                  // simulation, and none past an unacknowledged warning.
+                  !preview?.ok ||
+                  (preview.requiresAcknowledgement && !acknowledged)
                 }
                 className="w-full btn-primary justify-center disabled:opacity-40"
               >

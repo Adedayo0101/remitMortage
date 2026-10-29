@@ -1,6 +1,17 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 import axios from "axios";
 
 jest.mock("axios");
+const axiosMockImpl: any = {
+  create: jest.fn(() => axiosMockImpl),
+  post: jest.fn(),
+  delete: jest.fn(),
+  interceptors: { request: { use: jest.fn() }, response: { use: jest.fn() } },
+};
+;(axios as unknown as jest.Mock).mockImplementation(() => axiosMockImpl);
+Object.assign(axios, axiosMockImpl);
 jest.mock("../config.js", () => ({
   loadConfig: () => ({
     port: 4000,
@@ -24,7 +35,20 @@ jest.mock("../services/db.js", () => ({
     unpinnedCid: {
       create: jest.fn(),
     },
+    trackedCid: {
+      upsert: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockResolvedValue(undefined),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    milestoneEvidenceReference: {
+      upsert: jest.fn().mockResolvedValue(undefined),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
   },
+}));
+jest.mock("../services/contractorAuth.js", () => ({
+  verifyUploadAuthorization: jest.fn(() => ({ ok: false, status: 401, error: "unauthorized" })),
 }));
 
 import express from "express";
@@ -35,6 +59,9 @@ import {
   PINATA_MAX_RETRIES,
   pinJSONToIPFS,
   unpinFileFromIPFS,
+  pinFileToMultipleProviders,
+  pinJSONToMultipleProviders,
+  MultiProviderPinResult,
 } from "../services/ipfs.js";
 import { unpinEvidenceCid } from "../services/ipfsCleanup.js";
 import { prisma } from "../services/db.js";

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RemitMortgage Protocol Contributors
+// SPDX-License-Identifier: MIT
+
 //! Boundary tests for the early-exit penalty calculation in [`EscrowContract::withdraw`].
 //!
 //! The escrow contract deducts an early-exit penalty using tiered basis-point
@@ -25,11 +28,7 @@ extern crate std;
 
 use super::*;
 use crate::test_utils::advance_ledger_sequence;
-use soroban_sdk::{
-    testutils::Address as _,
-    token::StellarAssetClient,
-    Address, Env, Symbol,
-};
+use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Symbol};
 
 /// Deposit amount used across the boundary tests: 10,000 USDC (7 decimals).
 const DEPOSIT: i128 = 10_000_0000000;
@@ -71,6 +70,8 @@ fn setup(
         grace_period_ledgers: 10,
         default_penalty_bps: 1000,
         yield_vault: None,
+        match_bps: 0,
+        match_cap: 0,
     });
 
     let goal_id = Symbol::new(env, "land");
@@ -182,5 +183,8 @@ fn bps_math_is_exact_and_overflow_free_for_large_deposits() {
     // can accept without wrapping: amount <= i128::MAX / 10_000.
     let max_safe = i128::MAX / 10_000;
     let checked = max_safe.checked_mul(9_999).map(|v| v / 10_000);
-    assert!(checked.is_some(), "penalty multiply overflowed for max deposit");
+    assert!(
+        checked.is_some(),
+        "penalty multiply overflowed for max deposit"
+    );
 }
